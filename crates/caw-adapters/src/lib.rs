@@ -3,10 +3,12 @@ use caw_core::{CawResult, CompletionRequest, CompletionResponse, ModelAdapter, M
 mod anthropic;
 mod groq;
 mod ollama;
+mod openai_compatible;
 
 pub use anthropic::AnthropicAdapter;
 pub use groq::GroqAdapter;
 pub use ollama::OllamaAdapter;
+pub use openai_compatible::{OpenAiCompatibleAdapter, RequestHeaders};
 
 /// Create a shared tokio runtime for all adapters.
 /// Call this once at startup and pass the Arc to each adapter.

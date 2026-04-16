@@ -127,6 +127,55 @@ fn main() -> Result<()> {
             let rt = caw_adapters::create_runtime()?;
             Box::new(caw_adapters::OllamaAdapter::llama3_2(rt))
         }
+        "perplexity" => {
+            let rt = caw_adapters::create_runtime()?;
+            Box::new(
+                caw_adapters::OpenAiCompatibleAdapter::perplexity(rt)
+                    .context("Failed to create Perplexity adapter")?,
+            )
+        }
+        // vllm://model-name or vllm://host:port/model-name
+        s if s.starts_with("vllm://") => {
+            let rt = caw_adapters::create_runtime()?;
+            let rest = &s["vllm://".len()..];
+            let (base_url, model) = if let Some(slash_pos) = rest.rfind('/') {
+                let host = &rest[..slash_pos];
+                let model = &rest[slash_pos + 1..];
+                (format!("http://{}", host), model.to_string())
+            } else {
+                ("http://localhost:8000".to_string(), rest.to_string())
+            };
+            Box::new(caw_adapters::OpenAiCompatibleAdapter::vllm_at(base_url, model, rt))
+        }
+        // Generic openai-compatible: openai://base-url/model-name
+        s if s.starts_with("openai://") => {
+            let rt = caw_adapters::create_runtime()?;
+            let rest = &s["openai://".len()..];
+            let slash_pos = rest.rfind('/')
+                .context("openai:// format requires: openai://host:port/model-name")?;
+            let host = &rest[..slash_pos];
+            let model = &rest[slash_pos + 1..];
+            let base_url = if host.starts_with("http") {
+                host.to_string()
+            } else {
+                format!("http://{}", host)
+            };
+            let headers = match std::env::var("OPENAI_COMPATIBLE_API_KEY") {
+                Ok(key) => caw_adapters::RequestHeaders::bearer(key),
+                Err(_) => caw_adapters::RequestHeaders::new(),
+            };
+            Box::new(caw_adapters::OpenAiCompatibleAdapter::new_with(
+                base_url,
+                model,
+                headers,
+                caw_core::ModelCapabilities {
+                    supports_tool_calls: true,
+                    supports_hidden_reasoning: false,
+                    supports_visible_reasoning: false,
+                },
+                rt,
+            ))
+        }
         other => {
             let rt = caw_adapters::create_runtime()?;
             Box::new(caw_adapters::OllamaAdapter::local(other, rt))
