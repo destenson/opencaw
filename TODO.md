@@ -40,4 +40,14 @@
 
 - [ ] **Provenance conflict detection beyond topic overlap**: The current ledger detects when fragments from different sources have high term overlap (potential contradiction). Deeper conflict detection — contradicting assertions, inconsistent numbers, negation patterns — is marked as a future enhancement per the design doc.
 
-- [ ] **Curation policy for tool outputs and conversation history**: The design doc identifies tool-output verbosity and conversation-history bloat as major context waste. No curation policy is implemented for these yet.
+- [ ] **Curation hooks** (design doc section 8.1): Four hooks are specified but none are implemented:
+  - [ ] History summarization — compress old conversation turns when history exceeds a token threshold
+  - [ ] Tool output compression — stub verbose tool results using the same stub architecture
+  - [ ] System prompt budgeting — measure and warn/truncate when system prompts exceed budget
+  - [ ] Few-shot management — surface token cost of examples (no automatic policy)
+
+- [ ] **Adaptive chunking** (design doc section 3.1): Large files should be automatically chunked and each chunk indexed independently. The ingestion pipeline currently treats every file as a single unit. Open question: whether the chunk threshold should be token-based, structural (function/section boundaries), or both.
+
+- [ ] **Degradation monitoring** (design doc section 6): Per-component health checks and tiered fallback (full recall → stubs+tools → pass-through) are specified but not implemented. Includes probe rate limiting for models that thrash.
+
+- [ ] **Measurement infrastructure** (design doc section 10): `caw-eval` only has recall@k and precision@k. Hysteresis threshold tuning, insertion-order experiments, and false-recall rate measurement all depend on richer instrumentation that doesn't exist yet. This is a prerequisite for tuning several parameters the design doc explicitly defers to measurement.
