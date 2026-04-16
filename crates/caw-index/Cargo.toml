@@ -7,3 +7,29 @@ license.workspace = true
 [dependencies]
 caw-core = { path = "../caw-core" }
 
+# Embedding backends
+fastembed = { version = "5", optional = true }
+# ort conflicts with fastembed's ort dependency, so keep it disabled for now
+# ort = { version = "2.0.0-rc.12", optional = true }
+candle-core = { version = "0.10", optional = true }
+candle-nn = { version = "0.10", optional = true }
+candle-transformers = { version = "0.10", optional = true }
+
+# Vector storage backends
+rusqlite = { version = "0.39", features = ["bundled"], optional = true }
+qdrant-client = { version = "1", optional = true }
+
+# Common utilities
+reqwest = { version = "0.13", features = ["blocking", "json"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[features]
+default = ["fastembed", "sqlite"]
+fastembed = ["dep:fastembed"]
+# onnx = ["dep:ort"]  # Disabled due to conflict with fastembed
+candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers"]
+sqlite = ["dep:rusqlite"]
+qdrant = ["dep:qdrant-client"]
+

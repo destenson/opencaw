@@ -11,6 +11,10 @@ pub enum CawError {
     InvalidInput(String),
     #[error("adapter error: {0}")]
     Adapter(String),
+    #[error("embedding error: {0}")]
+    Embedding(String),
+    #[error("vector store error: {0}")]
+    VectorStore(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -106,7 +110,7 @@ pub struct CompletionResponse {
 }
 
 pub trait Retriever {
-    fn search(&self, query: &str, top_k: usize) -> CawResult<Vec<ScoredStub>>;
+    fn search(&mut self, query: &str, top_k: usize) -> CawResult<Vec<ScoredStub>>;
     fn read_range(&self, id: &StubId, range: &str) -> CawResult<RecallFragment>;
 }
 
@@ -123,4 +127,31 @@ pub trait ModelAdapter {
     fn model_name(&self) -> &str;
     fn capabilities(&self) -> ModelCapabilities;
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse>;
+}
+
+/// Embedding generation trait - abstracts different embedding backends
+pub trait EmbeddingProvider {
+    /// Generate embeddings for a batch of texts
+    fn embed(&mut self, texts: Vec<&str>) -> CawResult<Vec<Vec<f32>>>;
+    
+    /// Get the dimension of embeddings produced by this provider
+    fn dimension(&self) -> usize;
+    
+    /// Get a human-readable name for this embedding provider
+    fn provider_name(&self) -> &str;
+}
+
+/// Vector storage and similarity search trait
+pub trait VectorStore {
+    /// Insert a stub with its embedding
+    fn insert(&mut self, stub: Stub, embedding: Vec<f32>, content: String) -> CawResult<()>;
+    
+    /// Search for similar stubs given a query embedding
+    fn search_by_embedding(&self, query_embedding: &[f32], top_k: usize) -> CawResult<Vec<ScoredStub>>;
+    
+    /// Get content for a specific stub
+    fn get_content(&self, id: &StubId) -> CawResult<String>;
+    
+    /// Get a stub by ID
+    fn get_stub(&self, id: &StubId) -> CawResult<Stub>;
 }

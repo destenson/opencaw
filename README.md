@@ -15,7 +15,7 @@ OpenCAW treats LLM context as a managed workspace rather than a simple container
 
 - **caw-core**: Shared types, traits, and domain models
 - **caw-ingest**: Document parsing, chunking, and metadata extraction
-- **caw-index**: Hybrid retrieval (dense + BM25 + structural)
+- **caw-index**: Semantic retrieval with pluggable embedding and storage backends
 - **caw-scheduler**: Token budget management and workspace scheduling
 - **caw-provenance**: Source tracking and grounding verification
 - **caw-adapters**: Provider adapters (Anthropic, Groq, Ollama, etc.)
@@ -23,6 +23,60 @@ OpenCAW treats LLM context as a managed workspace rather than a simple container
 - **caw-eval**: Metrics (recall@k, precision, faithfulness)
 - **caw-cli**: Command-line interface
 - **caw-server**: HTTP/gRPC service (placeholder)
+
+## Embedding Providers
+
+### FastEmbed (MVP - default)
+- Rust-native with bundled quantized models
+- BGE-small-en-v1.5 (384d), BGE-base-en-v1.5 (768d)
+- No external dependencies
+
+```rust
+use caw_index::FastEmbedProvider;
+
+let embedder = FastEmbedProvider::bge_small()?;
+```
+
+### API-based (OpenAI, Cohere, Voyage)
+```rust
+use caw_index::ApiEmbeddingProvider;
+
+let embedder = ApiEmbeddingProvider::openai_small()?;
+```
+
+### Future: ONNX and Candle
+- ONNX: Custom models via `ort` crate (planned)
+- Candle: Hugging Face models directly (planned)
+
+## Vector Storage
+
+### SQLite (MVP - default)
+- Single-file database with cosine similarity search
+- Perfect for metadata, provenance, content hash tracking
+- Works for datasets up to ~100k vectors
+
+```rust
+use caw_index::SqliteVectorStore;
+
+let store = SqliteVectorStore::new("index.db", 384)?;
+// or in-memory
+let store = SqliteVectorStore::in_memory(384)?;
+```
+
+### Qdrant (next version)
+- Production HNSW implementation
+- Handles metadata + vectors natively
+- Docker or cloud deployment
+
+```rust
+use caw_index::QdrantVectorStore;
+
+let store = QdrantVectorStore::local("collection_name")?;
+```
+
+### Future: Additional backends
+- Lance: Columnar format for ML workloads
+- tantivy: For hybrid BM25 + semantic search
 
 ## Supported Adapters
 
@@ -93,19 +147,30 @@ export GROQ_API_KEY="gsk_..."
 # Ollama uses default local endpoint (http://localhost:11434)
 ```
 
-## Usage Example
+## Usage Example - Semantic Retrieval
 
 ```rust
 use caw_adapters::AnthropicAdapter;
-use caw_core::{ContentKind, Stub, StubId, TokenBudget};
-use caw_index::InMemoryIndex;
+use caw_index::{FastEmbedProvider, SemanticRetriever, SqliteVectorStore};
+use caw_ingest::{IngestionPipeline, SourceDocument};
 use caw_orchestrator::{OrchestratorConfig, RecallOrchestrator};
 use caw_provenance::InMemoryProvenanceStore;
 use caw_scheduler::GreedyBudgetScheduler;
 
-// Set up index with documents
-let mut index = InMemoryIndex::default();
-index.insert(stub, content);
+// Set up semantic retrieval
+let embedder = FastEmbedProvider::bge_small()?;
+let store = SqliteVectorStore::in_memory(embedder.dimension())?;
+let mut retriever = SemanticRetriever::new(embedder, store);
+
+// Ingest documents
+let pipeline = IngestionPipeline;
+let doc = SourceDocument {
+    path: "context-as-workspace.md".to_string(),
+    content: "LLM context is a workspace...".to_string(),
+    kind: ContentKind::Markdown,
+};
+let stub = pipeline.ingest(doc.clone());
+retriever.insert(stub, doc.content)?;
 
 // Configure orchestrator
 let config = OrchestratorConfig {
@@ -148,6 +213,7 @@ println!("{}", response.answer);
 
 ## Roadmap
 
+### Completed ✓
 - [x] Core trait contracts and types
 - [x] Basic ingestion pipeline
 - [x] In-memory index and retriever
@@ -156,14 +222,31 @@ println!("{}", response.answer);
 - [x] Anthropic adapter
 - [x] Groq adapter
 - [x] Ollama adapter
-- [ ] Persistent index (SQLite + HNSW)
+- [x] FastEmbed embedding provider (BGE models)
+- [x] SQLite vector store with cosine similarity
+- [x] Semantic retriever architecture
+- [x] API embedding provider (OpenAI)
+
+### In Progress / Next
+- [ ] Qdrant vector store integration
 - [ ] Thinking-trace recall for reasoning models
+- [ ] Evaluation harness with benchmarks (recall@k, faithfulness)
+- [ ] CLI with semantic retrieval demo
+
+### Future
+- [ ] ONNX embedding provider
+- [ ] Candle embedding provider
+- [ ] Hybrid retrieval (BM25 + semantic via tantivy)
 - [ ] Mutable stub consolidation (memory)
-- [ ] Evaluation harness with benchmarks
 - [ ] Server API (gRPC/HTTP)
 - [ ] OpenAI adapter
 - [ ] vLLM adapter
 - [ ] llama.cpp adapter
+- [ ] Range-addressable reads (line/heading/cell)
+- [ ] Probe-triggered recall for non-reasoning models
+- [ ] Mutable stub consolidation (memory)
+- [ ] Evaluation harness with benchmarks
+- [ ] Server API (gRPC/HTTP)
 
 ## License
 

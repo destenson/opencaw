@@ -1,5 +1,103 @@
-use caw_core::{CawError, CawResult, Locator, RecallFragment, Retriever, ScoredStub, Stub, StubId};
+use caw_core::{CawError, CawResult, EmbeddingProvider, Locator, RecallFragment, Retriever, ScoredStub, Stub, StubId, VectorStore};
 
+// Embedding provider implementations
+pub mod embeddings {
+    #[cfg(feature = "fastembed")]
+    pub mod fastembed_provider;
+    
+    // ONNX disabled due to dependency conflict with fastembed
+    // #[cfg(feature = "onnx")]
+    // pub mod onnx_provider;
+    
+    #[cfg(feature = "candle")]
+    pub mod candle_provider;
+    
+    pub mod api_provider;
+}
+
+// Vector storage implementations
+pub mod storage {
+    #[cfg(feature = "sqlite")]
+    pub mod sqlite_store;
+    
+    #[cfg(feature = "qdrant")]
+    pub mod qdrant_store;
+}
+
+// Re-exports
+#[cfg(feature = "fastembed")]
+pub use embeddings::fastembed_provider::FastEmbedProvider;
+
+pub use embeddings::api_provider::ApiEmbeddingProvider;
+
+#[cfg(feature = "sqlite")]
+pub use storage::sqlite_store::SqliteVectorStore;
+
+#[cfg(feature = "qdrant")]
+pub use storage::qdrant_store::QdrantVectorStore;
+
+/// Semantic retriever that combines embedding generation and vector search
+pub struct SemanticRetriever<E, S>
+where
+    E: EmbeddingProvider,
+    S: VectorStore,
+{
+    embedder: E,
+    store: S,
+}
+
+impl<E, S> SemanticRetriever<E, S>
+where
+    E: EmbeddingProvider,
+    S: VectorStore,
+{
+    pub fn new(embedder: E, store: S) -> Self {
+        Self { embedder, store }
+    }
+
+    pub fn insert(&mut self, stub: Stub, content: String) -> CawResult<()> {
+        let text = format!("{} {} {}", stub.path, stub.summary, stub.outline.join(" "));
+        let embeddings = self.embedder.embed(vec![text.as_str()])?;
+        let embedding = embeddings.into_iter().next()
+            .ok_or_else(|| CawError::Embedding("No embedding generated".to_string()))?;
+        
+        self.store.insert(stub, embedding, content)
+    }
+}
+
+impl<E, S> Retriever for SemanticRetriever<E, S>
+where
+    E: EmbeddingProvider,
+    S: VectorStore,
+{
+    fn search(&mut self, query: &str, top_k: usize) -> CawResult<Vec<ScoredStub>> {
+        let embeddings = self.embedder.embed(vec![query])?;
+        let query_embedding = embeddings.into_iter().next()
+            .ok_or_else(|| CawError::Embedding("No embedding generated for query".to_string()))?;
+        
+        self.store.search_by_embedding(&query_embedding, top_k)
+    }
+
+    fn read_range(&self, id: &StubId, range: &str) -> CawResult<RecallFragment> {
+        let content = self.store.get_content(id)?;
+        let stub = self.store.get_stub(id)?;
+        let tokens = (content.len() / 4).max(1);
+        
+        Ok(RecallFragment {
+            stub_id: id.clone(),
+            content,
+            locator: Locator {
+                source: stub.path,
+                locator: range.to_string(),
+            },
+            tokens,
+        })
+    }
+}
+
+// Keep the original InMemoryIndex for backwards compatibility
+
+// Keep the original InMemoryIndex for backwards compatibility
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryIndex {
     stubs: Vec<Stub>,
@@ -14,7 +112,7 @@ impl InMemoryIndex {
 }
 
 impl Retriever for InMemoryIndex {
-    fn search(&self, query: &str, top_k: usize) -> CawResult<Vec<ScoredStub>> {
+    fn search(&mut self, query: &str, top_k: usize) -> CawResult<Vec<ScoredStub>> {
         let mut scored = self
             .stubs
             .iter()
