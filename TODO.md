@@ -1,53 +1,90 @@
-# TODO — Concerns and Issues
+# TODO — Honest Status
 
-## Critical Bugs
+Cross-reference: design doc is `context-as-workspace.md`, scope boundaries are in `SCOPE.md`.
 
-- [x] **caw-ingest sha256 formatting**: Fixed. Now iterates bytes with `format!("{:02x}")`.
+## Retrieval
 
-- [ ] **Adapters use sync-wrapped async (`block_on`)**: Adapters take `Arc<Runtime>` and call `runtime.block_on()`, avoiding the "create runtime inside runtime" panic. But calling `block_on` from within an async context (e.g., a tokio task in caw-server) will still panic. The server will need either fully async adapter traits or `spawn_blocking` wrappers.
+- [x] **BM25 keyword index**: Standard BM25 scoring (K1=1.2, B=0.75) with IDF weighting.
+- [x] **Hybrid retrieval fusion**: Semantic + BM25 with min-max normalized scores, configurable weights (default 0.6/0.4).
+- [ ] **Asymmetric embeddings**: The `EmbeddingProvider` trait has a single `embed()` method. BGE models require a `"query: "` prefix for query-side encoding — without it, query and document embeddings land in the wrong neighborhoods. The trait needs `embed_query()`/`embed_document()` (or an embed mode parameter), and `SemanticRetriever` needs to call the right one at search vs insert time. This is a correctness issue, not optimization.
 
-## Architecture
+## Ingestion & Indexing
 
-- [ ] **Over-decomposed workspace**: 11 crates for the current codebase size. `caw-provenance`, `caw-eval`, `caw-scheduler` are still small and could be modules. Not blocking, but adds friction.
+- [x] **File ingestion pipeline**: Reads filesystem, detects content kind, captures mtime, generates stubs.
+- [x] **SHA256 content hashing**: Fixed formatting with `format!("{:02x}")`.
+- [ ] **Summary caching**: SQLite `StubStore` persists stubs including summaries, but the ingestion pipeline never checks whether a stub already exists before regenerating. The `(content_hash, mtime)` cache key is available — just not wired up.
+- [ ] **LLM-generated summaries**: Stub summaries are deterministic extraction (first heading + paragraph for markdown, function list for code). The design doc calls for LLM-generated 1-3 sentence summaries for prose. Deterministic extraction is fine for code but insufficient for prose triage.
+- [ ] **Target-model tokenizer**: Token estimation uses `content.split_whitespace().count()` everywhere. The design doc specifies using the target model's actual tokenizer. Whitespace splitting diverges significantly from real token counts, especially for code.
+- [ ] **Tree-sitter outlines**: Code outline extraction uses `starts_with("pub fn ")` string matching, Rust-centric with minimal Python/JS support. Misses items inside impl blocks, attributed functions, and most languages. Tree-sitter would give correct, language-agnostic symbol extraction.
+- [ ] **Adaptive chunking**: Files are treated as single units regardless of size. Large files should be chunked (token-based threshold at minimum, structural boundaries ideally) with each chunk indexed independently.
+- [ ] **Background indexer with lazy fallback**: Ingestion is synchronous, single-pass, batch-only. The design doc envisions a background process that continuously indexes workspace files, with on-demand fallback for files referenced before the indexer reaches them.
 
-- [x] **Storage/index responsibility split**: `VectorStore` decomposed into `StubStore` (persistence) + `VectorIndex` (similarity search). SQLite implements `StubStore`; HNSW implements `VectorIndex`.
+## Eviction & Consolidation
 
-- [x] **`DynamicRecallOrchestrator::run_turn` sequencing problem**: Fixed with iterative multi-pass recall. After the initial completion, probes/thinking traces are extracted, new fragments loaded, and if the workspace changed, the model re-completes with enriched context. Repeats up to `max_recall_iterations` (default 3) or until convergence.
+- [x] **Budget-triggered eviction**: Fires when workspace exceeds 80% of token budget, evicts fragments below relevance floor (0.15), frees to 70%.
+- [ ] **Relevance decay over reasoning steps**: Eviction currently uses a single-shot term-overlap score at eviction time. The design doc specifies per-fragment relevance that *decays over reasoning steps* — fragments become eviction candidates as the model's focus shifts, not just when the budget is full. Needs score history per fragment and a configurable decay rate.
+- [ ] **Consolidation note quality**: Eviction-time notes are mechanical strings (`"Evicted during query about '{query}'. Source: {path}"`). The design doc calls for notes that summarize what portions were referenced and what conclusions were drawn — requires either an LLM call or deeper analysis of provenance records.
+- [ ] **Consolidation persistence**: Notes are stored in the in-memory `ProvenanceLedger` only. They are never written back to the SQLite `StubStore`. The `Stub` struct has a `consolidation_notes` field, but it's always empty when loaded from storage. The "stubs get richer over time" behavior does not work across sessions.
 
-## Core Capabilities
+## Provenance
 
-- [x] **Hybrid retrieval**: Implemented `BM25Index` (standard BM25 scoring with IDF weighting) and `HybridRetriever` that fuses semantic + keyword search using min-max normalized scores with configurable weights (default 0.6/0.4 semantic/keyword).
+- [x] **Provenance ledger**: Records recalled fragments, tracks topic terms, detects term-overlap between fragments from different sources (Jaccard >30%).
+- [ ] **Inline provenance tagging**: The `Locator` type exists and is populated on each `RecallFragment`, but provenance tags are never injected into the content the model sees. The adapters format workspace fragments without source attribution. The design doc's core mechanism — model sees `[recalled from spec.md:4-12]` and treats content as quoted source — is absent. This needs to happen in the adapter formatting layer.
+- [ ] **Conflict detection beyond term overlap**: Only Jaccard term overlap is implemented. Contradicting assertions, inconsistent numbers, and negation patterns are undetected.
 
-- [ ] **No streaming recall loop**: Still single-turn request/response per iteration. True streaming (interleaving retrieval with token generation mid-response) remains a future goal. The multi-pass approach gets most of the value for evaluation/testing but doesn't match the design doc's vision of mid-reasoning recall.
+## Mid-Session Annotation
 
-- [x] **Eviction with consolidation**: Implemented term-overlap-based relevance scoring for eviction. When workspace is 80%+ full, fragments below `eviction_relevance_floor` (default 0.15) are evicted, freeing space to 70% budget. On eviction, a `ConsolidationNote` is generated recording the query context and source path, attached to the stub via the provenance store.
+- [x] **Annotation parser**: `extract_annotations()` parses `<note id="stub_id">content</note>` markers from model output.
+- [ ] **Model instruction for annotations**: Nothing instructs the model to emit `<note>` markers. No system prompt fragment explains the format or requests its use. The parser exists but will never fire unless the calling application manually includes annotation instructions. The orchestrator or adapter layer should inject a brief instruction when the model's capabilities suggest it can cooperate.
 
-- [x] **Mid-session annotation**: Models can emit `<note id="stub_id">content</note>` markers. The orchestrator extracts these and records them as `ModelAnnotation` consolidation notes on the corresponding stub. Both eviction-time and mid-session consolidation are available, as the design doc suggested prototyping.
+## Prompt Transformer
 
-- [x] **Provenance ledger with topic overlap detection**: `ProvenanceLedger` extends `ProvenanceStore` with query context tracking, per-stub consolidation notes, and topic overlap detection. Extracts top-20 non-stopword terms per fragment, computes Jaccard overlap between fragments from different source files, and surfaces overlaps above 30% as warnings injected into the next completion.
+- [x] **Markdown link and @path references**: `PromptTransformer` finds `[text](path)` and `@path` references, replaces with formatted stubs.
+- [ ] **Additional reference surfaces**: Fenced blocks with `path=` and bare paths matching a regex are described in the design doc but not implemented.
 
-## Scaling and Performance
+## Orchestration
 
-- [x] **Linear-scan vector search**: Fixed. HNSW index via `instant-distance`.
+- [x] **Multi-pass recall loop**: `DynamicRecallOrchestrator` runs iterative recall — initial retrieval, probe/trace extraction, re-retrieval, convergence detection. Up to `max_recall_iterations` (default 3).
+- [x] **Probe extraction**: Parses `<probe>...</probe>` markers from model output for automatic recall.
+- [x] **Thinking-trace extraction**: Parses `<think>...</think>` blocks and heuristic step boundaries for reasoning models.
+- [ ] **Streaming recall**: Multi-pass is request/response per iteration. True streaming (interleave retrieval with token generation mid-response) requires async streaming adapter traits. The multi-pass approach captures most of the value but doesn't match the design doc's mid-reasoning vision.
 
-- [ ] **No summary caching**: Ingestion regenerates summaries every run. `StubStore` now persists stubs (including summaries) in SQLite, so the infrastructure for cache-checking on `(content_hash, mtime)` exists — but the ingestion pipeline doesn't check whether a stub already exists before regenerating.
+## Adapters
 
-## Remaining Design Doc Items
+- [x] **Anthropic adapter**: Claude Sonnet/Opus via blocking reqwest.
+- [x] **Groq adapter**: Llama 70B/8B, Mixtral.
+- [x] **Ollama adapter**: Local models (DeepSeek R1, Qwen, Llama 3.2).
+- [x] **OpenAI-compatible adapter**: Generic adapter for any provider speaking the chat completions protocol (vLLM, Perplexity, HuggingFace Inference Endpoints, ollama.com). Configurable headers and capabilities.
+- [ ] **Adapters use sync-wrapped async (`block_on`)**: Works for the library target. Will panic if called from within an async context (e.g., a future server). Acceptable per SCOPE.md — async refactoring deferred to v2.
 
-- [ ] **Streaming recall loop**: The design doc envisions streaming tokens and interleaving retrieval mid-generation. Requires async streaming adapter traits. The multi-pass approach is a practical substitute but not equivalent.
+## Curation Hooks (design doc section 8.1)
 
-- [ ] **Consolidation note enrichment**: Currently, eviction notes are mechanical ("evicted during query about X"). Richer consolidation — summarizing what portions were referenced and what conclusions drawn — would require an LLM call or deeper analysis of provenance records. Left as a future enhancement.
+None implemented. These are the "context quality" half of the framework.
 
-- [ ] **Provenance conflict detection beyond topic overlap**: The current ledger detects when fragments from different sources have high term overlap (potential contradiction). Deeper conflict detection — contradicting assertions, inconsistent numbers, negation patterns — is marked as a future enhancement per the design doc.
+- [ ] **History summarization**: Compress old conversation turns when history exceeds a token threshold. Preserve decisions and facts established; drop dead-end reasoning and verbose tool output from completed steps.
+- [ ] **Tool output compression**: Stub verbose tool results using the same stub architecture. Full output stored in index, context receives a summary.
+- [ ] **System prompt budgeting**: Measure system prompt token usage, warn or truncate when budget exceeded.
+- [ ] **Few-shot management**: Surface token cost of each example. No automatic policy — framework measures, deployment decides.
 
-- [ ] **Curation hooks** (design doc section 8.1): Four hooks are specified but none are implemented:
-  - [ ] History summarization — compress old conversation turns when history exceeds a token threshold
-  - [ ] Tool output compression — stub verbose tool results using the same stub architecture
-  - [ ] System prompt budgeting — measure and warn/truncate when system prompts exceed budget
-  - [ ] Few-shot management — surface token cost of examples (no automatic policy)
+## Measurement (design doc section 10)
 
-- [ ] **Adaptive chunking** (design doc section 3.1): Large files should be automatically chunked and each chunk indexed independently. The ingestion pipeline currently treats every file as a single unit. Open question: whether the chunk threshold should be token-based, structural (function/section boundaries), or both.
+Minimal. This is the prerequisite for tuning everything above.
 
-- [ ] **Degradation monitoring** (design doc section 6): Per-component health checks and tiered fallback (full recall → stubs+tools → pass-through) are specified but not implemented. Includes probe rate limiting for models that thrash.
+- [x] **Basic eval metrics**: recall@k and precision@k over RecallFragment.
+- [ ] **False-recall rate**: Track provenance-tagged conflicts — cases where recalled content contradicts what the model expected from the stub summary.
+- [ ] **Effective vs nominal context ratio**: Measure how much of the context window is doing useful work vs noise.
+- [ ] **Hysteresis threshold tuning**: Instrument the load/unload decisions to find optimal thresholds per workload.
+- [ ] **Insertion-order experiments**: Test relevance-ranked vs reverse-relevance vs original-stub order for recalled content placement.
+- [ ] **Model cooperation calibration**: Per-model benchmarking of probe emission reliability, annotation quality, tool usage effectiveness. Drives automatic cooperative-vs-transparent mode selection.
 
-- [ ] **Measurement infrastructure** (design doc section 10): `caw-eval` only has recall@k and precision@k. Hysteresis threshold tuning, insertion-order experiments, and false-recall rate measurement all depend on richer instrumentation that doesn't exist yet. This is a prerequisite for tuning several parameters the design doc explicitly defers to measurement.
+## Degradation & Monitoring (design doc section 6)
+
+Not implemented.
+
+- [ ] **Per-component health checks**: Embedding service latency/error rate, summary generator queue depth, probe rate monitoring.
+- [ ] **Tiered fallback**: Full recall → stubs+tools → pass-through, with automatic recovery when components come back.
+- [ ] **Probe rate limiting**: Throttle automatic recall if model emits probes at excessive rate (thrashing or gaming).
+
+## Infrastructure
+
+- [ ] **Over-decomposed workspace**: 11 crates for the current codebase size. `caw-provenance`, `caw-eval`, `caw-scheduler` could be modules within larger crates. Not blocking but adds friction.
