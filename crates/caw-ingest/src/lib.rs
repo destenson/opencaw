@@ -56,6 +56,7 @@ impl IngestionPipeline {
             outline,
             content_hash,
             mtime_unix_secs: doc.mtime_unix_secs,
+            consolidation_notes: Vec::new(),
         }
     }
 

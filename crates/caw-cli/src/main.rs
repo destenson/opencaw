@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use caw_adapters::MockAdapter;
 use caw_core::{
-    CompletionRequest, EmbeddingProvider, ModelAdapter, RecallThresholds, Retriever,
+    CompletionRequest, EmbeddingProvider, ModelAdapter, Retriever,
     StubStore, VectorIndex,
 };
 use caw_index::{FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
@@ -103,10 +103,8 @@ fn main() -> Result<()> {
 
     let config = DynamicRecallConfig {
         top_k: cli.top_k,
-        thresholds: RecallThresholds::default_hysteresis(),
         max_workspace_tokens: cli.max_tokens,
-        enable_thinking_trace_recall: true,
-        enable_probe_recall: true,
+        ..Default::default()
     };
 
     let adapter: Box<dyn ModelAdapter> = match cli.adapter.as_str() {

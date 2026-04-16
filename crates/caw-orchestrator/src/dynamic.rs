@@ -1,15 +1,16 @@
 use caw_core::{
-    CawResult, CompletionRequest, CompletionResponse, EmbeddingProvider, ModelAdapter,
-    ProvenanceStore, Range, RecallFragment, RecallThresholds, Retriever, ScoredStub,
-    StubId, VectorIndex,
+    CawResult, CompletionRequest, CompletionResponse, ConsolidationNote, ConsolidationSource,
+    EmbeddingProvider, ModelAdapter, ProvenanceStore, Range, RecallFragment, RecallThresholds,
+    Retriever, ScoredStub, StubId, VectorIndex,
 };
-use caw_transform::{extract_probes, extract_thinking_steps};
+use caw_transform::{extract_annotations, extract_probes, extract_thinking_steps};
 use std::collections::HashSet;
 
-/// Advanced orchestrator with thinking-trace and probe-based recall.
-/// Holds a VectorIndex directly so that thinking-trace steps can be
-/// embedded and matched against stored document embeddings without
-/// going through the text-based Retriever.
+/// Advanced orchestrator with iterative multi-pass recall.
+///
+/// Each turn follows: initial retrieval -> complete -> extract probes/traces ->
+/// load new fragments -> evict stale fragments -> re-complete with enriched
+/// workspace. Repeats until convergence or max iterations.
 pub struct DynamicRecallOrchestrator<R, E, V, P, M>
 where
     R: Retriever,
@@ -33,6 +34,9 @@ pub struct DynamicRecallConfig {
     pub top_k: usize,
     pub thresholds: RecallThresholds,
     pub max_workspace_tokens: usize,
+    pub max_recall_iterations: usize,
+    /// Term-overlap score below which a fragment is eligible for eviction
+    pub eviction_relevance_floor: f32,
     pub enable_thinking_trace_recall: bool,
     pub enable_probe_recall: bool,
 }
@@ -43,6 +47,8 @@ impl Default for DynamicRecallConfig {
             top_k: 4,
             thresholds: RecallThresholds::default_hysteresis(),
             max_workspace_tokens: 12_000,
+            max_recall_iterations: 3,
+            eviction_relevance_floor: 0.15,
             enable_thinking_trace_recall: true,
             enable_probe_recall: true,
         }
@@ -77,27 +83,58 @@ where
         }
     }
 
+    /// Run a single conversational turn with iterative multi-pass recall.
     pub fn run_turn(&mut self, system: &str, user: &str) -> CawResult<CompletionResponse> {
+        // Phase 1: Initial retrieval on the user query
         let initial_hits = self.retriever.search(user, self.config.top_k)?;
         self.load_fragments(initial_hits)?;
 
-        let response = self.adapter.complete(CompletionRequest {
+        let mut last_response = self.adapter.complete(CompletionRequest {
             system: system.to_string(),
             user: user.to_string(),
             workspace_fragments: self.loaded.clone(),
         })?;
 
-        if self.config.enable_thinking_trace_recall
-            && self.adapter.capabilities().supports_visible_reasoning
-        {
-            self.process_thinking_trace(&response.answer)?;
+        // Phase 2: Iterative recall refinement
+        for _ in 0..self.config.max_recall_iterations {
+            let loaded_before = self.loaded.len();
+
+            if self.config.enable_thinking_trace_recall
+                && self.adapter.capabilities().supports_visible_reasoning
+            {
+                self.process_thinking_trace(&last_response.answer)?;
+            }
+
+            if self.config.enable_probe_recall {
+                self.process_probes(&last_response.answer)?;
+            }
+
+            self.process_annotations(&last_response.answer);
+
+            // Workspace converged — no new fragments loaded
+            if self.loaded.len() == loaded_before {
+                break;
+            }
+
+            self.evict_stale_fragments(user, &last_response.answer);
+
+            // Inject topic overlap warnings if the provenance ledger detected any
+            let warnings = self.provenance.format_overlap_warnings();
+            let enriched_system = if warnings.is_empty() {
+                system.to_string()
+            } else {
+                format!("{}\n\n{}", system, warnings)
+            };
+
+            // Re-complete with enriched workspace
+            last_response = self.adapter.complete(CompletionRequest {
+                system: enriched_system,
+                user: user.to_string(),
+                workspace_fragments: self.loaded.clone(),
+            })?;
         }
 
-        if self.config.enable_probe_recall {
-            self.process_probes(&response.answer)?;
-        }
-
-        Ok(response)
+        Ok(last_response)
     }
 
     fn process_thinking_trace(&mut self, output: &str) -> CawResult<()> {
@@ -114,9 +151,6 @@ where
                 let scored: Vec<ScoredStub> = hits
                     .into_iter()
                     .filter_map(|(id, score)| {
-                        // We need the stub to build a ScoredStub, but the vector
-                        // index only returns (id, score). Look it up via retriever.
-                        // If not found (shouldn't happen), skip silently.
                         match self.retriever.read_range(&id, "full") {
                             Ok(frag) => Some(ScoredStub {
                                 stub: caw_core::Stub {
@@ -128,6 +162,7 @@ where
                                     outline: Vec::new(),
                                     content_hash: String::new(),
                                     mtime_unix_secs: 0,
+                                    consolidation_notes: Vec::new(),
                                 },
                                 score,
                             }),
@@ -153,6 +188,83 @@ where
         Ok(())
     }
 
+    /// Extract model annotations (<note id="...">...</note>) and record them
+    /// as mid-session consolidation notes.
+    fn process_annotations(&mut self, output: &str) {
+        let annotations = extract_annotations(output);
+        for ann in annotations {
+            let note = ConsolidationNote {
+                content: ann.content,
+                source: ConsolidationSource::ModelAnnotation,
+                created_at_secs: current_timestamp(),
+            };
+            self.provenance
+                .record_consolidation(StubId(ann.stub_id), note);
+        }
+    }
+
+    /// Evict fragments whose relevance to the current context has decayed.
+    /// Uses term overlap as a fast proxy for relevance. Only triggers when
+    /// the workspace is near its token budget.
+    fn evict_stale_fragments(&mut self, query: &str, response: &str) {
+        let current_tokens: usize = self.loaded.iter().map(|f| f.tokens).sum();
+        let budget = self.config.max_workspace_tokens;
+
+        // Only evict when workspace is 80%+ full
+        if current_tokens < budget * 4 / 5 {
+            return;
+        }
+
+        let context = format!("{} {}", query, response);
+
+        let mut scored: Vec<(usize, f32)> = self
+            .loaded
+            .iter()
+            .enumerate()
+            .map(|(idx, frag)| {
+                let score = term_overlap_score(&context, &frag.content);
+                (idx, score)
+            })
+            .collect();
+
+        // Evict lowest-relevance fragments first
+        scored.sort_by(|a, b| a.1.total_cmp(&b.1));
+
+        let mut to_evict = Vec::new();
+        let mut tokens_remaining = current_tokens;
+
+        for (idx, score) in &scored {
+            if *score >= self.config.eviction_relevance_floor {
+                break;
+            }
+            if tokens_remaining <= budget * 7 / 10 {
+                break;
+            }
+            to_evict.push(*idx);
+            tokens_remaining -= self.loaded[*idx].tokens;
+        }
+
+        // Remove in reverse index order to preserve indices
+        to_evict.sort_unstable_by(|a, b| b.cmp(a));
+        for idx in to_evict {
+            let fragment = self.loaded.remove(idx);
+            self.loaded_ids.remove(&fragment.stub_id);
+
+            let note = ConsolidationNote {
+                content: format!(
+                    "Evicted during query about '{}'. Source: {}",
+                    truncate_str(query, 100),
+                    fragment.locator.source,
+                ),
+                source: ConsolidationSource::Eviction,
+                created_at_secs: current_timestamp(),
+            };
+
+            self.provenance
+                .record_consolidation(fragment.stub_id, note);
+        }
+    }
+
     fn load_fragments(&mut self, hits: Vec<ScoredStub>) -> CawResult<()> {
         for hit in hits {
             if self.loaded_ids.contains(&hit.stub.id) {
@@ -172,7 +284,7 @@ where
 
             if current_tokens + fragment.tokens <= self.config.max_workspace_tokens {
                 self.loaded_ids.insert(hit.stub.id.clone());
-                self.provenance.record(fragment.clone());
+                self.provenance.record_with_context(fragment.clone(), "", 0);
                 self.loaded.push(fragment);
             }
         }
@@ -195,4 +307,55 @@ where
             tokens: token_estimate,
         })
     }
+}
+
+fn term_overlap_score(context: &str, content: &str) -> f32 {
+    let ctx_terms: HashSet<String> = tokenize_for_scoring(context).into_iter().collect();
+    let doc_terms: HashSet<String> = tokenize_for_scoring(content).into_iter().collect();
+
+    if ctx_terms.is_empty() || doc_terms.is_empty() {
+        return 0.0;
+    }
+
+    let intersection = ctx_terms.intersection(&doc_terms).count() as f32;
+    intersection / ctx_terms.len().min(doc_terms.len()) as f32
+}
+
+fn tokenize_for_scoring(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| s.len() > 2 && !is_stopword(s))
+        .map(String::from)
+        .collect()
+}
+
+fn is_stopword(word: &str) -> bool {
+    matches!(
+        word,
+        "the" | "and" | "for" | "are" | "but" | "not" | "you" | "all"
+            | "can" | "has" | "was" | "one" | "our" | "out" | "his"
+            | "her" | "had" | "how" | "its" | "may" | "who" | "did"
+            | "get" | "let" | "say" | "she" | "too" | "use" | "way"
+            | "with" | "this" | "that" | "from" | "have" | "been"
+            | "they" | "them" | "then" | "than" | "each" | "which"
+            | "their" | "will" | "would" | "there" | "what" | "about"
+            | "could" | "other" | "into" | "more" | "some" | "very"
+            | "when" | "also" | "just" | "should"
+    )
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max.saturating_sub(3)).collect();
+        format!("{}...", truncated)
+    }
+}
+
+fn current_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }

@@ -1,4 +1,4 @@
-use caw_core::{CawResult, ProbeMarker, Range, ThinkingStep};
+use caw_core::{CawResult, ModelAnnotation, ProbeMarker, Range, ThinkingStep};
 use regex::Regex;
 
 /// Extract probe markers from model output
@@ -73,6 +73,20 @@ fn detect_step_boundaries(text: &str) -> Vec<ThinkingStep> {
 /// Apply range selection to content — delegates to Range::apply
 pub fn apply_range(content: &str, range: &Range) -> CawResult<String> {
     Ok(range.apply(content))
+}
+
+/// Extract model annotations about specific stubs.
+/// Format: `<note id="stub_id">content</note>`
+pub fn extract_annotations(text: &str) -> Vec<ModelAnnotation> {
+    let pattern = Regex::new(r#"<note id="([^"]+)">(.*?)</note>"#).unwrap();
+    pattern
+        .captures_iter(text)
+        .map(|cap| ModelAnnotation {
+            stub_id: cap.get(1).unwrap().as_str().to_string(),
+            content: cap.get(2).unwrap().as_str().to_string(),
+            position: cap.get(0).unwrap().start(),
+        })
+        .collect()
 }
 
 #[cfg(test)]

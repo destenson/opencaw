@@ -1,4 +1,10 @@
-use caw_core::{CawError, CawResult, EmbeddingProvider, Locator, Range, RecallFragment, Retriever, ScoredStub, Stub, StubId, StubStore, VectorIndex};
+use caw_core::{
+    CawError, CawResult, EmbeddingProvider, Locator, Range, RecallFragment, Retriever, ScoredStub,
+    Stub, StubId, StubStore, VectorIndex,
+};
+use std::collections::HashMap;
+
+pub mod bm25;
 
 pub mod embeddings {
     #[cfg(feature = "fastembed")]
@@ -23,6 +29,7 @@ pub mod hnsw_index;
 #[cfg(feature = "fastembed")]
 pub use embeddings::fastembed_provider::FastEmbedProvider;
 
+pub use bm25::BM25Index;
 pub use embeddings::api_provider::ApiEmbeddingProvider;
 
 #[cfg(feature = "sqlite")]
@@ -30,9 +37,7 @@ pub use storage::sqlite_store::SqliteStubStore;
 
 pub use hnsw_index::HnswVectorIndex;
 
-/// Semantic retriever that combines embedding, storage, and vector index.
-/// The store persists stubs/content/embeddings; the index provides fast
-/// approximate nearest neighbor search.
+/// Semantic retriever combining embedding, storage, and vector index.
 pub struct SemanticRetriever<E, S, I>
 where
     E: EmbeddingProvider,
@@ -51,19 +56,29 @@ where
     I: VectorIndex,
 {
     pub fn new(embedder: E, store: S, index: I) -> Self {
-        Self { embedder, store, index }
+        Self {
+            embedder,
+            store,
+            index,
+        }
     }
 
     pub fn insert(&mut self, stub: Stub, content: String) -> CawResult<()> {
         let text = format!("{} {} {}", stub.path, stub.summary, stub.outline.join(" "));
         let embeddings = self.embedder.embed(vec![text.as_str()])?;
-        let embedding = embeddings.into_iter().next()
+        let embedding = embeddings
+            .into_iter()
+            .next()
             .ok_or_else(|| CawError::Embedding("No embedding generated".to_string()))?;
 
         let id = stub.id.clone();
         self.store.insert(stub, embedding.clone(), content)?;
         self.index.add(id, embedding);
         Ok(())
+    }
+
+    pub fn get_stub(&self, id: &StubId) -> CawResult<Stub> {
+        self.store.get_stub(id)
     }
 
     pub fn index_mut(&mut self) -> &mut I {
@@ -79,7 +94,9 @@ where
 {
     fn search(&mut self, query: &str, top_k: usize) -> CawResult<Vec<ScoredStub>> {
         let embeddings = self.embedder.embed(vec![query])?;
-        let query_embedding = embeddings.into_iter().next()
+        let query_embedding = embeddings
+            .into_iter()
+            .next()
             .ok_or_else(|| CawError::Embedding("No embedding generated for query".to_string()))?;
 
         let hits = self.index.search(&query_embedding, top_k);
@@ -115,9 +132,131 @@ where
     }
 }
 
-/// Simple keyword-overlap index. No embeddings, no vector search —
-/// just text matching against stub metadata. Useful for probes and
-/// as a fallback when embedding infrastructure isn't available.
+/// Hybrid retriever combining semantic (embedding) and keyword (BM25) search.
+/// Fuses results using min-max normalized scores with configurable weights.
+pub struct HybridRetriever<E, S, I>
+where
+    E: EmbeddingProvider,
+    S: StubStore,
+    I: VectorIndex,
+{
+    semantic: SemanticRetriever<E, S, I>,
+    bm25: BM25Index,
+    semantic_weight: f32,
+    keyword_weight: f32,
+}
+
+impl<E, S, I> HybridRetriever<E, S, I>
+where
+    E: EmbeddingProvider,
+    S: StubStore,
+    I: VectorIndex,
+{
+    pub fn new(
+        semantic: SemanticRetriever<E, S, I>,
+        semantic_weight: f32,
+        keyword_weight: f32,
+    ) -> Self {
+        Self {
+            semantic,
+            bm25: BM25Index::new(),
+            semantic_weight,
+            keyword_weight,
+        }
+    }
+
+    /// Default 0.6 semantic / 0.4 keyword weights
+    pub fn balanced(semantic: SemanticRetriever<E, S, I>) -> Self {
+        Self::new(semantic, 0.6, 0.4)
+    }
+
+    pub fn insert(&mut self, stub: Stub, content: String) -> CawResult<()> {
+        let bm25_text = format!("{} {} {}", stub.path, stub.summary, content);
+        self.bm25.add(stub.id.clone(), &bm25_text);
+        self.semantic.insert(stub, content)
+    }
+}
+
+impl<E, S, I> Retriever for HybridRetriever<E, S, I>
+where
+    E: EmbeddingProvider,
+    S: StubStore,
+    I: VectorIndex,
+{
+    fn search(&mut self, query: &str, top_k: usize) -> CawResult<Vec<ScoredStub>> {
+        let fetch_k = top_k * 3;
+
+        let semantic_results = self.semantic.search(query, fetch_k)?;
+        let bm25_results = self.bm25.search(query, fetch_k);
+
+        let mut combined: HashMap<StubId, f32> = HashMap::new();
+
+        if !semantic_results.is_empty() {
+            let max = semantic_results
+                .iter()
+                .map(|r| r.score)
+                .fold(0.0f32, f32::max);
+            let min = semantic_results
+                .iter()
+                .map(|r| r.score)
+                .fold(f32::MAX, f32::min);
+            let range = (max - min).max(f32::EPSILON);
+
+            for result in &semantic_results {
+                let normalized = (result.score - min) / range;
+                *combined.entry(result.stub.id.clone()).or_default() +=
+                    normalized * self.semantic_weight;
+            }
+        }
+
+        if !bm25_results.is_empty() {
+            let max = bm25_results
+                .iter()
+                .map(|(_, s)| *s)
+                .fold(0.0f32, f32::max);
+            let min = bm25_results
+                .iter()
+                .map(|(_, s)| *s)
+                .fold(f32::MAX, f32::min);
+            let range = (max - min).max(f32::EPSILON);
+
+            for (id, score) in &bm25_results {
+                let normalized = (score - min) / range;
+                *combined.entry(id.clone()).or_default() += normalized * self.keyword_weight;
+            }
+        }
+
+        let total_weight = self.semantic_weight + self.keyword_weight;
+
+        let mut results: Vec<ScoredStub> = Vec::new();
+        for (id, score) in combined {
+            let normalized_score = score / total_weight;
+            // Prefer stub from semantic results; fall back to store lookup
+            let stub = semantic_results
+                .iter()
+                .find(|r| r.stub.id == id)
+                .map(|r| r.stub.clone())
+                .or_else(|| self.semantic.get_stub(&id).ok());
+
+            if let Some(stub) = stub {
+                results.push(ScoredStub {
+                    stub,
+                    score: normalized_score,
+                });
+            }
+        }
+
+        results.sort_by(|a, b| b.score.total_cmp(&a.score));
+        results.truncate(top_k);
+        Ok(results)
+    }
+
+    fn read_range(&self, id: &StubId, range: &str) -> CawResult<RecallFragment> {
+        self.semantic.read_range(id, range)
+    }
+}
+
+/// Simple keyword-overlap index for fallback/demo use
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryIndex {
     stubs: Vec<Stub>,

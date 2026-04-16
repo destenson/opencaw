@@ -217,6 +217,8 @@ pub struct Stub {
     pub outline: Vec<String>,
     pub content_hash: String,
     pub mtime_unix_secs: u64,
+    #[serde(default)]
+    pub consolidation_notes: Vec<ConsolidationNote>,
 }
 
 #[derive(Debug, Clone)]
@@ -311,6 +313,44 @@ impl Default for RecallThresholds {
     }
 }
 
+/// A note captured during a fragment's time in the workspace.
+/// Attached to stubs so future recalls benefit from prior visits.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConsolidationNote {
+    pub content: String,
+    pub source: ConsolidationSource,
+    pub created_at_secs: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum ConsolidationSource {
+    /// Generated when the fragment was evicted from the workspace
+    Eviction,
+    /// Extracted from model output during an active session
+    ModelAnnotation,
+}
+
+/// Detected topic overlap between recalled fragments from different sources.
+/// High overlap from different files signals potential contradiction worth
+/// surfacing for reconciliation.
+#[derive(Debug, Clone)]
+pub struct TopicOverlap {
+    pub stub_a: StubId,
+    pub path_a: String,
+    pub stub_b: StubId,
+    pub path_b: String,
+    pub shared_terms: Vec<String>,
+    pub overlap_score: f32,
+}
+
+/// An annotation emitted by the model about a specific recalled stub
+#[derive(Debug, Clone)]
+pub struct ModelAnnotation {
+    pub stub_id: String,
+    pub content: String,
+    pub position: usize,
+}
+
 pub trait Retriever {
     fn search(&mut self, query: &str, top_k: usize) -> CawResult<Vec<ScoredStub>>;
     fn read_range(&self, id: &StubId, range: &str) -> CawResult<RecallFragment>;
@@ -323,6 +363,29 @@ pub trait BudgetScheduler {
 pub trait ProvenanceStore {
     fn record(&mut self, fragment: RecallFragment);
     fn all(&self) -> Vec<RecallFragment>;
+
+    /// Record a fragment with the query context that triggered its recall.
+    fn record_with_context(&mut self, fragment: RecallFragment, _query: &str, _turn: usize) {
+        self.record(fragment);
+    }
+
+    /// Store a consolidation note for a stub (generated on eviction or from model annotations).
+    fn record_consolidation(&mut self, _stub_id: StubId, _note: ConsolidationNote) {}
+
+    /// Retrieve consolidation notes for a specific stub.
+    fn consolidation_notes_for(&self, _stub_id: &StubId) -> Vec<ConsolidationNote> {
+        Vec::new()
+    }
+
+    /// Check for topic overlaps between recalled fragments from different sources.
+    fn check_topic_overlaps(&self) -> Vec<TopicOverlap> {
+        Vec::new()
+    }
+
+    /// Format overlap warnings for injection into the next completion.
+    fn format_overlap_warnings(&self) -> String {
+        String::new()
+    }
 }
 
 pub trait ModelAdapter {

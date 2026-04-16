@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 pub mod recall;
 
-pub use recall::{apply_range, extract_probes, extract_thinking_steps};
+pub use recall::{apply_range, extract_annotations, extract_probes, extract_thinking_steps};
 
 /// Prompt transformer that finds file references and replaces them with stubs
 pub struct PromptTransformer {
@@ -119,6 +119,7 @@ mod tests {
             outline: vec!["Section 1".to_string()],
             content_hash: "abc123".to_string(),
             mtime_unix_secs: 0,
+            consolidation_notes: Vec::new(),
         });
 
         let result = transformer
@@ -142,6 +143,7 @@ mod tests {
             outline: vec![],
             content_hash: "def456".to_string(),
             mtime_unix_secs: 0,
+            consolidation_notes: Vec::new(),
         });
 
         let result = transformer
