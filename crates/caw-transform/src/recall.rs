@@ -41,7 +41,9 @@ fn detect_step_boundaries(text: &str) -> Vec<ThinkingStep> {
 
     for line in text.lines() {
         let is_boundary = line.trim().is_empty()
-            || line.trim_start().starts_with(|c: char| c.is_numeric() && line.contains('.'))
+            || line
+                .trim_start()
+                .starts_with(|c: char| c.is_numeric() && line.contains('.'))
             || line.trim_start().starts_with("Therefore")
             || line.trim_start().starts_with("Thus")
             || line.trim_start().starts_with("So");
@@ -113,9 +115,24 @@ mod tests {
     #[test]
     fn test_range_parse() {
         assert!(matches!(Range::parse("full"), Range::Full));
-        assert!(matches!(Range::parse("10-20"), Range::Lines { start: 10, end: 20 }));
-        assert!(matches!(Range::parse("L5-L15"), Range::Lines { start: 5, end: 15 }));
-        assert!(matches!(Range::parse("#Section/Subsection"), Range::Heading { .. }));
-        assert!(matches!(Range::parse("T100:500"), Range::Tokens { start: 100, count: 500 }));
+        assert!(matches!(
+            Range::parse("10-20"),
+            Range::Lines { start: 10, end: 20 }
+        ));
+        assert!(matches!(
+            Range::parse("L5-L15"),
+            Range::Lines { start: 5, end: 15 }
+        ));
+        assert!(matches!(
+            Range::parse("#Section/Subsection"),
+            Range::Heading { .. }
+        ));
+        assert!(matches!(
+            Range::parse("T100:500"),
+            Range::Tokens {
+                start: 100,
+                count: 500
+            }
+        ));
     }
 }

@@ -183,9 +183,7 @@ fn extract_heading_section(content: &str, path: &[String]) -> String {
         let trimmed = line.trim_start();
         if let Some(after_hashes) = trimmed.strip_prefix('#') {
             let level = trimmed.chars().take_while(|c| *c == '#').count();
-            let heading_text = after_hashes
-                .trim_start_matches('#')
-                .trim();
+            let heading_text = after_hashes.trim_start_matches('#').trim();
 
             if !in_section && heading_text == target {
                 in_section = true;
@@ -501,7 +499,11 @@ pub trait StubStore {
     /// Persist a consolidation note for a stub. Called on eviction and
     /// when the model emits annotations. Notes accumulate across sessions,
     /// making stubs richer over time.
-    fn save_consolidation(&mut self, _stub_id: &StubId, _note: &ConsolidationNote) -> CawResult<()> {
+    fn save_consolidation(
+        &mut self,
+        _stub_id: &StubId,
+        _note: &ConsolidationNote,
+    ) -> CawResult<()> {
         Ok(())
     }
 

@@ -60,15 +60,9 @@ impl HnswVectorIndex {
             .map(|(_, emb)| EmbeddingPoint(emb.clone()))
             .collect();
 
-        let ids: Vec<StubId> = self
-            .points
-            .iter()
-            .map(|(id, _)| id.clone())
-            .collect();
+        let ids: Vec<StubId> = self.points.iter().map(|(id, _)| id.clone()).collect();
 
-        let map = Builder::default()
-            .seed(42)
-            .build(embeddings, ids);
+        let map = Builder::default().seed(42).build(embeddings, ids);
 
         self.index = Some(map);
         self.dirty = false;

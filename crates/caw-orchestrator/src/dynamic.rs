@@ -183,24 +183,22 @@ where
                 let hits = self.vector_index.search(embedding, self.config.top_k);
                 let scored: Vec<ScoredStub> = hits
                     .into_iter()
-                    .filter_map(|(id, score)| {
-                        match self.retriever.read_range(&id, "full") {
-                            Ok(frag) => Some(ScoredStub {
-                                stub: caw_core::Stub {
-                                    id,
-                                    path: frag.locator.source.clone(),
-                                    token_estimate: frag.tokens,
-                                    kind: caw_core::ContentKind::Other,
-                                    summary: String::new(),
-                                    outline: Vec::new(),
-                                    content_hash: String::new(),
-                                    mtime_unix_secs: 0,
-                                    consolidation_notes: Vec::new(),
-                                },
-                                score,
-                            }),
-                            Err(_) => None,
-                        }
+                    .filter_map(|(id, score)| match self.retriever.read_range(&id, "full") {
+                        Ok(frag) => Some(ScoredStub {
+                            stub: caw_core::Stub {
+                                id,
+                                path: frag.locator.source.clone(),
+                                token_estimate: frag.tokens,
+                                kind: caw_core::ContentKind::Other,
+                                summary: String::new(),
+                                outline: Vec::new(),
+                                content_hash: String::new(),
+                                mtime_unix_secs: 0,
+                                consolidation_notes: Vec::new(),
+                            },
+                            score,
+                        }),
+                        Err(_) => None,
                     })
                     .collect();
                 self.load_fragments(scored)?;
@@ -374,15 +372,63 @@ fn tokenize_for_scoring(text: &str) -> Vec<String> {
 fn is_stopword(word: &str) -> bool {
     matches!(
         word,
-        "the" | "and" | "for" | "are" | "but" | "not" | "you" | "all"
-            | "can" | "has" | "was" | "one" | "our" | "out" | "his"
-            | "her" | "had" | "how" | "its" | "may" | "who" | "did"
-            | "get" | "let" | "say" | "she" | "too" | "use" | "way"
-            | "with" | "this" | "that" | "from" | "have" | "been"
-            | "they" | "them" | "then" | "than" | "each" | "which"
-            | "their" | "will" | "would" | "there" | "what" | "about"
-            | "could" | "other" | "into" | "more" | "some" | "very"
-            | "when" | "also" | "just" | "should"
+        "the"
+            | "and"
+            | "for"
+            | "are"
+            | "but"
+            | "not"
+            | "you"
+            | "all"
+            | "can"
+            | "has"
+            | "was"
+            | "one"
+            | "our"
+            | "out"
+            | "his"
+            | "her"
+            | "had"
+            | "how"
+            | "its"
+            | "may"
+            | "who"
+            | "did"
+            | "get"
+            | "let"
+            | "say"
+            | "she"
+            | "too"
+            | "use"
+            | "way"
+            | "with"
+            | "this"
+            | "that"
+            | "from"
+            | "have"
+            | "been"
+            | "they"
+            | "them"
+            | "then"
+            | "than"
+            | "each"
+            | "which"
+            | "their"
+            | "will"
+            | "would"
+            | "there"
+            | "what"
+            | "about"
+            | "could"
+            | "other"
+            | "into"
+            | "more"
+            | "some"
+            | "very"
+            | "when"
+            | "also"
+            | "just"
+            | "should"
     )
 }
 

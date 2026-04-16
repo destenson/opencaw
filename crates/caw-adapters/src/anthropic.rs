@@ -125,4 +125,3 @@ impl ModelAdapter for AnthropicAdapter {
         Ok(CompletionResponse { answer })
     }
 }
-

@@ -157,8 +157,8 @@ where
 mod tests {
     use super::*;
     use caw_core::{
-        CawError, CompletionResponse, ModelCapabilities,
-        RecallFragment, SchedulerDecision, ScoredStub, StubId,
+        CawError, CompletionResponse, ModelCapabilities, RecallFragment, SchedulerDecision,
+        ScoredStub, StubId,
     };
 
     struct MockRetriever;
@@ -185,12 +185,16 @@ mod tests {
     struct MockProvenance;
     impl ProvenanceStore for MockProvenance {
         fn record(&mut self, _fragment: RecallFragment) {}
-        fn all(&self) -> Vec<RecallFragment> { vec![] }
+        fn all(&self) -> Vec<RecallFragment> {
+            vec![]
+        }
     }
 
     struct MockAdapter;
     impl ModelAdapter for MockAdapter {
-        fn model_name(&self) -> &str { "mock" }
+        fn model_name(&self) -> &str {
+            "mock"
+        }
         fn capabilities(&self) -> ModelCapabilities {
             ModelCapabilities {
                 supports_tool_calls: false,
@@ -199,7 +203,9 @@ mod tests {
             }
         }
         fn complete(&self, _req: CompletionRequest) -> CawResult<CompletionResponse> {
-            Ok(CompletionResponse { answer: String::new() })
+            Ok(CompletionResponse {
+                answer: String::new(),
+            })
         }
     }
 

@@ -89,8 +89,11 @@ impl ClaudeCodeAdapter {
 
     /// Sonnet with read-only file access for tasks that need to inspect files.
     pub fn sonnet_with_read(dirs: Vec<String>) -> Self {
-        let mut builder = Self::builder()
-            .allowed_tools(vec!["Read".to_string(), "Glob".to_string(), "Grep".to_string()]);
+        let mut builder = Self::builder().allowed_tools(vec![
+            "Read".to_string(),
+            "Glob".to_string(),
+            "Grep".to_string(),
+        ]);
         for dir in dirs {
             builder = builder.add_dir(dir);
         }
@@ -124,9 +127,12 @@ impl ModelAdapter for ClaudeCodeAdapter {
         let mut cmd = Command::new("claude");
         cmd.arg("--print")
             .arg("--bare")
-            .arg("--output-format").arg("json")
-            .arg("--model").arg(&self.model)
-            .arg("--system-prompt").arg(&req.system)
+            .arg("--output-format")
+            .arg("json")
+            .arg("--model")
+            .arg(&self.model)
+            .arg("--system-prompt")
+            .arg(&req.system)
             .arg("--no-session-persistence");
 
         if let Some(budget) = self.max_budget_usd {

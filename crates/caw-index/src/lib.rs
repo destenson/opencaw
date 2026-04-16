@@ -210,10 +210,7 @@ where
         }
 
         if !bm25_results.is_empty() {
-            let max = bm25_results
-                .iter()
-                .map(|(_, s)| *s)
-                .fold(0.0f32, f32::max);
+            let max = bm25_results.iter().map(|(_, s)| *s).fold(0.0f32, f32::max);
             let min = bm25_results
                 .iter()
                 .map(|(_, s)| *s)

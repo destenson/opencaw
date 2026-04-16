@@ -1,5 +1,7 @@
-use caw_core::{CawError, CawResult, ConsolidationNote, ConsolidationSource, Stub, StubId, StubStore};
-use rusqlite::{params, Connection};
+use caw_core::{
+    CawError, CawResult, ConsolidationNote, ConsolidationSource, Stub, StubId, StubStore,
+};
+use rusqlite::{Connection, params};
 
 pub struct SqliteStubStore {
     conn: Connection,
@@ -45,9 +47,7 @@ impl SqliteStubStore {
             )",
             [],
         )
-        .map_err(|e| {
-            CawError::VectorStore(format!("Failed to create embeddings table: {}", e))
-        })?;
+        .map_err(|e| CawError::VectorStore(format!("Failed to create embeddings table: {}", e)))?;
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS consolidation_notes (
@@ -72,10 +72,7 @@ impl SqliteStubStore {
     }
 
     fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {
-        embedding
-            .iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect()
+        embedding.iter().flat_map(|f| f.to_le_bytes()).collect()
     }
 
     fn blob_to_embedding(blob: &[u8]) -> Vec<f32> {
@@ -184,13 +181,17 @@ impl StubStore for SqliteStubStore {
 
         match result {
             Ok((json, blob)) => {
-                let stub: Stub = serde_json::from_str(&json)
-                    .map_err(|e| CawError::VectorStore(format!("Failed to deserialize stub: {}", e)))?;
+                let stub: Stub = serde_json::from_str(&json).map_err(|e| {
+                    CawError::VectorStore(format!("Failed to deserialize stub: {}", e))
+                })?;
                 let embedding = Self::blob_to_embedding(&blob);
                 Ok(Some((stub, embedding)))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(CawError::VectorStore(format!("Failed to query by content hash: {}", e))),
+            Err(e) => Err(CawError::VectorStore(format!(
+                "Failed to query by content hash: {}",
+                e
+            ))),
         }
     }
 
@@ -203,7 +204,12 @@ impl StubStore for SqliteStubStore {
             .execute(
                 "INSERT INTO consolidation_notes (stub_id, content, source, created_at_secs)
                  VALUES (?1, ?2, ?3, ?4)",
-                params![stub_id.0, note.content, source_str, note.created_at_secs as i64],
+                params![
+                    stub_id.0,
+                    note.content,
+                    source_str,
+                    note.created_at_secs as i64
+                ],
             )
             .map_err(|e| {
                 CawError::VectorStore(format!("Failed to save consolidation note: {}", e))

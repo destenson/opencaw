@@ -16,13 +16,17 @@ impl FastEmbedProvider {
             FastEmbedModel::AllMiniLML6V2 => (EmbeddingModel::AllMiniLML6V2, 384, false),
         };
 
-        let model = TextEmbedding::try_new(
-            InitOptions::new(model_enum)
-                .with_show_download_progress(false)
-        )
-        .map_err(|e| CawError::Embedding(format!("Failed to initialize fastembed: {}", e)))?;
+        let model =
+            TextEmbedding::try_new(InitOptions::new(model_enum).with_show_download_progress(false))
+                .map_err(|e| {
+                    CawError::Embedding(format!("Failed to initialize fastembed: {}", e))
+                })?;
 
-        Ok(Self { model, dimension, asymmetric })
+        Ok(Self {
+            model,
+            dimension,
+            asymmetric,
+        })
     }
 
     pub fn bge_small() -> CawResult<Self> {

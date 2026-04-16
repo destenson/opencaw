@@ -116,10 +116,7 @@ impl OpenAiCompatibleAdapter {
         Self::perplexity_model("sonar-pro", runtime)
     }
 
-    pub fn perplexity_model(
-        model: impl Into<String>,
-        runtime: Arc<Runtime>,
-    ) -> CawResult<Self> {
+    pub fn perplexity_model(model: impl Into<String>, runtime: Arc<Runtime>) -> CawResult<Self> {
         let api_key = std::env::var("PERPLEXITY_API_KEY")
             .map_err(|_| CawError::Adapter("PERPLEXITY_API_KEY not set".into()))?;
         Ok(Self::new_with(
@@ -142,8 +139,8 @@ impl OpenAiCompatibleAdapter {
         model: impl Into<String>,
         runtime: Arc<Runtime>,
     ) -> CawResult<Self> {
-        let api_key = std::env::var("HF_TOKEN")
-            .map_err(|_| CawError::Adapter("HF_TOKEN not set".into()))?;
+        let api_key =
+            std::env::var("HF_TOKEN").map_err(|_| CawError::Adapter("HF_TOKEN not set".into()))?;
         Ok(Self::new_with(
             endpoint_url,
             model,
@@ -159,10 +156,7 @@ impl OpenAiCompatibleAdapter {
 
     // -- ollama.com (cloud) --
 
-    pub fn ollama_cloud(
-        model: impl Into<String>,
-        runtime: Arc<Runtime>,
-    ) -> CawResult<Self> {
+    pub fn ollama_cloud(model: impl Into<String>, runtime: Arc<Runtime>) -> CawResult<Self> {
         let api_key = std::env::var("OLLAMA_API_KEY")
             .map_err(|_| CawError::Adapter("OLLAMA_API_KEY not set".into()))?;
         Ok(Self::new_with(
@@ -245,7 +239,8 @@ impl ModelAdapter for OpenAiCompatibleAdapter {
         let url = format!("{}/v1/chat/completions", self.base_url);
 
         let response = self.runtime.block_on(async {
-            let mut request = self.client
+            let mut request = self
+                .client
                 .post(&url)
                 .header("Content-Type", "application/json");
 
@@ -269,7 +264,10 @@ impl ModelAdapter for OpenAiCompatibleAdapter {
                     .and_then(|e| e.message)
                     .unwrap_or(body);
                 return Err(CawError::Adapter(format!(
-                    "{} {} — {}", status.as_u16(), status.canonical_reason().unwrap_or(""), detail
+                    "{} {} — {}",
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or(""),
+                    detail
                 )));
             }
 
@@ -288,4 +286,3 @@ impl ModelAdapter for OpenAiCompatibleAdapter {
         Ok(CompletionResponse { answer })
     }
 }
-

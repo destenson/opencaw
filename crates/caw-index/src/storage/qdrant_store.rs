@@ -18,7 +18,9 @@ impl QdrantStubStore {
 
 impl StubStore for QdrantStubStore {
     fn insert(&mut self, _stub: Stub, _embedding: Vec<f32>, _content: String) -> CawResult<()> {
-        Err(CawError::VectorStore("Qdrant store not yet implemented".to_string()))
+        Err(CawError::VectorStore(
+            "Qdrant store not yet implemented".to_string(),
+        ))
     }
 
     fn get_content(&self, id: &StubId) -> CawResult<String> {
@@ -30,10 +32,14 @@ impl StubStore for QdrantStubStore {
     }
 
     fn get_by_content_hash(&self, _hash: &str) -> CawResult<Option<(Stub, Vec<f32>)>> {
-        Err(CawError::VectorStore("Qdrant store not yet implemented".to_string()))
+        Err(CawError::VectorStore(
+            "Qdrant store not yet implemented".to_string(),
+        ))
     }
 
     fn all_embeddings(&self) -> CawResult<Vec<(StubId, Vec<f32>)>> {
-        Err(CawError::VectorStore("Qdrant store not yet implemented".to_string()))
+        Err(CawError::VectorStore(
+            "Qdrant store not yet implemented".to_string(),
+        ))
     }
 }

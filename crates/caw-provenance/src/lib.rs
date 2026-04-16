@@ -1,6 +1,4 @@
-use caw_core::{
-    ConsolidationNote, ProvenanceStore, RecallFragment, StubId, TopicOverlap,
-};
+use caw_core::{ConsolidationNote, ProvenanceStore, RecallFragment, StubId, TopicOverlap};
 use std::collections::{HashMap, HashSet};
 
 /// Simple provenance store that records recalled fragments.
@@ -79,10 +77,7 @@ impl ProvenanceStore for ProvenanceLedger {
     }
 
     fn record_consolidation(&mut self, stub_id: StubId, note: ConsolidationNote) {
-        self.consolidation
-            .entry(stub_id.0)
-            .or_default()
-            .push(note);
+        self.consolidation.entry(stub_id.0).or_default().push(note);
     }
 
     fn consolidation_notes_for(&self, stub_id: &StubId) -> Vec<ConsolidationNote> {
@@ -170,14 +165,62 @@ fn tokenize(text: &str) -> Vec<String> {
 fn is_stopword(word: &str) -> bool {
     matches!(
         word,
-        "the" | "and" | "for" | "are" | "but" | "not" | "you" | "all"
-            | "can" | "has" | "was" | "one" | "our" | "out" | "his"
-            | "her" | "had" | "how" | "its" | "may" | "who" | "did"
-            | "get" | "let" | "say" | "she" | "too" | "use" | "way"
-            | "with" | "this" | "that" | "from" | "have" | "been"
-            | "they" | "them" | "then" | "than" | "each" | "which"
-            | "their" | "will" | "would" | "there" | "what" | "about"
-            | "could" | "other" | "into" | "more" | "some" | "very"
-            | "when" | "also" | "just" | "should"
+        "the"
+            | "and"
+            | "for"
+            | "are"
+            | "but"
+            | "not"
+            | "you"
+            | "all"
+            | "can"
+            | "has"
+            | "was"
+            | "one"
+            | "our"
+            | "out"
+            | "his"
+            | "her"
+            | "had"
+            | "how"
+            | "its"
+            | "may"
+            | "who"
+            | "did"
+            | "get"
+            | "let"
+            | "say"
+            | "she"
+            | "too"
+            | "use"
+            | "way"
+            | "with"
+            | "this"
+            | "that"
+            | "from"
+            | "have"
+            | "been"
+            | "they"
+            | "them"
+            | "then"
+            | "than"
+            | "each"
+            | "which"
+            | "their"
+            | "will"
+            | "would"
+            | "there"
+            | "what"
+            | "about"
+            | "could"
+            | "other"
+            | "into"
+            | "more"
+            | "some"
+            | "very"
+            | "when"
+            | "also"
+            | "just"
+            | "should"
     )
 }

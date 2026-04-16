@@ -135,4 +135,3 @@ impl ModelAdapter for OllamaAdapter {
         })
     }
 }
-

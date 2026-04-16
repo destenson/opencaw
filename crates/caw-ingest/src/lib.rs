@@ -161,7 +161,11 @@ fn summarize_code(content: &str, outline: &[String]) -> String {
 
     format!(
         "Defines: {}{}",
-        preview.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
+        preview
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
         suffix
     )
 }
@@ -248,9 +252,11 @@ fn sha256_hash(input: &str) -> String {
 fn detect_content_kind(path: &Path) -> ContentKind {
     match path.extension().and_then(|e| e.to_str()) {
         Some("md" | "mdx" | "markdown") => ContentKind::Markdown,
-        Some("rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "go" | "c" | "cpp" | "h" | "hpp"
-             | "java" | "rb" | "ex" | "exs" | "zig" | "lua" | "sh" | "bash" | "zsh"
-             | "cs" | "swift" | "kt" | "scala" | "r" | "R" | "pl" | "pm" | "php") => ContentKind::Code,
+        Some(
+            "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "go" | "c" | "cpp" | "h" | "hpp" | "java"
+            | "rb" | "ex" | "exs" | "zig" | "lua" | "sh" | "bash" | "zsh" | "cs" | "swift" | "kt"
+            | "scala" | "r" | "R" | "pl" | "pm" | "php",
+        ) => ContentKind::Code,
         Some("csv" | "tsv" | "parquet") => ContentKind::Tabular,
         Some("txt" | "log" | "cfg" | "conf" | "ini" | "env") => ContentKind::PlainText,
         Some("toml" | "yaml" | "yml" | "json" | "xml") => ContentKind::PlainText,
@@ -289,10 +295,34 @@ fn should_skip(path: &Path) -> bool {
     // Lock files, binaries, etc.
     matches!(
         path.extension().and_then(|e| e.to_str()),
-        Some("lock" | "png" | "jpg" | "jpeg" | "gif" | "ico" | "svg"
-             | "woff" | "woff2" | "ttf" | "eot" | "otf"
-             | "zip" | "tar" | "gz" | "bz2" | "xz"
-             | "exe" | "dll" | "so" | "dylib" | "o" | "a"
-             | "wasm" | "pyc" | "pyo" | "class")
+        Some(
+            "lock"
+                | "png"
+                | "jpg"
+                | "jpeg"
+                | "gif"
+                | "ico"
+                | "svg"
+                | "woff"
+                | "woff2"
+                | "ttf"
+                | "eot"
+                | "otf"
+                | "zip"
+                | "tar"
+                | "gz"
+                | "bz2"
+                | "xz"
+                | "exe"
+                | "dll"
+                | "so"
+                | "dylib"
+                | "o"
+                | "a"
+                | "wasm"
+                | "pyc"
+                | "pyo"
+                | "class"
+        )
     )
 }

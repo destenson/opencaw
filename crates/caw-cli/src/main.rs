@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
 use caw_adapters::MockAdapter;
 use caw_core::{
-    CompletionRequest, EmbeddingProvider, ModelAdapter, Retriever,
-    StubStore, VectorIndex,
+    CompletionRequest, EmbeddingProvider, ModelAdapter, Retriever, StubStore, VectorIndex,
 };
 use caw_index::{FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
 use caw_ingest::IngestionPipeline;
@@ -12,7 +11,10 @@ use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "caw", about = "Context-as-Workspace: on-demand recall for LLMs")]
+#[command(
+    name = "caw",
+    about = "Context-as-Workspace: on-demand recall for LLMs"
+)]
 struct Cli {
     /// Directory to ingest
     #[arg(short, long)]
@@ -35,7 +37,10 @@ struct Cli {
     max_tokens: usize,
 
     /// System prompt
-    #[arg(long, default_value = "You are a helpful assistant with access to recalled documents. Use the recalled context to answer questions accurately.")]
+    #[arg(
+        long,
+        default_value = "You are a helpful assistant with access to recalled documents. Use the recalled context to answer questions accurately."
+    )]
     system: String,
 }
 
@@ -43,8 +48,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     eprintln!("Initializing embedding provider...");
-    let mut embedder = FastEmbedProvider::bge_small()
-        .context("Failed to initialize embedding provider")?;
+    let mut embedder =
+        FastEmbedProvider::bge_small().context("Failed to initialize embedding provider")?;
     let dimension = embedder.dimension();
 
     let db_path = cli
@@ -54,8 +59,8 @@ fn main() -> Result<()> {
         .unwrap_or_else(|| ":memory:".to_string());
 
     eprintln!("Opening stub store at: {}", db_path);
-    let mut store = SqliteStubStore::new(&db_path, dimension)
-        .context("Failed to open SQLite stub store")?;
+    let mut store =
+        SqliteStubStore::new(&db_path, dimension).context("Failed to open SQLite stub store")?;
 
     let pipeline = IngestionPipeline;
     eprintln!("Ingesting files from: {}", cli.dir.display());
@@ -94,18 +99,20 @@ fn main() -> Result<()> {
 
     eprintln!(
         "Index ready: {} files ({} cached, {} newly ingested).",
-        documents.len(), cached, ingested
+        documents.len(),
+        cached,
+        ingested
     );
 
     let retriever = SemanticRetriever::new(embedder, store, vector_index);
 
     // Second embedder + separate HNSW index for thinking-trace recall
-    let trace_embedder = FastEmbedProvider::bge_small()
-        .context("Failed to initialize trace embedder")?;
+    let trace_embedder =
+        FastEmbedProvider::bge_small().context("Failed to initialize trace embedder")?;
 
     // Rebuild a second HNSW index from the same store's embeddings
-    let trace_store = SqliteStubStore::new(&db_path, dimension)
-        .context("Failed to open trace stub store")?;
+    let trace_store =
+        SqliteStubStore::new(&db_path, dimension).context("Failed to open trace stub store")?;
     let mut trace_index = HnswVectorIndex::new();
     if let Ok(all_emb) = trace_store.all_embeddings() {
         for (id, emb) in all_emb {
@@ -159,13 +166,16 @@ fn main() -> Result<()> {
             } else {
                 ("http://localhost:8000".to_string(), rest.to_string())
             };
-            Box::new(caw_adapters::OpenAiCompatibleAdapter::vllm_at(base_url, model, rt))
+            Box::new(caw_adapters::OpenAiCompatibleAdapter::vllm_at(
+                base_url, model, rt,
+            ))
         }
         // Generic openai-compatible: openai://base-url/model-name
         s if s.starts_with("openai://") => {
             let rt = caw_adapters::create_runtime()?;
             let rest = &s["openai://".len()..];
-            let slash_pos = rest.rfind('/')
+            let slash_pos = rest
+                .rfind('/')
                 .context("openai:// format requires: openai://host:port/model-name")?;
             let host = &rest[..slash_pos];
             let model = &rest[slash_pos + 1..];
@@ -199,7 +209,14 @@ fn main() -> Result<()> {
     eprintln!("Using adapter: {}", adapter.model_name());
     eprintln!("Enter queries (Ctrl+D to exit):\n");
 
-    run_interactive(retriever, trace_embedder, trace_index, adapter, config, &cli.system)
+    run_interactive(
+        retriever,
+        trace_embedder,
+        trace_index,
+        adapter,
+        config,
+        &cli.system,
+    )
 }
 
 fn run_interactive(
@@ -257,8 +274,7 @@ fn run_interactive(
             }
         }
 
-        if config.enable_thinking_trace_recall
-            && adapter.capabilities().supports_visible_reasoning
+        if config.enable_thinking_trace_recall && adapter.capabilities().supports_visible_reasoning
         {
             let steps = extract_thinking_steps(&response.answer);
             for step in steps {

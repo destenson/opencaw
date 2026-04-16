@@ -133,4 +133,3 @@ impl ModelAdapter for GroqAdapter {
         Ok(CompletionResponse { answer })
     }
 }
-
