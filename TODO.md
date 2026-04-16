@@ -24,7 +24,7 @@ Cross-reference: design doc is `context-as-workspace.md`, scope boundaries are i
 - [x] **Budget-triggered eviction**: Fires when workspace exceeds 80% of token budget, evicts fragments below relevance floor (0.15), frees to 70%.
 - [ ] **Relevance decay over reasoning steps**: Eviction currently uses a single-shot term-overlap score at eviction time. The design doc specifies per-fragment relevance that *decays over reasoning steps* — fragments become eviction candidates as the model's focus shifts, not just when the budget is full. Needs score history per fragment and a configurable decay rate.
 - [ ] **Consolidation note quality**: Eviction-time notes are mechanical strings (`"Evicted during query about '{query}'. Source: {path}"`). The design doc calls for notes that summarize what portions were referenced and what conclusions were drawn — requires either an LLM call or deeper analysis of provenance records.
-- [ ] **Consolidation persistence**: Notes are stored in the in-memory `ProvenanceLedger` only. They are never written back to the SQLite `StubStore`. The `Stub` struct has a `consolidation_notes` field, but it's always empty when loaded from storage. The "stubs get richer over time" behavior does not work across sessions.
+- [x] **Consolidation persistence**: `StubStore` trait has `save_consolidation()`/`load_consolidation()` with default no-ops. `SqliteStubStore` implements them with a `consolidation_notes` table. `DynamicRecallOrchestrator` accepts an optional store via `with_store()` and persists notes on both eviction and model annotation. Notes survive across sessions.
 
 ## Provenance
 
@@ -35,7 +35,7 @@ Cross-reference: design doc is `context-as-workspace.md`, scope boundaries are i
 ## Mid-Session Annotation
 
 - [x] **Annotation parser**: `extract_annotations()` parses `<note id="stub_id">content</note>` markers from model output.
-- [ ] **Model instruction for annotations**: Nothing instructs the model to emit `<note>` markers. No system prompt fragment explains the format or requests its use. The parser exists but will never fire unless the calling application manually includes annotation instructions. The orchestrator or adapter layer should inject a brief instruction when the model's capabilities suggest it can cooperate.
+- [x] **Model instruction for annotations**: `DynamicRecallOrchestrator::build_system_prompt()` injects annotation and probe instructions when the model's capabilities indicate cooperation support. Models with tool call support get `<note>` instructions; models with visible reasoning also get `<probe>` instructions. Injected automatically — callers don't need to craft the prompt.
 
 ## Prompt Transformer
 

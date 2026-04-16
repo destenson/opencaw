@@ -1,7 +1,7 @@
 use caw_core::{
     CawResult, CompletionRequest, CompletionResponse, ConsolidationNote, ConsolidationSource,
     EmbeddingProvider, ModelAdapter, ProvenanceStore, Range, RecallFragment, RecallThresholds,
-    Retriever, ScoredStub, StubId, VectorIndex,
+    Retriever, ScoredStub, StubId, StubStore, VectorIndex,
 };
 use caw_transform::{extract_annotations, extract_probes, extract_thinking_steps};
 use std::collections::HashSet;
@@ -11,14 +11,7 @@ use std::collections::HashSet;
 /// Each turn follows: initial retrieval -> complete -> extract probes/traces ->
 /// load new fragments -> evict stale fragments -> re-complete with enriched
 /// workspace. Repeats until convergence or max iterations.
-pub struct DynamicRecallOrchestrator<R, E, V, P, M>
-where
-    R: Retriever,
-    E: EmbeddingProvider,
-    V: VectorIndex,
-    P: ProvenanceStore,
-    M: ModelAdapter,
-{
+pub struct DynamicRecallOrchestrator<R, E, V, P, M, S = ()> {
     pub retriever: R,
     pub embedder: E,
     pub vector_index: V,
@@ -27,6 +20,9 @@ where
     pub loaded: Vec<RecallFragment>,
     pub loaded_ids: HashSet<StubId>,
     pub config: DynamicRecallConfig,
+    /// Optional persistent store for consolidation notes.
+    /// When present, notes survive across sessions.
+    pub store: Option<S>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,13 +51,14 @@ impl Default for DynamicRecallConfig {
     }
 }
 
-impl<R, E, V, P, M> DynamicRecallOrchestrator<R, E, V, P, M>
+impl<R, E, V, P, M, S> DynamicRecallOrchestrator<R, E, V, P, M, S>
 where
     R: Retriever,
     E: EmbeddingProvider,
     V: VectorIndex,
     P: ProvenanceStore,
     M: ModelAdapter,
+    S: StubStore,
 {
     pub fn new(
         retriever: R,
@@ -80,17 +77,53 @@ where
             loaded: Vec::new(),
             loaded_ids: HashSet::new(),
             config,
+            store: None,
         }
+    }
+
+    pub fn with_store(mut self, store: S) -> Self {
+        self.store = Some(store);
+        self
+    }
+
+    /// Build the system prompt, optionally injecting cooperation instructions
+    /// for models that support tool calls or visible reasoning.
+    fn build_system_prompt(&self, base: &str) -> String {
+        let caps = self.adapter.capabilities();
+        if !caps.supports_tool_calls && !caps.supports_visible_reasoning {
+            return base.to_string();
+        }
+
+        let mut prompt = base.to_string();
+        prompt.push_str(concat!(
+            "\n\nYou have access to recalled workspace content tagged with source locators. ",
+            "When you learn something important from a recalled fragment — a key fact, decision, ",
+            "or conclusion — emit a brief annotation: <note id=\"source_path\">what you learned</note>. ",
+            "These annotations help the system remember what was relevant if the fragment is ",
+            "later unloaded. Keep annotations concise (1-2 sentences).",
+        ));
+
+        if caps.supports_visible_reasoning {
+            prompt.push_str(concat!(
+                " You can also emit <probe>topic or question</probe> in your reasoning ",
+                "to request additional context on a topic. The system will automatically ",
+                "retrieve relevant material.",
+            ));
+        }
+
+        prompt
     }
 
     /// Run a single conversational turn with iterative multi-pass recall.
     pub fn run_turn(&mut self, system: &str, user: &str) -> CawResult<CompletionResponse> {
+        let system_prompt = self.build_system_prompt(system);
+
         // Phase 1: Initial retrieval on the user query
         let initial_hits = self.retriever.search(user, self.config.top_k)?;
         self.load_fragments(initial_hits)?;
 
         let mut last_response = self.adapter.complete(CompletionRequest {
-            system: system.to_string(),
+            system: system_prompt.clone(),
             user: user.to_string(),
             workspace_fragments: self.loaded.clone(),
         })?;
@@ -121,9 +154,9 @@ where
             // Inject topic overlap warnings if the provenance ledger detected any
             let warnings = self.provenance.format_overlap_warnings();
             let enriched_system = if warnings.is_empty() {
-                system.to_string()
+                system_prompt.clone()
             } else {
-                format!("{}\n\n{}", system, warnings)
+                format!("{}\n\n{}", system_prompt, warnings)
             };
 
             // Re-complete with enriched workspace
@@ -198,8 +231,18 @@ where
                 source: ConsolidationSource::ModelAnnotation,
                 created_at_secs: current_timestamp(),
             };
-            self.provenance
-                .record_consolidation(StubId(ann.stub_id), note);
+            let stub_id = StubId(ann.stub_id);
+            self.persist_consolidation(&stub_id, &note);
+        }
+    }
+
+    /// Record a consolidation note to both the in-memory provenance ledger
+    /// and the persistent store (if available).
+    fn persist_consolidation(&mut self, stub_id: &StubId, note: &ConsolidationNote) {
+        self.provenance
+            .record_consolidation(stub_id.clone(), note.clone());
+        if let Some(store) = &mut self.store {
+            let _ = store.save_consolidation(stub_id, note);
         }
     }
 
@@ -260,8 +303,7 @@ where
                 created_at_secs: current_timestamp(),
             };
 
-            self.provenance
-                .record_consolidation(fragment.stub_id, note);
+            self.persist_consolidation(&fragment.stub_id, &note);
         }
     }
 

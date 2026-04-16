@@ -1,4 +1,4 @@
-use caw_core::{CawError, CawResult, Stub, StubId, StubStore};
+use caw_core::{CawError, CawResult, ConsolidationNote, ConsolidationSource, Stub, StubId, StubStore};
 use rusqlite::{params, Connection};
 
 pub struct SqliteStubStore {
@@ -47,6 +47,21 @@ impl SqliteStubStore {
         )
         .map_err(|e| {
             CawError::VectorStore(format!("Failed to create embeddings table: {}", e))
+        })?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS consolidation_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stub_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                source TEXT NOT NULL,
+                created_at_secs INTEGER NOT NULL,
+                FOREIGN KEY(stub_id) REFERENCES stubs(id)
+            )",
+            [],
+        )
+        .map_err(|e| {
+            CawError::VectorStore(format!("Failed to create consolidation_notes table: {}", e))
         })?;
 
         Ok(Self { conn, dimension })
@@ -177,6 +192,54 @@ impl StubStore for SqliteStubStore {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(CawError::VectorStore(format!("Failed to query by content hash: {}", e))),
         }
+    }
+
+    fn save_consolidation(&mut self, stub_id: &StubId, note: &ConsolidationNote) -> CawResult<()> {
+        let source_str = match note.source {
+            ConsolidationSource::Eviction => "eviction",
+            ConsolidationSource::ModelAnnotation => "model_annotation",
+        };
+        self.conn
+            .execute(
+                "INSERT INTO consolidation_notes (stub_id, content, source, created_at_secs)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![stub_id.0, note.content, source_str, note.created_at_secs as i64],
+            )
+            .map_err(|e| {
+                CawError::VectorStore(format!("Failed to save consolidation note: {}", e))
+            })?;
+        Ok(())
+    }
+
+    fn load_consolidation(&self, stub_id: &StubId) -> CawResult<Vec<ConsolidationNote>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT content, source, created_at_secs FROM consolidation_notes
+                 WHERE stub_id = ?1 ORDER BY created_at_secs ASC",
+            )
+            .map_err(|e| CawError::VectorStore(format!("Failed to prepare query: {}", e)))?;
+
+        let notes = stmt
+            .query_map(params![stub_id.0], |row| {
+                let content: String = row.get(0)?;
+                let source_str: String = row.get(1)?;
+                let created_at_secs: i64 = row.get(2)?;
+                let source = match source_str.as_str() {
+                    "model_annotation" => ConsolidationSource::ModelAnnotation,
+                    _ => ConsolidationSource::Eviction,
+                };
+                Ok(ConsolidationNote {
+                    content,
+                    source,
+                    created_at_secs: created_at_secs as u64,
+                })
+            })
+            .map_err(|e| CawError::VectorStore(format!("Query failed: {}", e)))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(notes)
     }
 
     fn all_embeddings(&self) -> CawResult<Vec<(StubId, Vec<f32>)>> {

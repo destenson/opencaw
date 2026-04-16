@@ -497,6 +497,18 @@ pub trait StubStore {
     /// Iterate all stored embeddings. Used by vector index implementations
     /// to build their index from persisted data.
     fn all_embeddings(&self) -> CawResult<Vec<(StubId, Vec<f32>)>>;
+
+    /// Persist a consolidation note for a stub. Called on eviction and
+    /// when the model emits annotations. Notes accumulate across sessions,
+    /// making stubs richer over time.
+    fn save_consolidation(&mut self, _stub_id: &StubId, _note: &ConsolidationNote) -> CawResult<()> {
+        Ok(())
+    }
+
+    /// Load all consolidation notes for a stub from persistent storage.
+    fn load_consolidation(&self, _stub_id: &StubId) -> CawResult<Vec<ConsolidationNote>> {
+        Ok(Vec::new())
+    }
 }
 
 /// Similarity search over embeddings. Implementations should use an
