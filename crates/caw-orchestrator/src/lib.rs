@@ -51,6 +51,7 @@ where
     pub fn run_turn(&mut self, system: &str, user: &str) -> CawResult<CompletionResponse> {
         let hits = self.retriever.search(user, self.config.top_k)?;
         let mut candidates = Vec::new();
+        let mut candidate_scores = Vec::new();
 
         for hit in hits
             .into_iter()
@@ -59,19 +60,21 @@ where
             let fragment = self
                 .retriever
                 .read_range(&hit.stub.id, &self.config.default_range)?;
+            candidate_scores.push(hit.score);
             candidates.push(fragment);
         }
 
         let decision = self.scheduler.schedule(SchedulerInput {
             currently_loaded: self.loaded.clone(),
             candidates,
+            candidate_scores,
             budget: self.config.budget,
         });
 
         self.loaded = decision.keep;
 
-        for frag in decision.admitted {
-            self.provenance.record(frag);
+        for frag in &decision.admitted {
+            self.provenance.record(frag.clone());
         }
 
         self.adapter.complete(CompletionRequest {

@@ -1,0 +1,186 @@
+use caw_core::{
+    BudgetScheduler, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
+    ProvenanceStore, RecallFragment, Retriever, SchedulerInput, TokenBudget,
+};
+use regex::Regex;
+
+/// Orchestrator that implements explicit probe-based recall
+/// Models emit <probe>query text</probe> markers to request content
+pub struct ProbeRecallOrchestrator<R, S, P, M>
+where
+    R: Retriever,
+    S: BudgetScheduler,
+    P: ProvenanceStore,
+    M: ModelAdapter,
+{
+    pub retriever: R,
+    pub scheduler: S,
+    pub provenance: P,
+    pub adapter: M,
+    pub loaded: Vec<RecallFragment>,
+    pub config: ProbeRecallConfig,
+    probe_pattern: Regex,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProbeRecallConfig {
+    pub top_k: usize,
+    pub load_threshold: f32,
+    pub default_range: String,
+    pub budget: TokenBudget,
+    pub max_probe_iterations: usize,
+}
+
+impl Default for ProbeRecallConfig {
+    fn default() -> Self {
+        Self {
+            top_k: 3,
+            load_threshold: 0.5,
+            default_range: "full".to_string(),
+            budget: TokenBudget {
+                max_total: 16_000,
+                reserved_for_prompt: 2_000,
+                reserved_for_answer: 2_000,
+            },
+            max_probe_iterations: 3,
+        }
+    }
+}
+
+impl<R, S, P, M> ProbeRecallOrchestrator<R, S, P, M>
+where
+    R: Retriever,
+    S: BudgetScheduler,
+    P: ProvenanceStore,
+    M: ModelAdapter,
+{
+    pub fn new(
+        retriever: R,
+        scheduler: S,
+        provenance: P,
+        adapter: M,
+        config: ProbeRecallConfig,
+    ) -> Self {
+        Self {
+            retriever,
+            scheduler,
+            provenance,
+            adapter,
+            loaded: Vec::new(),
+            config,
+            probe_pattern: Regex::new(r"<probe>(.*?)</probe>").unwrap(),
+        }
+    }
+
+    /// Run a turn with iterative probe-based recall
+    pub fn run_turn_with_probes(
+        &mut self,
+        system: &str,
+        user: &str,
+    ) -> CawResult<CompletionResponse> {
+        let mut current_user = user.to_string();
+        let mut iteration = 0;
+
+        loop {
+            // Generate response
+            let response = self.adapter.complete(CompletionRequest {
+                system: system.to_string(),
+                user: current_user.clone(),
+                workspace_fragments: self.loaded.clone(),
+            })?;
+
+            // Extract probes from response
+            let probes = self.extract_probes(&response.answer);
+
+            // If no probes or max iterations reached, return response
+            if probes.is_empty() || iteration >= self.config.max_probe_iterations {
+                return Ok(response);
+            }
+
+            // Process probes and recall content
+            let mut recalled_any = false;
+            for probe_query in probes {
+                let recalled = self.recall_for_probe(&probe_query)?;
+                if !recalled.is_empty() {
+                    recalled_any = true;
+                }
+            }
+
+            // If nothing new was recalled, return response
+            if !recalled_any {
+                return Ok(response);
+            }
+
+            // Continue conversation with recalled content
+            current_user = format!(
+                "{}\n\nAssistant (partial): {}\n\nUser: Content has been loaded. Please continue.",
+                current_user, response.answer
+            );
+
+            iteration += 1;
+        }
+    }
+
+    fn extract_probes(&self, text: &str) -> Vec<String> {
+        self.probe_pattern
+            .captures_iter(text)
+            .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+            .collect()
+    }
+
+    fn recall_for_probe(&mut self, probe_query: &str) -> CawResult<Vec<RecallFragment>> {
+        let hits = self.retriever.search(probe_query, self.config.top_k)?;
+        let mut candidates = Vec::new();
+        let mut candidate_scores = Vec::new();
+
+        for hit in hits {
+            if hit.score >= self.config.load_threshold {
+                let fragment = self
+                    .retriever
+                    .read_range(&hit.stub.id, &self.config.default_range)?;
+                candidate_scores.push(hit.score);
+                candidates.push(fragment);
+            }
+        }
+
+        let decision = self.scheduler.schedule(SchedulerInput {
+            currently_loaded: self.loaded.clone(),
+            candidates,
+            candidate_scores,
+            budget: self.config.budget,
+        });
+
+        self.loaded = decision.keep.clone();
+
+        for frag in &decision.admitted {
+            self.provenance.record(frag.clone());
+        }
+
+        Ok(decision.admitted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_probes() {
+        let orchestrator = ProbeRecallOrchestrator {
+            retriever: crate::tests::MockRetriever,
+            scheduler: crate::tests::MockScheduler,
+            provenance: crate::tests::MockProvenance,
+            adapter: crate::tests::MockAdapter,
+            loaded: Vec::new(),
+            config: ProbeRecallConfig::default(),
+            probe_pattern: Regex::new(r"<probe>(.*?)</probe>").unwrap(),
+        };
+
+        let text = "I need to check <probe>configuration settings</probe> and also <probe>error logs</probe>";
+        let probes = orchestrator.extract_probes(text);
+
+        assert_eq!(probes.len(), 2);
+        assert_eq!(probes[0], "configuration settings");
+        assert_eq!(probes[1], "error logs");
+    }
+}

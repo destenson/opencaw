@@ -79,8 +79,13 @@ where
     }
 
     fn read_range(&self, id: &StubId, range: &str) -> CawResult<RecallFragment> {
-        let content = self.store.get_content(id)?;
+        use caw_core::ContentRange;
+        
+        let full_content = self.store.get_content(id)?;
         let stub = self.store.get_stub(id)?;
+        
+        let range_parsed = ContentRange::parse(range);
+        let content = range_parsed.apply(&full_content);
         let tokens = (content.len() / 4).max(1);
         
         Ok(RecallFragment {
@@ -128,20 +133,32 @@ impl Retriever for InMemoryIndex {
     }
 
     fn read_range(&self, id: &StubId, range: &str) -> CawResult<RecallFragment> {
-        let content = self
+        use caw_core::ContentRange;
+        
+        let full_content = self
             .docs
             .iter()
             .find_map(|(stub_id, content)| (stub_id == id).then_some(content))
             .ok_or_else(|| CawError::NotFound(id.0.clone()))?;
 
+        let stub = self
+            .stubs
+            .iter()
+            .find(|s| &s.id == id)
+            .ok_or_else(|| CawError::NotFound(id.0.clone()))?;
+
+        let range_parsed = ContentRange::parse(range);
+        let content = range_parsed.apply(full_content);
+        let tokens = (content.len() / 4).max(1);
+
         Ok(RecallFragment {
             stub_id: id.clone(),
-            content: content.clone(),
+            content,
             locator: Locator {
-                source: id.0.clone(),
+                source: stub.path.clone(),
                 locator: range.to_string(),
             },
-            tokens: (content.len() / 4).max(1),
+            tokens,
         })
     }
 }

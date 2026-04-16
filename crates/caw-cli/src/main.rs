@@ -29,7 +29,7 @@ fn main() -> Result<()> {
 
     let mut orchestrator = RecallOrchestrator {
         retriever: index,
-        scheduler: GreedyBudgetScheduler,
+        scheduler: GreedyBudgetScheduler::default(),
         provenance: InMemoryProvenanceStore::default(),
         adapter: MockAdapter::new("mock-local-model", true),
         loaded: Vec::new(),

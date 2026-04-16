@@ -451,6 +451,7 @@ dependencies = [
 name = "caw-core"
 version = "0.1.0"
 dependencies = [
+ "regex",
  "serde",
  "thiserror 2.0.18",
 ]
@@ -513,6 +514,15 @@ name = "caw-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+]
+
+[[package]]
+name = "caw-transform"
+version = "0.1.0"
+dependencies = [
+ "caw-core",
+ "regex",
+ "serde",
 ]
 
 [[package]]

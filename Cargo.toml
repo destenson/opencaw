@@ -10,6 +10,7 @@ members = [
   "crates/caw-eval",
   "crates/caw-cli",
   "crates/caw-server",
+  "crates/caw-transform",
 ]
 resolver = "2"
 

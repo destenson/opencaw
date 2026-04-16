@@ -36,6 +36,118 @@ pub struct Locator {
     pub locator: String,
 }
 
+impl Locator {
+    pub fn full(source: impl Into<String>) -> Self {
+        Self {
+            source: source.into(),
+            locator: "full".to_string(),
+        }
+    }
+
+    pub fn line_range(source: impl Into<String>, start: usize, end: usize) -> Self {
+        Self {
+            source: source.into(),
+            locator: format!("{}-{}", start, end),
+        }
+    }
+
+    pub fn heading(source: impl Into<String>, heading_path: impl Into<String>) -> Self {
+        Self {
+            source: source.into(),
+            locator: format!("#{}", heading_path.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ContentRange {
+    Full,
+    Lines { start: usize, end: usize },
+    Heading { path: String },
+    TokenWindow { start: usize, count: usize },
+}
+
+impl ContentRange {
+    pub fn parse(range_str: &str) -> Self {
+        if range_str == "full" {
+            return Self::Full;
+        }
+
+        if range_str.starts_with('#') {
+            return Self::Heading {
+                path: range_str[1..].to_string(),
+            };
+        }
+
+        if let Some((start, end)) = range_str.split_once('-') {
+            if let (Ok(s), Ok(e)) = (start.parse(), end.parse()) {
+                return Self::Lines { start: s, end: e };
+            }
+        }
+
+        Self::Full
+    }
+
+    pub fn apply(&self, content: &str) -> String {
+        match self {
+            Self::Full => content.to_string(),
+            Self::Lines { start, end } => content
+                .lines()
+                .skip(start.saturating_sub(1))
+                .take(end.saturating_sub(*start) + 1)
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Self::Heading { path } => extract_heading_section(content, path),
+            Self::TokenWindow { start, count } => {
+                // Simple token approximation: split on whitespace
+                let tokens: Vec<&str> = content.split_whitespace().collect();
+                tokens
+                    .iter()
+                    .skip(*start)
+                    .take(*count)
+                    .map(|s| *s)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+        }
+    }
+}
+
+fn extract_heading_section(content: &str, heading_path: &str) -> String {
+    let parts: Vec<&str> = heading_path.split('/').collect();
+    let lines: Vec<&str> = content.lines().collect();
+    let mut result = Vec::new();
+    let mut in_section = false;
+    let mut current_level = 0;
+
+    for line in lines {
+        // Check if this is a heading
+        if let Some(stripped) = line.trim_start().strip_prefix('#') {
+            let level = line.chars().take_while(|c| *c == '#').count();
+            let heading_text = stripped.trim();
+
+            // Check if this matches our target heading
+            if parts.iter().any(|p| heading_text.contains(p)) {
+                in_section = true;
+                current_level = level;
+                result.push(line);
+                continue;
+            }
+
+            // If we're in a section and hit a same-or-higher level heading, stop
+            if in_section && level <= current_level {
+                break;
+            }
+        }
+
+        if in_section {
+            result.push(line);
+        }
+    }
+
+    result.join("\n")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Stub {
     pub id: StubId,
@@ -81,6 +193,7 @@ pub struct SchedulerInput {
     pub currently_loaded: Vec<RecallFragment>,
     pub candidates: Vec<RecallFragment>,
     pub budget: TokenBudget,
+    pub candidate_scores: Vec<f32>,
 }
 
 #[derive(Debug, Clone)]
