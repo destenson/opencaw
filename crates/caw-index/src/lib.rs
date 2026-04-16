@@ -65,7 +65,7 @@ where
 
     pub fn insert(&mut self, stub: Stub, content: String) -> CawResult<()> {
         let text = format!("{} {} {}", stub.path, stub.summary, stub.outline.join(" "));
-        let embeddings = self.embedder.embed(vec![text.as_str()])?;
+        let embeddings = self.embedder.embed_document(vec![text.as_str()])?;
         let embedding = embeddings
             .into_iter()
             .next()
@@ -93,7 +93,7 @@ where
     I: VectorIndex,
 {
     fn search(&mut self, query: &str, top_k: usize) -> CawResult<Vec<ScoredStub>> {
-        let embeddings = self.embedder.embed(vec![query])?;
+        let embeddings = self.embedder.embed_query(vec![query])?;
         let query_embedding = embeddings
             .into_iter()
             .next()

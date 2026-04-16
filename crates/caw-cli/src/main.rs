@@ -72,7 +72,7 @@ fn main() -> Result<()> {
     for (stub, content) in &documents {
         let text = format!("{} {} {}", stub.path, stub.summary, stub.outline.join(" "));
         let embeddings = embedder
-            .embed(vec![text.as_str()])
+            .embed_document(vec![text.as_str()])
             .context("Failed to generate embedding")?;
 
         if let Some(embedding) = embeddings.into_iter().next() {
@@ -251,7 +251,7 @@ fn run_interactive(
                 if step.content.len() < 20 {
                     continue;
                 }
-                if let Ok(embeddings) = trace_embedder.embed(vec![&step.content]) {
+                if let Ok(embeddings) = trace_embedder.embed_query(vec![&step.content]) {
                     if let Some(emb) = embeddings.first() {
                         let index_hits = trace_index.search(emb, config.top_k);
                         for (stub_id, score) in index_hits {

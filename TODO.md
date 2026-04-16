@@ -6,7 +6,7 @@ Cross-reference: design doc is `context-as-workspace.md`, scope boundaries are i
 
 - [x] **BM25 keyword index**: Standard BM25 scoring (K1=1.2, B=0.75) with IDF weighting.
 - [x] **Hybrid retrieval fusion**: Semantic + BM25 with min-max normalized scores, configurable weights (default 0.6/0.4).
-- [ ] **Asymmetric embeddings**: The `EmbeddingProvider` trait has a single `embed()` method. BGE models require a `"query: "` prefix for query-side encoding — without it, query and document embeddings land in the wrong neighborhoods. The trait needs `embed_query()`/`embed_document()` (or an embed mode parameter), and `SemanticRetriever` needs to call the right one at search vs insert time. This is a correctness issue, not optimization.
+- [x] **Asymmetric embeddings**: `EmbeddingProvider` trait has `embed_query()`/`embed_document()` with default delegation to `embed()` for symmetric models. `FastEmbedProvider` overrides both for BGE models (adds `"query: "` / `"passage: "` prefixes). All call sites updated: `SemanticRetriever`, CLI indexing, `DynamicRecallOrchestrator`.
 
 ## Ingestion & Indexing
 

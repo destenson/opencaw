@@ -394,9 +394,26 @@ pub trait ModelAdapter {
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse>;
 }
 
-/// Embedding generation trait - abstracts different embedding backends
+/// Embedding generation trait - abstracts different embedding backends.
+///
+/// Asymmetric models (BGE, E5) produce better results when queries and documents
+/// are encoded differently. Override `embed_query`/`embed_document` for these;
+/// symmetric models get correct behavior from the default delegation to `embed`.
 pub trait EmbeddingProvider {
     fn embed(&mut self, texts: Vec<&str>) -> CawResult<Vec<Vec<f32>>>;
+
+    /// Embed texts that will be used as search queries.
+    /// Asymmetric models should override to add the appropriate prefix.
+    fn embed_query(&mut self, texts: Vec<&str>) -> CawResult<Vec<Vec<f32>>> {
+        self.embed(texts)
+    }
+
+    /// Embed texts that will be indexed as documents.
+    /// Asymmetric models should override to add the appropriate prefix.
+    fn embed_document(&mut self, texts: Vec<&str>) -> CawResult<Vec<Vec<f32>>> {
+        self.embed(texts)
+    }
+
     fn dimension(&self) -> usize;
     fn provider_name(&self) -> &str;
 }

@@ -145,7 +145,7 @@ where
                 continue;
             }
 
-            let embeddings = self.embedder.embed(vec![&step.content])?;
+            let embeddings = self.embedder.embed_query(vec![&step.content])?;
             if let Some(embedding) = embeddings.first() {
                 let hits = self.vector_index.search(embedding, self.config.top_k);
                 let scored: Vec<ScoredStub> = hits
