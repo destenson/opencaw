@@ -8,6 +8,7 @@ license.workspace = true
 anyhow.workspace = true
 caw-adapters = { path = "../caw-adapters" }
 caw-core = { path = "../caw-core" }
+caw-curation = { path = "../caw-curation" }
 caw-index = { path = "../caw-index" }
 caw-ingest = { path = "../caw-ingest" }
 caw-orchestrator = { path = "../caw-orchestrator" }

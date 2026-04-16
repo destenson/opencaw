@@ -1,3 +1,5 @@
+pub mod tokenizer;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -522,5 +524,26 @@ pub trait VectorIndex {
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+/// Token counting abstraction. Allows swapping between cheap heuristic
+/// estimators and real BPE tokenizers depending on accuracy needs.
+pub trait Tokenizer: Send + Sync {
+    fn count_tokens(&self, text: &str) -> usize;
+    fn tokenizer_name(&self) -> &str;
+}
+
+/// Fallback tokenizer that splits on whitespace. Fast but diverges
+/// significantly from BPE counts, especially on code.
+pub struct WhitespaceTokenizer;
+
+impl Tokenizer for WhitespaceTokenizer {
+    fn count_tokens(&self, text: &str) -> usize {
+        text.split_whitespace().count().max(1)
+    }
+
+    fn tokenizer_name(&self) -> &str {
+        "whitespace"
     }
 }

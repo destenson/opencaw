@@ -1,14 +1,23 @@
 use anyhow::{Context, Result};
 use caw_adapters::MockAdapter;
 use caw_core::{
-    CompletionRequest, EmbeddingProvider, ModelAdapter, Retriever, StubStore, VectorIndex,
+    CompletionRequest, EmbeddingProvider, ModelAdapter, Retriever, StubStore, Tokenizer,
+    VectorIndex, WhitespaceTokenizer,
+};
+use caw_curation::{
+    ConversationTurn, CurationPipelineBuilder, ExtractiveHistorySummarizer,
+    ExtractiveToolOutputCompressor, HistorySummarizerConfig, LlmHistorySummarizer,
+    LlmToolOutputCompressor, ToolOutputCompressorConfig, TurnMetadata, TurnRole,
 };
 use caw_index::{FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
 use caw_ingest::IngestionPipeline;
+use caw_ingest::summarizer::LlmSummarizer;
+use caw_orchestrator::consolidation::LlmConsolidation;
 use caw_orchestrator::dynamic::DynamicRecallConfig;
 use clap::Parser;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(
@@ -20,7 +29,7 @@ struct Cli {
     #[arg(short, long)]
     dir: PathBuf,
 
-    /// Model adapter to use
+    /// Model adapter to use for completions
     #[arg(short, long, default_value = "mock")]
     adapter: String,
 
@@ -42,6 +51,26 @@ struct Cli {
         default_value = "You are a helpful assistant with access to recalled documents. Use the recalled context to answer questions accurately."
     )]
     system: String,
+
+    /// Tokenizer for token counting: whitespace (default), cl100k, p50k
+    #[arg(long, default_value = "whitespace")]
+    tokenizer: String,
+
+    /// Use LLM to generate stub summaries during ingestion (uses aux-model)
+    #[arg(long)]
+    llm_summarize: bool,
+
+    /// Use LLM to synthesize consolidation notes on eviction (uses aux-model)
+    #[arg(long)]
+    llm_consolidation: bool,
+
+    /// Model for auxiliary LLM tasks (summarization, consolidation). Default: haiku
+    #[arg(long, default_value = "haiku")]
+    aux_model: String,
+
+    /// Enable curation pipeline (history summarization + tool output compression)
+    #[arg(long)]
+    curate: bool,
 }
 
 fn main() -> Result<()> {
@@ -62,7 +91,36 @@ fn main() -> Result<()> {
     let mut store =
         SqliteStubStore::new(&db_path, dimension).context("Failed to open SQLite stub store")?;
 
-    let pipeline = IngestionPipeline::new();
+    let tokenizer: Arc<dyn Tokenizer> = match cli.tokenizer.as_str() {
+        "cl100k" => {
+            eprintln!("Using cl100k_base tokenizer");
+            Arc::new(
+                caw_core::tokenizer::TiktokenTokenizer::cl100k()
+                    .context("Failed to load cl100k_base tokenizer")?,
+            )
+        }
+        "p50k" => {
+            eprintln!("Using p50k_base tokenizer");
+            Arc::new(
+                caw_core::tokenizer::TiktokenTokenizer::p50k()
+                    .context("Failed to load p50k_base tokenizer")?,
+            )
+        }
+        _ => Arc::new(WhitespaceTokenizer),
+    };
+
+    let pipeline = if cli.llm_summarize {
+        let aux_adapter = build_aux_adapter(&cli.aux_model);
+        eprintln!(
+            "Using LLM summarizer ({}) for stub generation",
+            cli.aux_model
+        );
+        IngestionPipeline::with_summarizer(Box::new(LlmSummarizer::with_adapter(aux_adapter)))
+            .with_tokenizer(tokenizer)
+    } else {
+        IngestionPipeline::new().with_tokenizer(tokenizer)
+    };
+
     eprintln!("Ingesting files from: {}", cli.dir.display());
 
     let documents = pipeline
@@ -74,7 +132,6 @@ fn main() -> Result<()> {
     let mut ingested = 0usize;
 
     for (stub, content) in &documents {
-        // Check if we already have this exact content indexed
         if let Ok(Some((existing_stub, existing_embedding))) =
             store.get_by_content_hash(&stub.content_hash)
         {
@@ -104,13 +161,20 @@ fn main() -> Result<()> {
         ingested
     );
 
+    // Check system prompt budget
+    let budget = caw_curation::SystemPromptBudget::from_context_window(cli.max_tokens, 0.10);
+    let budget_check = caw_curation::check_system_prompt(&cli.system, &budget);
+    if budget_check.is_exceeded() {
+        eprintln!("WARNING: system prompt exceeds 10% of context budget");
+    } else if budget_check.is_warning() {
+        eprintln!("NOTE: system prompt is approaching budget limit");
+    }
+
     let retriever = SemanticRetriever::new(embedder, store, vector_index);
 
-    // Second embedder + separate HNSW index for thinking-trace recall
     let trace_embedder =
         FastEmbedProvider::bge_small().context("Failed to initialize trace embedder")?;
 
-    // Rebuild a second HNSW index from the same store's embeddings
     let trace_store =
         SqliteStubStore::new(&db_path, dimension).context("Failed to open trace stub store")?;
     let mut trace_index = HnswVectorIndex::new();
@@ -126,7 +190,53 @@ fn main() -> Result<()> {
         ..Default::default()
     };
 
-    let adapter: Box<dyn ModelAdapter> = match cli.adapter.as_str() {
+    let adapter: Box<dyn ModelAdapter> = build_completion_adapter(&cli.adapter)?;
+
+    eprintln!("Using adapter: {}", adapter.model_name());
+
+    // LLM consolidation is available for when the DynamicRecallOrchestrator is
+    // used directly (via with_consolidation_synthesizer). The manual recall loop
+    // below doesn't evict, so it doesn't fire yet.
+    let _consolidation: Option<LlmConsolidation> = if cli.llm_consolidation {
+        eprintln!(
+            "Using LLM consolidation ({}) for eviction notes",
+            cli.aux_model
+        );
+        Some(LlmConsolidation::with_adapter(build_aux_adapter(
+            &cli.aux_model,
+        )))
+    } else {
+        None
+    };
+
+    if cli.curate {
+        eprintln!("Curation pipeline enabled (history summarization + tool output compression)");
+    }
+
+    eprintln!("Enter queries (Ctrl+D to exit):\n");
+
+    run_interactive(
+        retriever,
+        trace_embedder,
+        trace_index,
+        adapter,
+        config,
+        &cli.system,
+        cli.curate,
+        &cli.aux_model,
+        cli.max_tokens,
+    )
+}
+
+fn build_aux_adapter(model: &str) -> Box<dyn ModelAdapter> {
+    match model {
+        "sonnet" => Box::new(caw_adapters::ClaudeCodeAdapter::sonnet()),
+        _ => Box::new(caw_adapters::ClaudeCodeAdapter::haiku()),
+    }
+}
+
+fn build_completion_adapter(adapter_name: &str) -> Result<Box<dyn ModelAdapter>> {
+    let adapter: Box<dyn ModelAdapter> = match adapter_name {
         "mock" => Box::new(MockAdapter::new("mock-local", true)),
         "anthropic" | "claude" => {
             let rt = caw_adapters::create_runtime()?;
@@ -155,7 +265,6 @@ fn main() -> Result<()> {
                     .context("Failed to create Perplexity adapter")?,
             )
         }
-        // vllm://model-name or vllm://host:port/model-name
         s if s.starts_with("vllm://") => {
             let rt = caw_adapters::create_runtime()?;
             let rest = &s["vllm://".len()..];
@@ -170,7 +279,6 @@ fn main() -> Result<()> {
                 base_url, model, rt,
             ))
         }
-        // Generic openai-compatible: openai://base-url/model-name
         s if s.starts_with("openai://") => {
             let rt = caw_adapters::create_runtime()?;
             let rest = &s["openai://".len()..];
@@ -205,20 +313,10 @@ fn main() -> Result<()> {
             Box::new(caw_adapters::OllamaAdapter::local(other, rt))
         }
     };
-
-    eprintln!("Using adapter: {}", adapter.model_name());
-    eprintln!("Enter queries (Ctrl+D to exit):\n");
-
-    run_interactive(
-        retriever,
-        trace_embedder,
-        trace_index,
-        adapter,
-        config,
-        &cli.system,
-    )
+    Ok(adapter)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_interactive(
     mut retriever: SemanticRetriever<FastEmbedProvider, SqliteStubStore, HnswVectorIndex>,
     mut trace_embedder: FastEmbedProvider,
@@ -226,6 +324,9 @@ fn run_interactive(
     adapter: Box<dyn ModelAdapter>,
     config: DynamicRecallConfig,
     system: &str,
+    curate: bool,
+    aux_model: &str,
+    context_budget: usize,
 ) -> Result<()> {
     use caw_core::{RecallFragment, StubId};
     use caw_transform::{extract_probes, extract_thinking_steps};
@@ -233,6 +334,38 @@ fn run_interactive(
 
     let mut loaded: Vec<RecallFragment> = Vec::new();
     let mut loaded_ids: HashSet<StubId> = HashSet::new();
+    let mut history: Vec<ConversationTurn> = Vec::new();
+
+    // Set up curation components
+    let extractive_summarizer = ExtractiveHistorySummarizer;
+    let hist_config = HistorySummarizerConfig::default();
+    let llm_hist_summarizer;
+    let aux_adapter_for_curation;
+
+    let history_summarizer: &dyn caw_curation::HistorySummarizer = if curate {
+        aux_adapter_for_curation = build_aux_adapter(aux_model);
+        llm_hist_summarizer =
+            LlmHistorySummarizer::new_with(aux_adapter_for_curation.as_ref(), hist_config.clone());
+        &llm_hist_summarizer
+    } else {
+        &extractive_summarizer
+    };
+
+    let extractive_compressor =
+        ExtractiveToolOutputCompressor::new_with(ToolOutputCompressorConfig::default());
+    let llm_compressor;
+    let aux_adapter_for_compressor;
+
+    let tool_compressor: &dyn caw_curation::ToolOutputCompressor = if curate {
+        aux_adapter_for_compressor = build_aux_adapter(aux_model);
+        llm_compressor = LlmToolOutputCompressor::new_with(
+            aux_adapter_for_compressor.as_ref(),
+            ToolOutputCompressorConfig::default(),
+        );
+        &llm_compressor
+    } else {
+        &extractive_compressor
+    };
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -251,11 +384,63 @@ fn run_interactive(
             continue;
         }
 
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        history.push(ConversationTurn {
+            role: TurnRole::User,
+            content: query.to_string(),
+            token_estimate: caw_curation::estimate_tokens(query),
+            timestamp_secs: timestamp,
+            metadata: TurnMetadata::default(),
+        });
+
+        // Run curation when history is long enough to benefit
+        let effective_system = if curate && history.len() > 4 {
+            let pipeline = CurationPipelineBuilder::with_context_budget(context_budget)
+                .history_summarizer(history_summarizer)
+                .history_config(hist_config.clone())
+                .tool_compressor(tool_compressor)
+                .build()
+                .context("Failed to build curation pipeline")?;
+
+            match pipeline.curate(system, &history) {
+                Ok(result) => {
+                    if result.tokens_saved > 0 {
+                        eprintln!("[curation] saved ~{} tokens", result.tokens_saved);
+                    }
+                    if !result.history_summary.is_empty() {
+                        let mut new_history = vec![ConversationTurn {
+                            role: TurnRole::System,
+                            content: format!(
+                                "Previous conversation summary:\n{}",
+                                result.history_summary
+                            ),
+                            token_estimate: caw_curation::estimate_tokens(&result.history_summary),
+                            timestamp_secs: timestamp,
+                            metadata: TurnMetadata::default(),
+                        }];
+                        new_history.extend(result.retained_turns);
+                        history = new_history;
+                    }
+                    result.system_prompt
+                }
+                Err(e) => {
+                    eprintln!("[curation] failed, using raw prompt: {}", e);
+                    system.to_string()
+                }
+            }
+        } else {
+            system.to_string()
+        };
+
         let hits = retriever.search(query, config.top_k)?;
         load_fragments(&mut retriever, &hits, &mut loaded, &mut loaded_ids, &config)?;
 
         let response = adapter.complete(CompletionRequest {
-            system: system.to_string(),
+            system: effective_system,
             user: query.to_string(),
             workspace_fragments: loaded.clone(),
         })?;
@@ -302,6 +487,14 @@ fn run_interactive(
         }
 
         println!("\n{}\n", response.answer);
+
+        history.push(ConversationTurn {
+            role: TurnRole::Assistant,
+            content: response.answer.clone(),
+            token_estimate: caw_curation::estimate_tokens(&response.answer),
+            timestamp_secs: timestamp,
+            metadata: TurnMetadata::default(),
+        });
 
         if !loaded.is_empty() {
             eprintln!(

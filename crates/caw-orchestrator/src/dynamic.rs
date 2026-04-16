@@ -1,4 +1,5 @@
 use crate::consolidation::{ConsolidationSynthesizer, MechanicalConsolidation};
+use crate::degradation::DegradationMonitor;
 use caw_core::{
     CawResult, CompletionRequest, CompletionResponse, ConsolidationNote, ConsolidationSource,
     EmbeddingProvider, ModelAdapter, ProvenanceStore, Range, RecallFragment, RecallThresholds,
@@ -6,6 +7,7 @@ use caw_core::{
 };
 use caw_transform::{extract_annotations, extract_probes, extract_thinking_steps};
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 /// Advanced orchestrator with iterative multi-pass recall.
 ///
@@ -28,6 +30,9 @@ pub struct DynamicRecallOrchestrator<R, E, V, P, M, S = ()> {
     /// When present, notes survive across sessions.
     pub store: Option<S>,
     consolidation_synthesizer: Box<dyn ConsolidationSynthesizer>,
+    /// When present, enables graceful degradation based on component health.
+    /// Without this, the orchestrator runs at full capability unconditionally.
+    pub degradation_monitor: Option<DegradationMonitor>,
 }
 
 #[derive(Debug, Clone)]
@@ -87,7 +92,13 @@ where
             config,
             store: None,
             consolidation_synthesizer: Box::new(MechanicalConsolidation),
+            degradation_monitor: None,
         }
+    }
+
+    pub fn with_degradation_monitor(mut self, monitor: DegradationMonitor) -> Self {
+        self.degradation_monitor = Some(monitor);
+        self
     }
 
     pub fn with_store(mut self, store: S) -> Self {
@@ -131,8 +142,29 @@ where
         prompt
     }
 
+    fn auto_recall_enabled(&self) -> bool {
+        self.degradation_monitor
+            .as_ref()
+            .map_or(true, |m| m.should_auto_recall())
+    }
+
+    fn stub_generation_enabled(&self) -> bool {
+        self.degradation_monitor
+            .as_ref()
+            .map_or(true, |m| m.should_generate_stubs())
+    }
+
     /// Run a single conversational turn with iterative multi-pass recall.
     pub fn run_turn(&mut self, system: &str, user: &str) -> CawResult<CompletionResponse> {
+        // Pass-through mode: skip all recall machinery
+        if !self.stub_generation_enabled() {
+            return self.adapter.complete(CompletionRequest {
+                system: system.to_string(),
+                user: user.to_string(),
+                workspace_fragments: Vec::new(),
+            });
+        }
+
         let system_prompt = self.build_system_prompt(system);
 
         // Phase 1: Initial retrieval on the user query
@@ -149,33 +181,29 @@ where
         for _ in 0..self.config.max_recall_iterations {
             let loaded_before = self.loaded.len();
 
-            // Decay all scores before this reasoning step
             self.decay_relevance_scores();
-
-            // Refresh scores for fragments the model engaged with
             self.refresh_relevance_scores(user, &last_response.answer);
 
-            if self.config.enable_thinking_trace_recall
-                && self.adapter.capabilities().supports_visible_reasoning
-            {
-                self.process_thinking_trace(&last_response.answer)?;
-            }
+            // Automatic recall only runs when the monitor permits it
+            if self.auto_recall_enabled() {
+                if self.config.enable_thinking_trace_recall
+                    && self.adapter.capabilities().supports_visible_reasoning
+                {
+                    self.process_thinking_trace(&last_response.answer)?;
+                }
 
-            if self.config.enable_probe_recall {
-                self.process_probes(&last_response.answer)?;
+                if self.config.enable_probe_recall {
+                    self.process_probes(&last_response.answer)?;
+                }
             }
 
             self.process_annotations(&last_response.answer);
-
-            // Evict fragments whose relevance has decayed below threshold
             self.evict_stale_fragments(user);
 
-            // Workspace converged — no new fragments loaded, none evicted
             if self.loaded.len() == loaded_before {
                 break;
             }
 
-            // Inject topic overlap warnings if the provenance ledger detected any
             let warnings = self.provenance.format_overlap_warnings();
             let enriched_system = if warnings.is_empty() {
                 system_prompt.clone()
@@ -183,7 +211,6 @@ where
                 format!("{}\n\n{}", system_prompt, warnings)
             };
 
-            // Re-complete with enriched workspace
             last_response = self.adapter.complete(CompletionRequest {
                 system: enriched_system,
                 user: user.to_string(),
@@ -202,7 +229,15 @@ where
                 continue;
             }
 
-            let embeddings = self.embedder.embed_query(vec![&step.content])?;
+            let start = Instant::now();
+            let embed_result = self.embedder.embed_query(vec![&step.content]);
+            let latency_ms = start.elapsed().as_millis() as u64;
+
+            if let Some(monitor) = &mut self.degradation_monitor {
+                monitor.record_embedding_call(latency_ms, embed_result.is_ok());
+            }
+
+            let embeddings = embed_result?;
             if let Some(embedding) = embeddings.first() {
                 let hits = self.vector_index.search(embedding, self.config.top_k);
                 let scored: Vec<ScoredStub> = hits
@@ -236,6 +271,14 @@ where
         let probes = extract_probes(output);
 
         for probe in probes {
+            if let Some(monitor) = &mut self.degradation_monitor {
+                monitor.record_probe();
+                // Stop processing probes if the rate limiter just tripped
+                if !monitor.should_auto_recall() {
+                    break;
+                }
+            }
+
             let hits = self.retriever.search(&probe.content, self.config.top_k)?;
             self.load_fragments(hits)?;
         }

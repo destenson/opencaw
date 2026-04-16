@@ -1,4 +1,5 @@
 pub mod consolidation;
+pub mod degradation;
 pub mod dynamic;
 pub mod probe_recall;
 pub mod thinking_trace;

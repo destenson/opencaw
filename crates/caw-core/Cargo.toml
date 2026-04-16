@@ -7,3 +7,4 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
+tiktoken-rs = "0.11"

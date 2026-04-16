@@ -59,8 +59,10 @@ fn main() -> Result<()> {
 
     for doc in docs {
         let content = doc.content.clone();
-        let stub = pipeline.ingest(doc);
-        retriever.insert(stub, content)?;
+        let stubs = pipeline.ingest(doc);
+        for stub in stubs {
+            retriever.insert(stub, content.clone())?;
+        }
     }
 
     println!("Indexed 3 documents\n");

@@ -1,9 +1,12 @@
+pub mod chunking;
 pub mod summarizer;
 mod tree_sitter_outline;
 
-use caw_core::{CawError, CawResult, ContentKind, Stub, StubId};
+use caw_core::{CawError, CawResult, ContentKind, Stub, StubId, Tokenizer, WhitespaceTokenizer};
+use chunking::{ChunkingConfig, chunk_document, chunk_summary};
 use sha2::{Digest, Sha256};
 use std::path::Path;
+use std::sync::Arc;
 use summarizer::{DeterministicSummarizer, Summarizer};
 use walkdir::WalkDir;
 
@@ -44,34 +47,103 @@ impl SourceDocument {
 
 pub struct IngestionPipeline {
     summarizer: Box<dyn Summarizer>,
+    tokenizer: Arc<dyn Tokenizer>,
+    chunking: Option<ChunkingConfig>,
 }
 
 impl IngestionPipeline {
     pub fn new() -> Self {
         Self {
             summarizer: Box::new(DeterministicSummarizer),
+            tokenizer: Arc::new(WhitespaceTokenizer),
+            chunking: Some(ChunkingConfig::default()),
         }
     }
 
     pub fn with_summarizer(summarizer: Box<dyn Summarizer>) -> Self {
-        Self { summarizer }
+        Self {
+            summarizer,
+            tokenizer: Arc::new(WhitespaceTokenizer),
+            chunking: Some(ChunkingConfig::default()),
+        }
     }
 
-    pub fn ingest(&self, doc: SourceDocument) -> Stub {
+    pub fn with_tokenizer(mut self, tokenizer: Arc<dyn Tokenizer>) -> Self {
+        self.tokenizer = tokenizer;
+        self
+    }
+
+    pub fn with_chunking(mut self, config: Option<ChunkingConfig>) -> Self {
+        self.chunking = config;
+        self
+    }
+
+    /// Ingest a document, returning one or more stubs. Large files are split
+    /// into multiple chunks, each producing its own stub. Files below the
+    /// chunking threshold produce a single stub.
+    pub fn ingest(&self, doc: SourceDocument) -> Vec<Stub> {
         let outline = extract_outline(doc.kind, &doc.content, &doc.path);
+        let content_hash = sha256_hash(&doc.content);
+
+        if let Some(ref config) = self.chunking {
+            let chunks = chunk_document(&doc.content, doc.kind, &outline, config, &self.tokenizer);
+            if chunks.len() > 1 {
+                return chunks
+                    .iter()
+                    .map(|chunk| {
+                        let chunk_hash = sha256_hash(&chunk.content);
+                        let chunk_token_estimate = self.tokenizer.count_tokens(&chunk.content);
+                        let position_summary = chunk_summary(&doc.path, chunk);
+                        let base_summary = self
+                            .summarizer
+                            .summarize(&doc.path, &chunk.content, doc.kind, &chunk.outline_entries)
+                            .unwrap_or_else(|_| {
+                                DeterministicSummarizer
+                                    .summarize(
+                                        &doc.path,
+                                        &chunk.content,
+                                        doc.kind,
+                                        &chunk.outline_entries,
+                                    )
+                                    .unwrap_or_default()
+                            });
+
+                        let summary = if position_summary.is_empty() {
+                            base_summary
+                        } else if base_summary.is_empty() {
+                            position_summary
+                        } else {
+                            format!("{} — {}", position_summary, base_summary)
+                        };
+
+                        Stub {
+                            id: StubId(format!("{}#chunk{}", doc.path, chunk.index)),
+                            path: doc.path.clone(),
+                            token_estimate: chunk_token_estimate,
+                            kind: doc.kind,
+                            summary,
+                            outline: chunk.outline_entries.clone(),
+                            content_hash: chunk_hash,
+                            mtime_unix_secs: doc.mtime_unix_secs,
+                            consolidation_notes: Vec::new(),
+                        }
+                    })
+                    .collect();
+            }
+        }
+
+        // Single-stub path: file is small or chunking is disabled
         let summary = self
             .summarizer
             .summarize(&doc.path, &doc.content, doc.kind, &outline)
             .unwrap_or_else(|_| {
-                // LLM failure degrades to deterministic
                 DeterministicSummarizer
                     .summarize(&doc.path, &doc.content, doc.kind, &outline)
                     .unwrap_or_default()
             });
-        let token_estimate = estimate_tokens(&doc.content);
-        let content_hash = sha256_hash(&doc.content);
+        let token_estimate = self.tokenizer.count_tokens(&doc.content);
 
-        Stub {
+        vec![Stub {
             id: StubId(doc.path.clone()),
             path: doc.path,
             token_estimate,
@@ -81,7 +153,7 @@ impl IngestionPipeline {
             content_hash,
             mtime_unix_secs: doc.mtime_unix_secs,
             consolidation_notes: Vec::new(),
-        }
+        }]
     }
 
     /// Ingest all supported files under a directory
@@ -106,11 +178,12 @@ impl IngestionPipeline {
             match SourceDocument::from_path(path) {
                 Ok(doc) => {
                     let content = doc.content.clone();
-                    let stub = self.ingest(doc);
-                    results.push((stub, content));
+                    let stubs = self.ingest(doc);
+                    for stub in stubs {
+                        results.push((stub, content.clone()));
+                    }
                 }
                 Err(_) => {
-                    // Skip files that can't be read as UTF-8 (binary files, etc.)
                     continue;
                 }
             }
@@ -181,13 +254,6 @@ fn extract_outline_naive(content: &str) -> Vec<String> {
         }
     }
     outline
-}
-
-/// Estimate token count using whitespace splitting as a rough
-/// subword-tokenizer approximation. More accurate than len/4 for
-/// mixed prose/code content.
-fn estimate_tokens(content: &str) -> usize {
-    content.split_whitespace().count().max(1)
 }
 
 fn sha256_hash(input: &str) -> String {

@@ -1,4 +1,4 @@
-use caw_core::{CawResult, CompletionRequest, ModelAdapter};
+use caw_core::{CawResult, CompletionRequest, ModelAdapter, Tokenizer, WhitespaceTokenizer};
 
 /// The result of compressing a tool output: a short summary for context,
 /// plus the full original stored for later recall.
@@ -163,10 +163,8 @@ impl ToolOutputCompressor for ExtractiveToolOutputCompressor {
     }
 }
 
-/// Rough token estimate: split on whitespace. Not accurate for any
-/// specific tokenizer, but sufficient for budget decisions.
+/// Default token estimate using WhitespaceTokenizer. Callers with a real
+/// tokenizer should use `tokenizer.count_tokens()` directly instead.
 pub fn estimate_tokens(text: &str) -> usize {
-    // ~0.75 words per token is a common heuristic for English text
-    let words = text.split_whitespace().count();
-    (words as f32 * 1.33) as usize
+    WhitespaceTokenizer.count_tokens(text)
 }

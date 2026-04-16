@@ -169,8 +169,10 @@ let doc = SourceDocument {
     content: "LLM context is a workspace...".to_string(),
     kind: ContentKind::Markdown,
 };
-let stub = pipeline.ingest(doc.clone());
-retriever.insert(stub, doc.content)?;
+let stubs = pipeline.ingest(doc.clone());
+for stub in stubs {
+    retriever.insert(stub, doc.content.clone())?;
+}
 
 // Configure orchestrator
 let config = OrchestratorConfig {
