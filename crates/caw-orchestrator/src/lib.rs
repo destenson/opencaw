@@ -4,13 +4,13 @@ pub mod thinking_trace;
 
 use caw_core::{
     BudgetScheduler, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
-    ProvenanceStore, RecallFragment, Retriever, SchedulerInput, TokenBudget,
+    ProvenanceStore, RecallFragment, RecallThresholds, Retriever, SchedulerInput, TokenBudget,
 };
 
 #[derive(Debug, Clone)]
 pub struct OrchestratorConfig {
     pub top_k: usize,
-    pub load_threshold: f32,
+    pub thresholds: RecallThresholds,
     pub default_range: String,
     pub budget: TokenBudget,
 }
@@ -19,7 +19,7 @@ impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
             top_k: 4,
-            load_threshold: 0.3,
+            thresholds: RecallThresholds::default_hysteresis(),
             default_range: "full".to_string(),
             budget: TokenBudget {
                 max_total: 16_000,
@@ -59,7 +59,7 @@ where
 
         for hit in hits
             .into_iter()
-            .filter(|h| h.score >= self.config.load_threshold)
+            .filter(|h| h.score >= self.config.thresholds.load)
         {
             let fragment = self
                 .retriever

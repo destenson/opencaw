@@ -3,46 +3,69 @@ use caw_core::{
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::runtime::Runtime;
 
-#[derive(Debug, Clone)]
 pub struct OllamaAdapter {
     base_url: String,
     model: String,
     client: Client,
+    runtime: Arc<Runtime>,
+}
+
+impl std::fmt::Debug for OllamaAdapter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OllamaAdapter")
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .finish()
+    }
 }
 
 impl OllamaAdapter {
-    pub fn new(base_url: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn new_with(
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        runtime: Arc<Runtime>,
+    ) -> Self {
         Self {
             base_url: base_url.into(),
             model: model.into(),
             client: Client::new(),
+            runtime,
         }
     }
 
-    pub fn local(model: impl Into<String>) -> Self {
-        Self::new("http://localhost:11434", model)
+    pub fn local(model: impl Into<String>, runtime: Arc<Runtime>) -> Self {
+        Self::new_with("http://localhost:11434", model, runtime)
     }
 
-    pub fn llama3_2() -> Self {
-        Self::local("llama3.2")
+    pub fn llama3_2(runtime: Arc<Runtime>) -> Self {
+        Self::local("llama3.2", runtime)
     }
 
-    pub fn qwen2_5() -> Self {
-        Self::local("qwen2.5")
+    pub fn qwen2_5(runtime: Arc<Runtime>) -> Self {
+        Self::local("qwen2.5", runtime)
     }
 
-    pub fn deepseek_r1() -> Self {
-        Self::local("deepseek-r1")
+    pub fn deepseek_r1(runtime: Arc<Runtime>) -> Self {
+        Self::local("deepseek-r1", runtime)
     }
 }
 
+/// Uses Ollama's /api/chat endpoint with proper message roles
 #[derive(Serialize)]
-struct OllamaRequest {
+struct OllamaChatRequest {
     model: String,
-    prompt: String,
+    messages: Vec<OllamaChatMessage>,
     stream: bool,
     options: OllamaOptions,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct OllamaChatMessage {
+    role: String,
+    content: String,
 }
 
 #[derive(Serialize)]
@@ -52,8 +75,8 @@ struct OllamaOptions {
 }
 
 #[derive(Deserialize)]
-struct OllamaResponse {
-    response: String,
+struct OllamaChatResponse {
+    message: OllamaChatMessage,
 }
 
 impl ModelAdapter for OllamaAdapter {
@@ -71,34 +94,21 @@ impl ModelAdapter for OllamaAdapter {
     }
 
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
-        let workspace_context = if req.workspace_fragments.is_empty() {
-            String::new()
-        } else {
-            let fragments = req
-                .workspace_fragments
-                .iter()
-                .map(|f| {
-                    format!(
-                        "\n[recalled from {source}:{locator}]\n{content}\n[end recall]",
-                        source = f.locator.source,
-                        locator = f.locator.locator,
-                        content = f.content
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
+        let workspace_context = format_workspace(&req);
+        let full_user_message = format!("{}{}", req.user, workspace_context);
 
-            format!("\n\nRecalled workspace context:\n{}", fragments)
-        };
-
-        let full_prompt = format!(
-            "System: {}\n\nUser: {}{}\n\nAssistant:",
-            req.system, req.user, workspace_context
-        );
-
-        let ollama_req = OllamaRequest {
+        let ollama_req = OllamaChatRequest {
             model: self.model.clone(),
-            prompt: full_prompt,
+            messages: vec![
+                OllamaChatMessage {
+                    role: "system".to_string(),
+                    content: req.system,
+                },
+                OllamaChatMessage {
+                    role: "user".to_string(),
+                    content: full_user_message,
+                },
+            ],
             stream: false,
             options: OllamaOptions {
                 temperature: 0.7,
@@ -106,24 +116,43 @@ impl ModelAdapter for OllamaAdapter {
             },
         };
 
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| CawError::Adapter(format!("Failed to create runtime: {}", e)))?;
-
-        let response = runtime.block_on(async {
-            let url = format!("{}/api/generate", self.base_url);
+        let response = self.runtime.block_on(async {
+            let url = format!("{}/api/chat", self.base_url);
             self.client
                 .post(&url)
                 .json(&ollama_req)
                 .send()
                 .await
                 .map_err(|e| CawError::Adapter(format!("Request failed: {}", e)))?
-                .json::<OllamaResponse>()
+                .json::<OllamaChatResponse>()
                 .await
                 .map_err(|e| CawError::Adapter(format!("Failed to parse response: {}", e)))
         })?;
 
         Ok(CompletionResponse {
-            answer: response.response,
+            answer: response.message.content,
         })
     }
+}
+
+fn format_workspace(req: &CompletionRequest) -> String {
+    if req.workspace_fragments.is_empty() {
+        return String::new();
+    }
+
+    let fragments = req
+        .workspace_fragments
+        .iter()
+        .map(|f| {
+            format!(
+                "\n[recalled from {source}:{locator}]\n{content}\n[end recall]",
+                source = f.locator.source,
+                locator = f.locator.locator,
+                content = f.content
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!("\n\nRecalled workspace context:\n{}", fragments)
 }

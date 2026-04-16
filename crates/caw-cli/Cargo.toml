@@ -9,7 +9,9 @@ anyhow.workspace = true
 caw-adapters = { path = "../caw-adapters" }
 caw-core = { path = "../caw-core" }
 caw-index = { path = "../caw-index" }
+caw-ingest = { path = "../caw-ingest" }
 caw-orchestrator = { path = "../caw-orchestrator" }
 caw-provenance = { path = "../caw-provenance" }
 caw-scheduler = { path = "../caw-scheduler" }
-
+caw-transform = { path = "../caw-transform" }
+clap = { version = "4", features = ["derive"] }

@@ -8,15 +8,12 @@ pub use anthropic::AnthropicAdapter;
 pub use groq::GroqAdapter;
 pub use ollama::OllamaAdapter;
 
-#[derive(Debug, Clone, Copy)]
-pub enum Provider {
-    OpenAi,
-    Anthropic,
-    Groq,
-    Ollama,
-    Vllm,
-    LlamaCpp,
-    Mock,
+/// Create a shared tokio runtime for all adapters.
+/// Call this once at startup and pass the Arc to each adapter.
+pub fn create_runtime() -> CawResult<std::sync::Arc<tokio::runtime::Runtime>> {
+    tokio::runtime::Runtime::new()
+        .map(std::sync::Arc::new)
+        .map_err(|e| caw_core::CawError::Adapter(format!("Failed to create runtime: {}", e)))
 }
 
 #[derive(Debug, Clone)]

@@ -1,6 +1,6 @@
 use caw_core::{
     BudgetScheduler, CawResult, CompletionRequest, CompletionResponse, EmbeddingProvider,
-    ModelAdapter, ProvenanceStore, RecallFragment, Retriever, SchedulerInput, ScoredStub,
+    ModelAdapter, ProvenanceStore, RecallFragment, RecallThresholds, Retriever, SchedulerInput,
     TokenBudget,
 };
 
@@ -25,8 +25,7 @@ where
 #[derive(Debug, Clone)]
 pub struct ThinkingTraceConfig {
     pub top_k: usize,
-    pub load_threshold: f32,
-    pub unload_threshold: f32,
+    pub thresholds: RecallThresholds,
     pub default_range: String,
     pub budget: TokenBudget,
     pub step_boundary_pattern: String,
@@ -36,8 +35,7 @@ impl Default for ThinkingTraceConfig {
     fn default() -> Self {
         Self {
             top_k: 4,
-            load_threshold: 0.7,
-            unload_threshold: 0.4,
+            thresholds: RecallThresholds::default_hysteresis(),
             default_range: "full".to_string(),
             budget: TokenBudget {
                 max_total: 16_000,
@@ -76,31 +74,21 @@ where
         }
     }
 
-    /// Run a turn with step-boundary recall
     pub fn run_turn_with_recall(
         &mut self,
         system: &str,
         user: &str,
     ) -> CawResult<CompletionResponse> {
-        // Initial retrieval based on user query
         self.recall_for_query(user)?;
 
-        // For models with visible reasoning, we would:
-        // 1. Stream the response
-        // 2. Detect step boundaries
-        // 3. Embed each step
-        // 4. Trigger recall if similarity crosses threshold
-        // 5. Inject recalled content before next step
-        //
-        // For now, simplified: just do initial recall
+        // Streaming step-boundary recall would go here for models with
+        // visible reasoning. Requires a streaming completion API that
+        // yields partial responses — not yet available in this crate.
         let response = self.adapter.complete(CompletionRequest {
             system: system.to_string(),
             user: user.to_string(),
             workspace_fragments: self.loaded.clone(),
         })?;
-
-        // TODO: Parse thinking trace from response and do mid-generation recall
-        // This requires streaming API support
 
         Ok(response)
     }
@@ -111,7 +99,7 @@ where
         let mut candidate_scores = Vec::new();
 
         for hit in hits {
-            if hit.score >= self.config.load_threshold {
+            if hit.score >= self.config.thresholds.load {
                 let fragment = self
                     .retriever
                     .read_range(&hit.stub.id, &self.config.default_range)?;
@@ -136,7 +124,6 @@ where
         Ok(decision.admitted)
     }
 
-    /// Recall based on a thinking step
     pub fn recall_for_step(&mut self, step_text: &str) -> CawResult<Vec<RecallFragment>> {
         self.recall_for_query(step_text)
     }

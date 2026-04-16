@@ -3,33 +3,48 @@ use caw_core::{
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::runtime::Runtime;
 
-#[derive(Debug, Clone)]
 pub struct AnthropicAdapter {
     api_key: String,
     model: String,
     client: Client,
+    runtime: Arc<Runtime>,
+}
+
+impl std::fmt::Debug for AnthropicAdapter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnthropicAdapter")
+            .field("model", &self.model)
+            .finish()
+    }
 }
 
 impl AnthropicAdapter {
-    pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn new_with(
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        runtime: Arc<Runtime>,
+    ) -> Self {
         Self {
             api_key: api_key.into(),
             model: model.into(),
             client: Client::new(),
+            runtime,
         }
     }
 
-    pub fn claude_sonnet() -> Self {
+    pub fn claude_sonnet(runtime: Arc<Runtime>) -> CawResult<Self> {
         let api_key = std::env::var("ANTHROPIC_API_KEY")
-            .unwrap_or_else(|_| panic!("ANTHROPIC_API_KEY not set"));
-        Self::new(api_key, "claude-sonnet-4-20250514")
+            .map_err(|_| CawError::Adapter("ANTHROPIC_API_KEY not set".into()))?;
+        Ok(Self::new_with(api_key, "claude-sonnet-4-20250514", runtime))
     }
 
-    pub fn claude_opus() -> Self {
+    pub fn claude_opus(runtime: Arc<Runtime>) -> CawResult<Self> {
         let api_key = std::env::var("ANTHROPIC_API_KEY")
-            .unwrap_or_else(|_| panic!("ANTHROPIC_API_KEY not set"));
-        Self::new(api_key, "claude-opus-4-20250514")
+            .map_err(|_| CawError::Adapter("ANTHROPIC_API_KEY not set".into()))?;
+        Ok(Self::new_with(api_key, "claude-opus-4-20250514", runtime))
     }
 }
 
@@ -65,32 +80,14 @@ impl ModelAdapter for AnthropicAdapter {
     fn capabilities(&self) -> ModelCapabilities {
         ModelCapabilities {
             supports_tool_calls: true,
-            supports_hidden_reasoning: self.model.contains("sonnet-4") || self.model.contains("opus-4"),
+            supports_hidden_reasoning: self.model.contains("sonnet-4")
+                || self.model.contains("opus-4"),
             supports_visible_reasoning: false,
         }
     }
 
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
-        let workspace_context = if req.workspace_fragments.is_empty() {
-            String::new()
-        } else {
-            let fragments = req
-                .workspace_fragments
-                .iter()
-                .map(|f| {
-                    format!(
-                        "\n<recalled from=\"{source}\" locator=\"{locator}\">\n{content}\n</recalled>",
-                        source = f.locator.source,
-                        locator = f.locator.locator,
-                        content = f.content
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            format!("\n\nRecalled workspace context:\n{}", fragments)
-        };
-
+        let workspace_context = format_workspace_xml(&req);
         let full_user_message = format!("{}{}", req.user, workspace_context);
 
         let anthropic_req = AnthropicRequest {
@@ -103,10 +100,7 @@ impl ModelAdapter for AnthropicAdapter {
             }],
         };
 
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| CawError::Adapter(format!("Failed to create runtime: {}", e)))?;
-
-        let response = runtime.block_on(async {
+        let response = self.runtime.block_on(async {
             self.client
                 .post("https://api.anthropic.com/v1/messages")
                 .header("x-api-key", &self.api_key)
@@ -129,4 +123,26 @@ impl ModelAdapter for AnthropicAdapter {
 
         Ok(CompletionResponse { answer })
     }
+}
+
+fn format_workspace_xml(req: &CompletionRequest) -> String {
+    if req.workspace_fragments.is_empty() {
+        return String::new();
+    }
+
+    let fragments = req
+        .workspace_fragments
+        .iter()
+        .map(|f| {
+            format!(
+                "\n<recalled from=\"{source}\" locator=\"{locator}\">\n{content}\n</recalled>",
+                source = f.locator.source,
+                locator = f.locator.locator,
+                content = f.content
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!("\n\nRecalled workspace context:\n{}", fragments)
 }

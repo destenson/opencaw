@@ -1,30 +1,23 @@
-use caw_core::{CawError, CawResult, EmbeddingProvider, Locator, RecallFragment, Retriever, ScoredStub, Stub, StubId, VectorStore};
+use caw_core::{CawError, CawResult, EmbeddingProvider, Locator, Range, RecallFragment, Retriever, ScoredStub, Stub, StubId, VectorStore};
 
-// Embedding provider implementations
 pub mod embeddings {
     #[cfg(feature = "fastembed")]
     pub mod fastembed_provider;
-    
-    // ONNX disabled due to dependency conflict with fastembed
-    // #[cfg(feature = "onnx")]
-    // pub mod onnx_provider;
-    
+
     #[cfg(feature = "candle")]
     pub mod candle_provider;
-    
+
     pub mod api_provider;
 }
 
-// Vector storage implementations
 pub mod storage {
     #[cfg(feature = "sqlite")]
     pub mod sqlite_store;
-    
+
     #[cfg(feature = "qdrant")]
     pub mod qdrant_store;
 }
 
-// Re-exports
 #[cfg(feature = "fastembed")]
 pub use embeddings::fastembed_provider::FastEmbedProvider;
 
@@ -60,8 +53,13 @@ where
         let embeddings = self.embedder.embed(vec![text.as_str()])?;
         let embedding = embeddings.into_iter().next()
             .ok_or_else(|| CawError::Embedding("No embedding generated".to_string()))?;
-        
+
         self.store.insert(stub, embedding, content)
+    }
+
+    /// Direct access to the underlying vector store for embedding-based search
+    pub fn store(&self) -> &S {
+        &self.store
     }
 }
 
@@ -74,20 +72,18 @@ where
         let embeddings = self.embedder.embed(vec![query])?;
         let query_embedding = embeddings.into_iter().next()
             .ok_or_else(|| CawError::Embedding("No embedding generated for query".to_string()))?;
-        
+
         self.store.search_by_embedding(&query_embedding, top_k)
     }
 
     fn read_range(&self, id: &StubId, range: &str) -> CawResult<RecallFragment> {
-        use caw_core::ContentRange;
-        
         let full_content = self.store.get_content(id)?;
         let stub = self.store.get_stub(id)?;
-        
-        let range_parsed = ContentRange::parse(range);
-        let content = range_parsed.apply(&full_content);
-        let tokens = (content.len() / 4).max(1);
-        
+
+        let parsed = Range::parse(range);
+        let content = parsed.apply(&full_content);
+        let tokens = estimate_tokens(&content);
+
         Ok(RecallFragment {
             stub_id: id.clone(),
             content,
@@ -100,9 +96,6 @@ where
     }
 }
 
-// Keep the original InMemoryIndex for backwards compatibility
-
-// Keep the original InMemoryIndex for backwards compatibility
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryIndex {
     stubs: Vec<Stub>,
@@ -133,8 +126,6 @@ impl Retriever for InMemoryIndex {
     }
 
     fn read_range(&self, id: &StubId, range: &str) -> CawResult<RecallFragment> {
-        use caw_core::ContentRange;
-        
         let full_content = self
             .docs
             .iter()
@@ -147,9 +138,9 @@ impl Retriever for InMemoryIndex {
             .find(|s| &s.id == id)
             .ok_or_else(|| CawError::NotFound(id.0.clone()))?;
 
-        let range_parsed = ContentRange::parse(range);
-        let content = range_parsed.apply(full_content);
-        let tokens = (content.len() / 4).max(1);
+        let parsed = Range::parse(range);
+        let content = parsed.apply(full_content);
+        let tokens = estimate_tokens(&content);
 
         Ok(RecallFragment {
             stub_id: id.clone(),
@@ -190,4 +181,10 @@ fn score_query_against_stub(query: &str, stub: &Stub) -> f32 {
     }
 
     score
+}
+
+fn estimate_tokens(content: &str) -> usize {
+    // Split on whitespace and punctuation boundaries for a rough
+    // subword-tokenizer approximation (closer than len/4 for mixed content)
+    content.split_whitespace().count().max(1)
 }

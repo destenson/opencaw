@@ -1,11 +1,11 @@
 use caw_core::{
     BudgetScheduler, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
-    ProvenanceStore, RecallFragment, Retriever, SchedulerInput, TokenBudget,
+    ProvenanceStore, RecallFragment, RecallThresholds, Retriever, SchedulerInput, TokenBudget,
 };
 use regex::Regex;
 
-/// Orchestrator that implements explicit probe-based recall
-/// Models emit <probe>query text</probe> markers to request content
+/// Orchestrator that implements explicit probe-based recall.
+/// Models emit <probe>query text</probe> markers to request content.
 pub struct ProbeRecallOrchestrator<R, S, P, M>
 where
     R: Retriever,
@@ -25,7 +25,7 @@ where
 #[derive(Debug, Clone)]
 pub struct ProbeRecallConfig {
     pub top_k: usize,
-    pub load_threshold: f32,
+    pub thresholds: RecallThresholds,
     pub default_range: String,
     pub budget: TokenBudget,
     pub max_probe_iterations: usize,
@@ -35,7 +35,7 @@ impl Default for ProbeRecallConfig {
     fn default() -> Self {
         Self {
             top_k: 3,
-            load_threshold: 0.5,
+            thresholds: RecallThresholds::default_hysteresis(),
             default_range: "full".to_string(),
             budget: TokenBudget {
                 max_total: 16_000,
@@ -72,7 +72,6 @@ where
         }
     }
 
-    /// Run a turn with iterative probe-based recall
     pub fn run_turn_with_probes(
         &mut self,
         system: &str,
@@ -82,22 +81,18 @@ where
         let mut iteration = 0;
 
         loop {
-            // Generate response
             let response = self.adapter.complete(CompletionRequest {
                 system: system.to_string(),
                 user: current_user.clone(),
                 workspace_fragments: self.loaded.clone(),
             })?;
 
-            // Extract probes from response
             let probes = self.extract_probes(&response.answer);
 
-            // If no probes or max iterations reached, return response
             if probes.is_empty() || iteration >= self.config.max_probe_iterations {
                 return Ok(response);
             }
 
-            // Process probes and recall content
             let mut recalled_any = false;
             for probe_query in probes {
                 let recalled = self.recall_for_probe(&probe_query)?;
@@ -106,12 +101,10 @@ where
                 }
             }
 
-            // If nothing new was recalled, return response
             if !recalled_any {
                 return Ok(response);
             }
 
-            // Continue conversation with recalled content
             current_user = format!(
                 "{}\n\nAssistant (partial): {}\n\nUser: Content has been loaded. Please continue.",
                 current_user, response.answer
@@ -134,7 +127,7 @@ where
         let mut candidate_scores = Vec::new();
 
         for hit in hits {
-            if hit.score >= self.config.load_threshold {
+            if hit.score >= self.config.thresholds.load {
                 let fragment = self
                     .retriever
                     .read_range(&hit.stub.id, &self.config.default_range)?;
@@ -164,8 +157,8 @@ where
 mod tests {
     use super::*;
     use caw_core::{
-        CawError, CompletionResponse, ContentKind, Locator, ModelCapabilities,
-        RecallFragment, SchedulerDecision, ScoredStub, Stub, StubId,
+        CawError, CompletionResponse, ModelCapabilities,
+        RecallFragment, SchedulerDecision, ScoredStub, StubId,
     };
 
     struct MockRetriever;

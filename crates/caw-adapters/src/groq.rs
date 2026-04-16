@@ -3,39 +3,54 @@ use caw_core::{
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::runtime::Runtime;
 
-#[derive(Debug, Clone)]
 pub struct GroqAdapter {
     api_key: String,
     model: String,
     client: Client,
+    runtime: Arc<Runtime>,
+}
+
+impl std::fmt::Debug for GroqAdapter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GroqAdapter")
+            .field("model", &self.model)
+            .finish()
+    }
 }
 
 impl GroqAdapter {
-    pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn new_with(
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        runtime: Arc<Runtime>,
+    ) -> Self {
         Self {
             api_key: api_key.into(),
             model: model.into(),
             client: Client::new(),
+            runtime,
         }
     }
 
-    pub fn llama_70b() -> Self {
-        let api_key =
-            std::env::var("GROQ_API_KEY").unwrap_or_else(|_| panic!("GROQ_API_KEY not set"));
-        Self::new(api_key, "llama-3.3-70b-versatile")
+    pub fn llama_70b(runtime: Arc<Runtime>) -> CawResult<Self> {
+        let api_key = std::env::var("GROQ_API_KEY")
+            .map_err(|_| CawError::Adapter("GROQ_API_KEY not set".into()))?;
+        Ok(Self::new_with(api_key, "llama-3.3-70b-versatile", runtime))
     }
 
-    pub fn llama_8b() -> Self {
-        let api_key =
-            std::env::var("GROQ_API_KEY").unwrap_or_else(|_| panic!("GROQ_API_KEY not set"));
-        Self::new(api_key, "llama-3.1-8b-instant")
+    pub fn llama_8b(runtime: Arc<Runtime>) -> CawResult<Self> {
+        let api_key = std::env::var("GROQ_API_KEY")
+            .map_err(|_| CawError::Adapter("GROQ_API_KEY not set".into()))?;
+        Ok(Self::new_with(api_key, "llama-3.1-8b-instant", runtime))
     }
 
-    pub fn mixtral() -> Self {
-        let api_key =
-            std::env::var("GROQ_API_KEY").unwrap_or_else(|_| panic!("GROQ_API_KEY not set"));
-        Self::new(api_key, "mixtral-8x7b-32768")
+    pub fn mixtral(runtime: Arc<Runtime>) -> CawResult<Self> {
+        let api_key = std::env::var("GROQ_API_KEY")
+            .map_err(|_| CawError::Adapter("GROQ_API_KEY not set".into()))?;
+        Ok(Self::new_with(api_key, "mixtral-8x7b-32768", runtime))
     }
 }
 
@@ -76,26 +91,7 @@ impl ModelAdapter for GroqAdapter {
     }
 
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
-        let workspace_context = if req.workspace_fragments.is_empty() {
-            String::new()
-        } else {
-            let fragments = req
-                .workspace_fragments
-                .iter()
-                .map(|f| {
-                    format!(
-                        "\n[recalled from {source}:{locator}]\n{content}\n[end recall]",
-                        source = f.locator.source,
-                        locator = f.locator.locator,
-                        content = f.content
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            format!("\n\nRecalled workspace context:\n{}", fragments)
-        };
-
+        let workspace_context = format_workspace(&req);
         let full_user_message = format!("{}{}", req.user, workspace_context);
 
         let groq_req = GroqRequest {
@@ -113,10 +109,7 @@ impl ModelAdapter for GroqAdapter {
             ],
         };
 
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| CawError::Adapter(format!("Failed to create runtime: {}", e)))?;
-
-        let response = runtime.block_on(async {
+        let response = self.runtime.block_on(async {
             self.client
                 .post("https://api.groq.com/openai/v1/chat/completions")
                 .header("Authorization", format!("Bearer {}", self.api_key))
@@ -138,4 +131,26 @@ impl ModelAdapter for GroqAdapter {
 
         Ok(CompletionResponse { answer })
     }
+}
+
+fn format_workspace(req: &CompletionRequest) -> String {
+    if req.workspace_fragments.is_empty() {
+        return String::new();
+    }
+
+    let fragments = req
+        .workspace_fragments
+        .iter()
+        .map(|f| {
+            format!(
+                "\n[recalled from {source}:{locator}]\n{content}\n[end recall]",
+                source = f.locator.source,
+                locator = f.locator.locator,
+                content = f.content
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!("\n\nRecalled workspace context:\n{}", fragments)
 }

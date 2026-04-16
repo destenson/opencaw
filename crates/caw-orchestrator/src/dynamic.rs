@@ -1,20 +1,26 @@
 use caw_core::{
     CawResult, CompletionRequest, CompletionResponse, EmbeddingProvider, ModelAdapter,
-    ProvenanceStore, Range, RecallFragment, Retriever, ScoredStub, Stub, StubId,
+    ProvenanceStore, Range, RecallFragment, RecallThresholds, Retriever, ScoredStub,
+    StubId, VectorStore,
 };
-use caw_transform::{apply_range, extract_probes, extract_thinking_steps};
+use caw_transform::{extract_probes, extract_thinking_steps};
 use std::collections::HashSet;
 
-/// Advanced orchestrator with thinking-trace and probe-based recall
-pub struct DynamicRecallOrchestrator<R, E, P, M>
+/// Advanced orchestrator with thinking-trace and probe-based recall.
+/// Unlike the simpler orchestrators, this one holds a VectorStore directly
+/// so that thinking-trace steps can be embedded and matched against stored
+/// document embeddings without going through the text-based Retriever.
+pub struct DynamicRecallOrchestrator<R, E, V, P, M>
 where
     R: Retriever,
     E: EmbeddingProvider,
+    V: VectorStore,
     P: ProvenanceStore,
     M: ModelAdapter,
 {
     pub retriever: R,
     pub embedder: E,
+    pub vector_store: V,
     pub provenance: P,
     pub adapter: M,
     pub loaded: Vec<RecallFragment>,
@@ -25,8 +31,7 @@ where
 #[derive(Debug, Clone)]
 pub struct DynamicRecallConfig {
     pub top_k: usize,
-    pub load_threshold: f32,
-    pub unload_threshold: f32,
+    pub thresholds: RecallThresholds,
     pub max_workspace_tokens: usize,
     pub enable_thinking_trace_recall: bool,
     pub enable_probe_recall: bool,
@@ -36,8 +41,7 @@ impl Default for DynamicRecallConfig {
     fn default() -> Self {
         Self {
             top_k: 4,
-            load_threshold: 0.7,
-            unload_threshold: 0.4,
+            thresholds: RecallThresholds::default_hysteresis(),
             max_workspace_tokens: 12_000,
             enable_thinking_trace_recall: true,
             enable_probe_recall: true,
@@ -45,17 +49,26 @@ impl Default for DynamicRecallConfig {
     }
 }
 
-impl<R, E, P, M> DynamicRecallOrchestrator<R, E, P, M>
+impl<R, E, V, P, M> DynamicRecallOrchestrator<R, E, V, P, M>
 where
     R: Retriever,
     E: EmbeddingProvider,
+    V: VectorStore,
     P: ProvenanceStore,
     M: ModelAdapter,
 {
-    pub fn new(retriever: R, embedder: E, provenance: P, adapter: M, config: DynamicRecallConfig) -> Self {
+    pub fn new(
+        retriever: R,
+        embedder: E,
+        vector_store: V,
+        provenance: P,
+        adapter: M,
+        config: DynamicRecallConfig,
+    ) -> Self {
         Self {
             retriever,
             embedder,
+            vector_store,
             provenance,
             adapter,
             loaded: Vec::new(),
@@ -64,24 +77,25 @@ where
         }
     }
 
-    /// Execute a turn with dynamic recall
     pub fn run_turn(&mut self, system: &str, user: &str) -> CawResult<CompletionResponse> {
-        // Initial retrieval based on user query
+        // Initial text-based retrieval on the user query
         let initial_hits = self.retriever.search(user, self.config.top_k)?;
         self.load_fragments(initial_hits)?;
 
-        // Get initial response
         let response = self.adapter.complete(CompletionRequest {
             system: system.to_string(),
             user: user.to_string(),
             workspace_fragments: self.loaded.clone(),
         })?;
 
-        // Process thinking trace or probes for additional recall
-        if self.config.enable_thinking_trace_recall && self.adapter.capabilities().supports_visible_reasoning {
+        // Process thinking trace for embedding-based recall
+        if self.config.enable_thinking_trace_recall
+            && self.adapter.capabilities().supports_visible_reasoning
+        {
             self.process_thinking_trace(&response.answer)?;
         }
 
+        // Process explicit probe markers for text-based recall
         if self.config.enable_probe_recall {
             self.process_probes(&response.answer)?;
         }
@@ -89,94 +103,75 @@ where
         Ok(response)
     }
 
-    /// Process thinking steps and trigger recall
     fn process_thinking_trace(&mut self, output: &str) -> CawResult<()> {
         let steps = extract_thinking_steps(output);
-        
+
         for step in steps {
             if step.content.len() < 20 {
-                continue; // Skip very short steps
+                continue;
             }
-            
-            // Embed the step
+
             let embeddings = self.embedder.embed(vec![&step.content])?;
             if let Some(embedding) = embeddings.first() {
-                // Search for relevant stubs
-                let hits = self.search_by_embedding(embedding)?;
+                let hits = self.vector_store.search_by_embedding(embedding, self.config.top_k)?;
                 self.load_fragments(hits)?;
             }
         }
-        
+
         Ok(())
     }
 
-    /// Process probe markers and trigger recall
     fn process_probes(&mut self, output: &str) -> CawResult<()> {
         let probes = extract_probes(output);
-        
+
         for probe in probes {
             let hits = self.retriever.search(&probe.content, self.config.top_k)?;
             self.load_fragments(hits)?;
         }
-        
+
         Ok(())
     }
 
-    /// Load fragments from scored stubs with hysteresis
     fn load_fragments(&mut self, hits: Vec<ScoredStub>) -> CawResult<()> {
         for hit in hits {
-            // Suppress already-loaded files
             if self.loaded_ids.contains(&hit.stub.id) {
                 continue;
             }
-            
-            // Check threshold
-            if hit.score < self.config.load_threshold {
+
+            if hit.score < self.config.thresholds.load {
                 continue;
             }
-            
-            // Check budget
+
             let current_tokens: usize = self.loaded.iter().map(|f| f.tokens).sum();
             if current_tokens >= self.config.max_workspace_tokens {
                 break;
             }
-            
-            // Load fragment
+
             let fragment = self.retriever.read_range(&hit.stub.id, "full")?;
-            
+
             if current_tokens + fragment.tokens <= self.config.max_workspace_tokens {
                 self.loaded_ids.insert(hit.stub.id.clone());
                 self.provenance.record(fragment.clone());
                 self.loaded.push(fragment);
             }
         }
-        
-        // Evict fragments below unload threshold
+
         self.evict_low_score_fragments()?;
-        
         Ok(())
     }
 
-    /// Evict fragments that fall below unload threshold
     fn evict_low_score_fragments(&mut self) -> CawResult<()> {
-        // For MVP, we don't re-score. In production, track scores and evict based on threshold.
-        // This is a placeholder for hysteresis-based eviction.
+        // Re-score loaded fragments against recent query context would go here.
+        // For now, eviction happens through the scheduler in the other orchestrators.
+        // The DynamicRecallOrchestrator relies on budget limits in load_fragments
+        // to prevent unbounded growth.
         Ok(())
     }
 
-    /// Search by embedding (helper for thinking-trace recall)
-    fn search_by_embedding(&self, embedding: &[f32]) -> CawResult<Vec<ScoredStub>> {
-        // This would need VectorStore trait access
-        // For now, fall back to empty results
-        // TODO: Add direct VectorStore access to orchestrator
-        Ok(Vec::new())
-    }
-
-    /// Read specific range from a stub
     pub fn read_range(&self, stub_id: &StubId, range: &Range) -> CawResult<RecallFragment> {
         let full_fragment = self.retriever.read_range(stub_id, "full")?;
-        let range_content = apply_range(&full_fragment.content, range)?;
-        let token_estimate = (range_content.len() / 4).max(1);
+        let range_content = range.apply(&full_fragment.content);
+        let token_estimate = range_content.split_whitespace().count().max(1);
 
         Ok(RecallFragment {
             stub_id: stub_id.clone(),

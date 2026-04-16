@@ -7,4 +7,5 @@ license.workspace = true
 [dependencies]
 caw-core = { path = "../caw-core" }
 serde.workspace = true
-
+sha2 = "0.11"
+walkdir = "2"
