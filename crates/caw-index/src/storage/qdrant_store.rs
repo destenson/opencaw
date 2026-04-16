@@ -29,6 +29,10 @@ impl StubStore for QdrantStubStore {
         Err(CawError::NotFound(id.0.clone()))
     }
 
+    fn get_by_content_hash(&self, _hash: &str) -> CawResult<Option<(Stub, Vec<f32>)>> {
+        Err(CawError::VectorStore("Qdrant store not yet implemented".to_string()))
+    }
+
     fn all_embeddings(&self) -> CawResult<Vec<(StubId, Vec<f32>)>> {
         Err(CawError::VectorStore("Qdrant store not yet implemented".to_string()))
     }

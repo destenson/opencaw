@@ -153,6 +153,32 @@ impl StubStore for SqliteStubStore {
             .map_err(|e| CawError::VectorStore(format!("Failed to deserialize stub: {}", e)))
     }
 
+    fn get_by_content_hash(&self, hash: &str) -> CawResult<Option<(Stub, Vec<f32>)>> {
+        let result: Result<(String, Vec<u8>), _> = self.conn.query_row(
+            "SELECT s.stub_json, e.embedding FROM stubs s
+             JOIN embeddings e ON s.id = e.stub_id
+             WHERE s.content_hash = ?1
+             LIMIT 1",
+            params![hash],
+            |row| {
+                let json: String = row.get(0)?;
+                let blob: Vec<u8> = row.get(1)?;
+                Ok((json, blob))
+            },
+        );
+
+        match result {
+            Ok((json, blob)) => {
+                let stub: Stub = serde_json::from_str(&json)
+                    .map_err(|e| CawError::VectorStore(format!("Failed to deserialize stub: {}", e)))?;
+                let embedding = Self::blob_to_embedding(&blob);
+                Ok(Some((stub, embedding)))
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(CawError::VectorStore(format!("Failed to query by content hash: {}", e))),
+        }
+    }
+
     fn all_embeddings(&self) -> CawResult<Vec<(StubId, Vec<f32>)>> {
         let mut stmt = self
             .conn

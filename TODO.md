@@ -12,7 +12,7 @@ Cross-reference: design doc is `context-as-workspace.md`, scope boundaries are i
 
 - [x] **File ingestion pipeline**: Reads filesystem, detects content kind, captures mtime, generates stubs.
 - [x] **SHA256 content hashing**: Fixed formatting with `format!("{:02x}")`.
-- [ ] **Summary caching**: SQLite `StubStore` persists stubs including summaries, but the ingestion pipeline never checks whether a stub already exists before regenerating. The `(content_hash, mtime)` cache key is available — just not wired up.
+- [x] **Summary caching**: `StubStore::get_by_content_hash()` allows callers to skip re-ingestion and re-embedding when file content hasn't changed. CLI ingestion loop checks the store before generating embeddings.
 - [ ] **LLM-generated summaries**: Stub summaries are deterministic extraction (first heading + paragraph for markdown, function list for code). The design doc calls for LLM-generated 1-3 sentence summaries for prose. Deterministic extraction is fine for code but insufficient for prose triage.
 - [ ] **Target-model tokenizer**: Token estimation uses `content.split_whitespace().count()` everywhere. The design doc specifies using the target model's actual tokenizer. Whitespace splitting diverges significantly from real token counts, especially for code.
 - [ ] **Tree-sitter outlines**: Code outline extraction uses `starts_with("pub fn ")` string matching, Rust-centric with minimal Python/JS support. Misses items inside impl blocks, attributed functions, and most languages. Tree-sitter would give correct, language-agnostic symbol extraction.

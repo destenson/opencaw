@@ -439,6 +439,10 @@ pub trait StubStore {
     fn insert(&mut self, stub: Stub, embedding: Vec<f32>, content: String) -> CawResult<()>;
     fn get_content(&self, id: &StubId) -> CawResult<String>;
     fn get_stub(&self, id: &StubId) -> CawResult<Stub>;
+    /// Look up an existing stub by its content hash. Returns the stub and its
+    /// embedding if found, allowing callers to skip re-ingestion and
+    /// re-embedding when file content hasn't changed.
+    fn get_by_content_hash(&self, hash: &str) -> CawResult<Option<(Stub, Vec<f32>)>>;
     /// Iterate all stored embeddings. Used by vector index implementations
     /// to build their index from persisted data.
     fn all_embeddings(&self) -> CawResult<Vec<(StubId, Vec<f32>)>>;

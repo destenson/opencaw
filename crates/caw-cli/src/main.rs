@@ -64,12 +64,20 @@ fn main() -> Result<()> {
         .ingest_directory(&cli.dir)
         .context("Failed to ingest directory")?;
 
-    eprintln!("Ingested {} files, generating embeddings...", documents.len());
-
-    // Build the HNSW vector index alongside the stub store
     let mut vector_index = HnswVectorIndex::new();
+    let mut cached = 0usize;
+    let mut ingested = 0usize;
 
     for (stub, content) in &documents {
+        // Check if we already have this exact content indexed
+        if let Ok(Some((existing_stub, existing_embedding))) =
+            store.get_by_content_hash(&stub.content_hash)
+        {
+            vector_index.add(existing_stub.id.clone(), existing_embedding);
+            cached += 1;
+            continue;
+        }
+
         let text = format!("{} {} {}", stub.path, stub.summary, stub.outline.join(" "));
         let embeddings = embedder
             .embed_document(vec![text.as_str()])
@@ -80,10 +88,14 @@ fn main() -> Result<()> {
                 .insert(stub.clone(), embedding.clone(), content.clone())
                 .context("Failed to insert into stub store")?;
             vector_index.add(stub.id.clone(), embedding);
+            ingested += 1;
         }
     }
 
-    eprintln!("Index ready with {} documents.", documents.len());
+    eprintln!(
+        "Index ready: {} files ({} cached, {} newly ingested).",
+        documents.len(), cached, ingested
+    );
 
     let retriever = SemanticRetriever::new(embedder, store, vector_index);
 
