@@ -4,11 +4,13 @@ use caw_core::{
 };
 
 mod anthropic;
+mod claude_code;
 mod groq;
 mod ollama;
 mod openai_compatible;
 
 pub use anthropic::AnthropicAdapter;
+pub use claude_code::ClaudeCodeAdapter;
 pub use groq::GroqAdapter;
 pub use ollama::OllamaAdapter;
 pub use openai_compatible::{OpenAiCompatibleAdapter, RequestHeaders};

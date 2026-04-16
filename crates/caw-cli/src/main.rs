@@ -135,6 +135,8 @@ fn main() -> Result<()> {
                     .context("Failed to create Groq adapter")?,
             )
         }
+        "claude-code" => Box::new(caw_adapters::ClaudeCodeAdapter::sonnet()),
+        "claude-code-haiku" => Box::new(caw_adapters::ClaudeCodeAdapter::haiku()),
         "ollama" => {
             let rt = caw_adapters::create_runtime()?;
             Box::new(caw_adapters::OllamaAdapter::llama3_2(rt))
