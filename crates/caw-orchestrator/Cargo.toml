@@ -6,4 +6,6 @@ license.workspace = true
 
 [dependencies]
 caw-core = { path = "../caw-core" }
+caw-transform = { path = "../caw-transform" }
+regex = "1"
 

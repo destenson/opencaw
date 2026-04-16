@@ -254,6 +254,87 @@ pub trait EmbeddingProvider {
     fn provider_name(&self) -> &str;
 }
 
+/// A range selection within recalled content, used by the recall pipeline
+/// to address specific portions of a file (lines, headings, token windows).
+/// Distinct from ContentRange which handles simpler range parsing for the
+/// general retriever interface.
+#[derive(Debug, Clone)]
+pub enum Range {
+    Full,
+    Lines { start: usize, end: usize },
+    Heading { path: Vec<String> },
+    Tokens { start: usize, count: usize },
+    Custom(String),
+}
+
+impl Range {
+    pub fn parse(s: &str) -> Self {
+        let s = s.trim();
+        if s.eq_ignore_ascii_case("full") {
+            return Self::Full;
+        }
+
+        // Heading path: #Section/Subsection
+        if let Some(heading) = s.strip_prefix('#') {
+            return Self::Heading {
+                path: heading.split('/').map(|p| p.trim().to_string()).collect(),
+            };
+        }
+
+        // Token range: T100:500
+        if let Some(rest) = s.strip_prefix('T') {
+            if let Some((start, count)) = rest.split_once(':') {
+                if let (Ok(s), Ok(c)) = (start.parse(), count.parse()) {
+                    return Self::Tokens { start: s, count: c };
+                }
+            }
+        }
+
+        // Line range with L prefix: L5-L15
+        if s.starts_with('L') {
+            let stripped = s.replace('L', "");
+            if let Some((start, end)) = stripped.split_once('-') {
+                if let (Ok(s), Ok(e)) = (start.parse(), end.parse()) {
+                    return Self::Lines { start: s, end: e };
+                }
+            }
+        }
+
+        // Plain line range: 10-20
+        if let Some((start, end)) = s.split_once('-') {
+            if let (Ok(s), Ok(e)) = (start.parse(), end.parse()) {
+                return Self::Lines { start: s, end: e };
+            }
+        }
+
+        Self::Custom(s.to_string())
+    }
+
+    pub fn to_locator_string(&self) -> String {
+        match self {
+            Self::Full => "full".to_string(),
+            Self::Lines { start, end } => format!("{}-{}", start, end),
+            Self::Heading { path } => format!("#{}", path.join("/")),
+            Self::Tokens { start, count } => format!("T{}:{}", start, count),
+            Self::Custom(s) => s.clone(),
+        }
+    }
+}
+
+/// A probe marker emitted by the model to request recall
+#[derive(Debug, Clone)]
+pub struct ProbeMarker {
+    pub content: String,
+    pub position: usize,
+}
+
+/// A single reasoning step extracted from a model's thinking trace
+#[derive(Debug, Clone)]
+pub struct ThinkingStep {
+    pub content: String,
+    pub step_number: usize,
+}
+
 /// Vector storage and similarity search trait
 pub trait VectorStore {
     /// Insert a stub with its embedding

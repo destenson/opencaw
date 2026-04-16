@@ -163,14 +163,60 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use caw_core::{
+        CawError, CompletionResponse, ContentKind, Locator, ModelCapabilities,
+        RecallFragment, SchedulerDecision, ScoredStub, Stub, StubId,
+    };
+
+    struct MockRetriever;
+    impl Retriever for MockRetriever {
+        fn search(&mut self, _q: &str, _k: usize) -> CawResult<Vec<ScoredStub>> {
+            Ok(vec![])
+        }
+        fn read_range(&self, id: &StubId, _range: &str) -> CawResult<RecallFragment> {
+            Err(CawError::NotFound(id.0.clone()))
+        }
+    }
+
+    struct MockScheduler;
+    impl BudgetScheduler for MockScheduler {
+        fn schedule(&self, input: SchedulerInput) -> SchedulerDecision {
+            SchedulerDecision {
+                keep: input.currently_loaded,
+                evicted: vec![],
+                admitted: input.candidates,
+            }
+        }
+    }
+
+    struct MockProvenance;
+    impl ProvenanceStore for MockProvenance {
+        fn record(&mut self, _fragment: RecallFragment) {}
+        fn all(&self) -> Vec<RecallFragment> { vec![] }
+    }
+
+    struct MockAdapter;
+    impl ModelAdapter for MockAdapter {
+        fn model_name(&self) -> &str { "mock" }
+        fn capabilities(&self) -> ModelCapabilities {
+            ModelCapabilities {
+                supports_tool_calls: false,
+                supports_hidden_reasoning: false,
+                supports_visible_reasoning: false,
+            }
+        }
+        fn complete(&self, _req: CompletionRequest) -> CawResult<CompletionResponse> {
+            Ok(CompletionResponse { answer: String::new() })
+        }
+    }
 
     #[test]
     fn test_extract_probes() {
         let orchestrator = ProbeRecallOrchestrator {
-            retriever: crate::tests::MockRetriever,
-            scheduler: crate::tests::MockScheduler,
-            provenance: crate::tests::MockProvenance,
-            adapter: crate::tests::MockAdapter,
+            retriever: MockRetriever,
+            scheduler: MockScheduler,
+            provenance: MockProvenance,
+            adapter: MockAdapter,
             loaded: Vec::new(),
             config: ProbeRecallConfig::default(),
             probe_pattern: Regex::new(r"<probe>(.*?)</probe>").unwrap(),

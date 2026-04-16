@@ -493,6 +493,8 @@ name = "caw-orchestrator"
 version = "0.1.0"
 dependencies = [
  "caw-core",
+ "caw-transform",
+ "regex",
 ]
 
 [[package]]

@@ -1,3 +1,7 @@
+pub mod dynamic;
+pub mod probe_recall;
+pub mod thinking_trace;
+
 use caw_core::{
     BudgetScheduler, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
     ProvenanceStore, RecallFragment, Retriever, SchedulerInput, TokenBudget,
