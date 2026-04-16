@@ -16,6 +16,8 @@ pub struct ClaudeCodeAdapter {
     max_budget_usd: Option<f64>,
     /// Additional directories to grant tool access to.
     add_dirs: Vec<String>,
+    /// Effort level: "low", "medium", "high", "max". Lower effort = cheaper.
+    effort: String,
 }
 
 impl std::fmt::Debug for ClaudeCodeAdapter {
@@ -34,6 +36,7 @@ pub struct ClaudeCodeAdapterBuilder {
     allowed_tools: Vec<String>,
     max_budget_usd: Option<f64>,
     add_dirs: Vec<String>,
+    effort: String,
 }
 
 impl ClaudeCodeAdapterBuilder {
@@ -57,12 +60,18 @@ impl ClaudeCodeAdapterBuilder {
         self
     }
 
+    pub fn effort(mut self, effort: impl Into<String>) -> Self {
+        self.effort = effort.into();
+        self
+    }
+
     pub fn build(self) -> ClaudeCodeAdapter {
         ClaudeCodeAdapter {
             model: self.model,
             allowed_tools: self.allowed_tools,
             max_budget_usd: self.max_budget_usd,
             add_dirs: self.add_dirs,
+            effort: self.effort,
         }
     }
 }
@@ -74,6 +83,7 @@ impl ClaudeCodeAdapter {
             allowed_tools: Vec::new(),
             max_budget_usd: None,
             add_dirs: Vec::new(),
+            effort: "low".to_string(),
         }
     }
 
@@ -104,7 +114,15 @@ impl ClaudeCodeAdapter {
 #[derive(Deserialize)]
 struct ClaudeJsonResponse {
     result: String,
-    // other fields exist but we only need the text output
+    #[serde(default)]
+    is_error: bool,
+    #[serde(default)]
+    total_cost_usd: Option<f64>,
+    #[serde(default)]
+    duration_ms: Option<u64>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    stop_reason: Option<String>,
 }
 
 impl ModelAdapter for ClaudeCodeAdapter {
@@ -133,6 +151,8 @@ impl ModelAdapter for ClaudeCodeAdapter {
             .arg(&self.model)
             .arg("--system-prompt")
             .arg(&req.system)
+            .arg("--effort")
+            .arg(&self.effort)
             .arg("--no-session-persistence");
 
         if let Some(budget) = self.max_budget_usd {
@@ -172,12 +192,27 @@ impl ModelAdapter for ClaudeCodeAdapter {
 
         // JSON output wraps the result in a structured envelope
         match serde_json::from_str::<ClaudeJsonResponse>(&stdout) {
-            Ok(parsed) => Ok(CompletionResponse {
-                answer: parsed.result,
-            }),
+            Ok(parsed) => {
+                if parsed.is_error {
+                    return Err(CawError::Adapter(format!(
+                        "claude CLI returned error: {}",
+                        parsed.result
+                    )));
+                }
+
+                if let (Some(cost), Some(ms)) = (parsed.total_cost_usd, parsed.duration_ms) {
+                    eprintln!(
+                        "[claude-code] model={} cost=${:.4} duration={}ms",
+                        self.model, cost, ms
+                    );
+                }
+
+                Ok(CompletionResponse {
+                    answer: parsed.result,
+                })
+            }
             Err(_) => {
-                // Fall back to raw text if JSON parsing fails — handles
-                // edge cases where --output-format json isn't honored
+                // Fall back to raw text if JSON parsing fails
                 Ok(CompletionResponse {
                     answer: stdout.trim().to_string(),
                 })
