@@ -1,3 +1,4 @@
+use crate::consolidation::{ConsolidationSynthesizer, MechanicalConsolidation};
 use caw_core::{
     CawResult, CompletionRequest, CompletionResponse, ConsolidationNote, ConsolidationSource,
     EmbeddingProvider, ModelAdapter, ProvenanceStore, Range, RecallFragment, RecallThresholds,
@@ -26,6 +27,7 @@ pub struct DynamicRecallOrchestrator<R, E, V, P, M, S = ()> {
     /// Optional persistent store for consolidation notes.
     /// When present, notes survive across sessions.
     pub store: Option<S>,
+    consolidation_synthesizer: Box<dyn ConsolidationSynthesizer>,
 }
 
 #[derive(Debug, Clone)]
@@ -84,11 +86,20 @@ where
             relevance_scores: HashMap::new(),
             config,
             store: None,
+            consolidation_synthesizer: Box::new(MechanicalConsolidation),
         }
     }
 
     pub fn with_store(mut self, store: S) -> Self {
         self.store = Some(store);
+        self
+    }
+
+    pub fn with_consolidation_synthesizer(
+        mut self,
+        synthesizer: Box<dyn ConsolidationSynthesizer>,
+    ) -> Self {
+        self.consolidation_synthesizer = synthesizer;
         self
     }
 
@@ -298,7 +309,11 @@ where
             .iter()
             .enumerate()
             .map(|(idx, frag)| {
-                let score = self.relevance_scores.get(&frag.stub_id).copied().unwrap_or(0.0);
+                let score = self
+                    .relevance_scores
+                    .get(&frag.stub_id)
+                    .copied()
+                    .unwrap_or(0.0);
                 (idx, score)
             })
             .collect();
@@ -325,14 +340,34 @@ where
             let fragment = self.loaded.remove(idx);
             self.loaded_ids.remove(&fragment.stub_id);
 
-            let decayed_score = self.relevance_scores.remove(&fragment.stub_id).unwrap_or(0.0);
-            let note = ConsolidationNote {
-                content: format!(
-                    "Evicted (relevance decayed to {:.2}) during query about '{}'. Source: {}",
+            let decayed_score = self
+                .relevance_scores
+                .remove(&fragment.stub_id)
+                .unwrap_or(0.0);
+
+            let existing_annotations = self.provenance.consolidation_notes_for(&fragment.stub_id);
+
+            let content = self
+                .consolidation_synthesizer
+                .synthesize_eviction_note(
+                    &fragment.content,
+                    query,
                     decayed_score,
-                    truncate_str(query, 100),
-                    fragment.locator.source,
-                ),
+                    &fragment.locator.source,
+                    &existing_annotations,
+                )
+                .unwrap_or_else(|_| {
+                    // Degrade to mechanical on LLM failure
+                    format!(
+                        "Evicted (relevance decayed to {:.2}) during query about '{}'. Source: {}",
+                        decayed_score,
+                        truncate_str(query, 100),
+                        fragment.locator.source,
+                    )
+                });
+
+            let note = ConsolidationNote {
+                content,
                 source: ConsolidationSource::Eviction,
                 created_at_secs: current_timestamp(),
             };
@@ -359,8 +394,7 @@ where
             let fragment = self.retriever.read_range(&hit.stub.id, "full")?;
 
             if current_tokens + fragment.tokens <= self.config.max_workspace_tokens {
-                self.relevance_scores
-                    .insert(hit.stub.id.clone(), hit.score);
+                self.relevance_scores.insert(hit.stub.id.clone(), hit.score);
                 self.loaded_ids.insert(hit.stub.id.clone());
                 self.provenance.record_with_context(fragment.clone(), "", 0);
                 self.loaded.push(fragment);

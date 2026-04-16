@@ -21,7 +21,7 @@ fn main() -> Result<()> {
     let mut retriever = SemanticRetriever::new(embedder, store, index);
 
     println!("Ingesting documents...");
-    let pipeline = IngestionPipeline;
+    let pipeline = IngestionPipeline::new();
 
     let docs = vec![
         SourceDocument {

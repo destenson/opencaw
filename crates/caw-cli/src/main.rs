@@ -62,7 +62,7 @@ fn main() -> Result<()> {
     let mut store =
         SqliteStubStore::new(&db_path, dimension).context("Failed to open SQLite stub store")?;
 
-    let pipeline = IngestionPipeline;
+    let pipeline = IngestionPipeline::new();
     eprintln!("Ingesting files from: {}", cli.dir.display());
 
     let documents = pipeline

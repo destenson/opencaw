@@ -1,6 +1,10 @@
+pub mod summarizer;
+mod tree_sitter_outline;
+
 use caw_core::{CawError, CawResult, ContentKind, Stub, StubId};
 use sha2::{Digest, Sha256};
 use std::path::Path;
+use summarizer::{DeterministicSummarizer, Summarizer};
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone)]
@@ -38,12 +42,32 @@ impl SourceDocument {
     }
 }
 
-pub struct IngestionPipeline;
+pub struct IngestionPipeline {
+    summarizer: Box<dyn Summarizer>,
+}
 
 impl IngestionPipeline {
+    pub fn new() -> Self {
+        Self {
+            summarizer: Box::new(DeterministicSummarizer),
+        }
+    }
+
+    pub fn with_summarizer(summarizer: Box<dyn Summarizer>) -> Self {
+        Self { summarizer }
+    }
+
     pub fn ingest(&self, doc: SourceDocument) -> Stub {
-        let outline = extract_outline(doc.kind, &doc.content);
-        let summary = summarize(doc.kind, &doc.content, &outline);
+        let outline = extract_outline(doc.kind, &doc.content, &doc.path);
+        let summary = self
+            .summarizer
+            .summarize(&doc.path, &doc.content, doc.kind, &outline)
+            .unwrap_or_else(|_| {
+                // LLM failure degrades to deterministic
+                DeterministicSummarizer
+                    .summarize(&doc.path, &doc.content, doc.kind, &outline)
+                    .unwrap_or_default()
+            });
         let token_estimate = estimate_tokens(&doc.content);
         let content_hash = sha256_hash(&doc.content);
 
@@ -96,98 +120,7 @@ impl IngestionPipeline {
     }
 }
 
-/// Generate a summary from the document's content and structure.
-/// Uses the outline when available to produce a more informative summary
-/// than just grabbing the first line.
-fn summarize(kind: ContentKind, content: &str, outline: &[String]) -> String {
-    match kind {
-        ContentKind::Markdown => summarize_markdown(content, outline),
-        ContentKind::Code => summarize_code(content, outline),
-        _ => summarize_plaintext(content),
-    }
-}
-
-fn summarize_markdown(content: &str, outline: &[String]) -> String {
-    // For markdown, try to use the first heading + first paragraph
-    let mut title = String::new();
-    let mut first_para = String::new();
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            if !first_para.is_empty() {
-                break;
-            }
-            continue;
-        }
-
-        if trimmed.starts_with('#') {
-            if title.is_empty() {
-                title = trimmed.trim_start_matches('#').trim().to_string();
-            }
-            continue;
-        }
-
-        if !title.is_empty() && first_para.is_empty() {
-            first_para = trimmed.to_string();
-        }
-    }
-
-    if !title.is_empty() && !first_para.is_empty() {
-        let combined = format!("{}: {}", title, first_para);
-        truncate_str(&combined, 200)
-    } else if !title.is_empty() {
-        if !outline.is_empty() {
-            format!("{}; sections: {}", title, outline.join(", "))
-        } else {
-            title
-        }
-    } else {
-        summarize_plaintext(content)
-    }
-}
-
-fn summarize_code(content: &str, outline: &[String]) -> String {
-    if outline.is_empty() {
-        return summarize_plaintext(content);
-    }
-
-    let preview: Vec<&String> = outline.iter().take(5).collect();
-    let suffix = if outline.len() > 5 {
-        format!(" (+{} more)", outline.len() - 5)
-    } else {
-        String::new()
-    };
-
-    format!(
-        "Defines: {}{}",
-        preview
-            .iter()
-            .map(|s| s.as_str())
-            .collect::<Vec<_>>()
-            .join(", "),
-        suffix
-    )
-}
-
-fn summarize_plaintext(content: &str) -> String {
-    let first_line = content
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("(empty)");
-    truncate_str(first_line, 200)
-}
-
-fn truncate_str(s: &str, max_chars: usize) -> String {
-    if s.len() <= max_chars {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max_chars - 3).collect();
-        format!("{}...", truncated)
-    }
-}
-
-fn extract_outline(kind: ContentKind, content: &str) -> Vec<String> {
+fn extract_outline(kind: ContentKind, content: &str, path: &str) -> Vec<String> {
     match kind {
         ContentKind::Markdown => content
             .lines()
@@ -197,42 +130,57 @@ fn extract_outline(kind: ContentKind, content: &str) -> Vec<String> {
             .take(20)
             .collect(),
         ContentKind::Code => {
-            let mut outline = Vec::new();
-            for line in content.lines() {
-                let trimmed = line.trim_start();
-                // Rust
-                if trimmed.starts_with("pub fn ")
-                    || trimmed.starts_with("fn ")
-                    || trimmed.starts_with("pub struct ")
-                    || trimmed.starts_with("struct ")
-                    || trimmed.starts_with("pub enum ")
-                    || trimmed.starts_with("enum ")
-                    || trimmed.starts_with("pub trait ")
-                    || trimmed.starts_with("trait ")
-                    || trimmed.starts_with("impl ")
-                    || trimmed.starts_with("pub mod ")
-                    || trimmed.starts_with("mod ")
-                    // Python
-                    || trimmed.starts_with("def ")
-                    || trimmed.starts_with("class ")
-                    // JS/TS
-                    || trimmed.starts_with("function ")
-                    || trimmed.starts_with("export function ")
-                    || trimmed.starts_with("export class ")
-                    || trimmed.starts_with("export interface ")
-                    || trimmed.starts_with("export type ")
-                {
-                    outline.push(trimmed.to_string());
-                }
+            let extension = Path::new(path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
 
-                if outline.len() >= 30 {
-                    break;
-                }
+            // Tree-sitter gives structural outlines; fall back to string matching
+            // for languages without grammar support.
+            if let Some(outline) =
+                tree_sitter_outline::extract_outline_tree_sitter(content, extension)
+            {
+                outline
+            } else {
+                extract_outline_naive(content)
             }
-            outline
         }
         _ => vec![],
     }
+}
+
+/// Fallback outline extraction for languages without tree-sitter grammars.
+fn extract_outline_naive(content: &str) -> Vec<String> {
+    let mut outline = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("pub fn ")
+            || trimmed.starts_with("fn ")
+            || trimmed.starts_with("pub struct ")
+            || trimmed.starts_with("struct ")
+            || trimmed.starts_with("pub enum ")
+            || trimmed.starts_with("enum ")
+            || trimmed.starts_with("pub trait ")
+            || trimmed.starts_with("trait ")
+            || trimmed.starts_with("impl ")
+            || trimmed.starts_with("pub mod ")
+            || trimmed.starts_with("mod ")
+            || trimmed.starts_with("def ")
+            || trimmed.starts_with("class ")
+            || trimmed.starts_with("function ")
+            || trimmed.starts_with("export function ")
+            || trimmed.starts_with("export class ")
+            || trimmed.starts_with("export interface ")
+            || trimmed.starts_with("export type ")
+        {
+            outline.push(trimmed.to_string());
+        }
+
+        if outline.len() >= 30 {
+            break;
+        }
+    }
+    outline
 }
 
 /// Estimate token count using whitespace splitting as a rough
