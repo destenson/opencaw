@@ -1,26 +1,26 @@
 use caw_core::{
     CawResult, CompletionRequest, CompletionResponse, EmbeddingProvider, ModelAdapter,
     ProvenanceStore, Range, RecallFragment, RecallThresholds, Retriever, ScoredStub,
-    StubId, VectorStore,
+    StubId, VectorIndex,
 };
 use caw_transform::{extract_probes, extract_thinking_steps};
 use std::collections::HashSet;
 
 /// Advanced orchestrator with thinking-trace and probe-based recall.
-/// Unlike the simpler orchestrators, this one holds a VectorStore directly
-/// so that thinking-trace steps can be embedded and matched against stored
-/// document embeddings without going through the text-based Retriever.
+/// Holds a VectorIndex directly so that thinking-trace steps can be
+/// embedded and matched against stored document embeddings without
+/// going through the text-based Retriever.
 pub struct DynamicRecallOrchestrator<R, E, V, P, M>
 where
     R: Retriever,
     E: EmbeddingProvider,
-    V: VectorStore,
+    V: VectorIndex,
     P: ProvenanceStore,
     M: ModelAdapter,
 {
     pub retriever: R,
     pub embedder: E,
-    pub vector_store: V,
+    pub vector_index: V,
     pub provenance: P,
     pub adapter: M,
     pub loaded: Vec<RecallFragment>,
@@ -53,14 +53,14 @@ impl<R, E, V, P, M> DynamicRecallOrchestrator<R, E, V, P, M>
 where
     R: Retriever,
     E: EmbeddingProvider,
-    V: VectorStore,
+    V: VectorIndex,
     P: ProvenanceStore,
     M: ModelAdapter,
 {
     pub fn new(
         retriever: R,
         embedder: E,
-        vector_store: V,
+        vector_index: V,
         provenance: P,
         adapter: M,
         config: DynamicRecallConfig,
@@ -68,7 +68,7 @@ where
         Self {
             retriever,
             embedder,
-            vector_store,
+            vector_index,
             provenance,
             adapter,
             loaded: Vec::new(),
@@ -78,7 +78,6 @@ where
     }
 
     pub fn run_turn(&mut self, system: &str, user: &str) -> CawResult<CompletionResponse> {
-        // Initial text-based retrieval on the user query
         let initial_hits = self.retriever.search(user, self.config.top_k)?;
         self.load_fragments(initial_hits)?;
 
@@ -88,14 +87,12 @@ where
             workspace_fragments: self.loaded.clone(),
         })?;
 
-        // Process thinking trace for embedding-based recall
         if self.config.enable_thinking_trace_recall
             && self.adapter.capabilities().supports_visible_reasoning
         {
             self.process_thinking_trace(&response.answer)?;
         }
 
-        // Process explicit probe markers for text-based recall
         if self.config.enable_probe_recall {
             self.process_probes(&response.answer)?;
         }
@@ -113,8 +110,32 @@ where
 
             let embeddings = self.embedder.embed(vec![&step.content])?;
             if let Some(embedding) = embeddings.first() {
-                let hits = self.vector_store.search_by_embedding(embedding, self.config.top_k)?;
-                self.load_fragments(hits)?;
+                let hits = self.vector_index.search(embedding, self.config.top_k);
+                let scored: Vec<ScoredStub> = hits
+                    .into_iter()
+                    .filter_map(|(id, score)| {
+                        // We need the stub to build a ScoredStub, but the vector
+                        // index only returns (id, score). Look it up via retriever.
+                        // If not found (shouldn't happen), skip silently.
+                        match self.retriever.read_range(&id, "full") {
+                            Ok(frag) => Some(ScoredStub {
+                                stub: caw_core::Stub {
+                                    id,
+                                    path: frag.locator.source.clone(),
+                                    token_estimate: frag.tokens,
+                                    kind: caw_core::ContentKind::Other,
+                                    summary: String::new(),
+                                    outline: Vec::new(),
+                                    content_hash: String::new(),
+                                    mtime_unix_secs: 0,
+                                },
+                                score,
+                            }),
+                            Err(_) => None,
+                        }
+                    })
+                    .collect();
+                self.load_fragments(scored)?;
             }
         }
 
@@ -156,15 +177,6 @@ where
             }
         }
 
-        self.evict_low_score_fragments()?;
-        Ok(())
-    }
-
-    fn evict_low_score_fragments(&mut self) -> CawResult<()> {
-        // Re-score loaded fragments against recent query context would go here.
-        // For now, eviction happens through the scheduler in the other orchestrators.
-        // The DynamicRecallOrchestrator relies on budget limits in load_fragments
-        // to prevent unbounded growth.
         Ok(())
     }
 

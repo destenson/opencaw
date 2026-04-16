@@ -352,10 +352,26 @@ pub struct ThinkingStep {
     pub step_number: usize,
 }
 
-/// Vector storage and similarity search trait
-pub trait VectorStore {
+/// Persistent storage for stubs and their content.
+/// Does NOT include similarity search — that belongs in a proper
+/// vector index (HNSW, IVF, etc.), not a row-scan over blobs.
+pub trait StubStore {
     fn insert(&mut self, stub: Stub, embedding: Vec<f32>, content: String) -> CawResult<()>;
-    fn search_by_embedding(&self, query_embedding: &[f32], top_k: usize) -> CawResult<Vec<ScoredStub>>;
     fn get_content(&self, id: &StubId) -> CawResult<String>;
     fn get_stub(&self, id: &StubId) -> CawResult<Stub>;
+    /// Iterate all stored embeddings. Used by vector index implementations
+    /// to build their index from persisted data.
+    fn all_embeddings(&self) -> CawResult<Vec<(StubId, Vec<f32>)>>;
+}
+
+/// Similarity search over embeddings. Implementations should use an
+/// actual indexing structure (HNSW, IVF, etc.), not brute-force scans.
+pub trait VectorIndex {
+    fn add(&mut self, id: StubId, embedding: Vec<f32>);
+    /// Returns (StubId, similarity_score) pairs, highest similarity first.
+    fn search(&mut self, query_embedding: &[f32], top_k: usize) -> Vec<(StubId, f32)>;
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }

@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
 use caw_adapters::MockAdapter;
 use caw_core::{
-    CompletionRequest, EmbeddingProvider, ModelAdapter, RecallThresholds, Retriever, VectorStore,
+    CompletionRequest, EmbeddingProvider, ModelAdapter, RecallThresholds, Retriever,
+    StubStore, VectorIndex,
 };
-use caw_index::{FastEmbedProvider, SemanticRetriever, SqliteVectorStore};
+use caw_index::{FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
 use caw_ingest::IngestionPipeline;
 use caw_orchestrator::dynamic::DynamicRecallConfig;
 use clap::Parser;
@@ -52,9 +53,9 @@ fn main() -> Result<()> {
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| ":memory:".to_string());
 
-    eprintln!("Opening vector store at: {}", db_path);
-    let mut store = SqliteVectorStore::new(&db_path, dimension)
-        .context("Failed to open SQLite vector store")?;
+    eprintln!("Opening stub store at: {}", db_path);
+    let mut store = SqliteStubStore::new(&db_path, dimension)
+        .context("Failed to open SQLite stub store")?;
 
     let pipeline = IngestionPipeline;
     eprintln!("Ingesting files from: {}", cli.dir.display());
@@ -65,6 +66,9 @@ fn main() -> Result<()> {
 
     eprintln!("Ingested {} files, generating embeddings...", documents.len());
 
+    // Build the HNSW vector index alongside the stub store
+    let mut vector_index = HnswVectorIndex::new();
+
     for (stub, content) in &documents {
         let text = format!("{} {} {}", stub.path, stub.summary, stub.outline.join(" "));
         let embeddings = embedder
@@ -73,20 +77,29 @@ fn main() -> Result<()> {
 
         if let Some(embedding) = embeddings.into_iter().next() {
             store
-                .insert(stub.clone(), embedding, content.clone())
-                .context("Failed to insert into vector store")?;
+                .insert(stub.clone(), embedding.clone(), content.clone())
+                .context("Failed to insert into stub store")?;
+            vector_index.add(stub.id.clone(), embedding);
         }
     }
 
     eprintln!("Index ready with {} documents.", documents.len());
 
-    let retriever = SemanticRetriever::new(embedder, store);
+    let retriever = SemanticRetriever::new(embedder, store, vector_index);
 
-    // Second embedder+store for thinking-trace embedding search
+    // Second embedder + separate HNSW index for thinking-trace recall
     let trace_embedder = FastEmbedProvider::bge_small()
         .context("Failed to initialize trace embedder")?;
-    let trace_store = SqliteVectorStore::new(&db_path, dimension)
-        .context("Failed to open trace vector store")?;
+
+    // Rebuild a second HNSW index from the same store's embeddings
+    let trace_store = SqliteStubStore::new(&db_path, dimension)
+        .context("Failed to open trace stub store")?;
+    let mut trace_index = HnswVectorIndex::new();
+    if let Ok(all_emb) = trace_store.all_embeddings() {
+        for (id, emb) in all_emb {
+            trace_index.add(id, emb);
+        }
+    }
 
     let config = DynamicRecallConfig {
         top_k: cli.top_k,
@@ -125,13 +138,13 @@ fn main() -> Result<()> {
     eprintln!("Using adapter: {}", adapter.model_name());
     eprintln!("Enter queries (Ctrl+D to exit):\n");
 
-    run_interactive(retriever, trace_embedder, trace_store, adapter, config, &cli.system)
+    run_interactive(retriever, trace_embedder, trace_index, adapter, config, &cli.system)
 }
 
 fn run_interactive(
-    mut retriever: SemanticRetriever<FastEmbedProvider, SqliteVectorStore>,
+    mut retriever: SemanticRetriever<FastEmbedProvider, SqliteStubStore, HnswVectorIndex>,
     mut trace_embedder: FastEmbedProvider,
-    trace_store: SqliteVectorStore,
+    mut trace_index: HnswVectorIndex,
     adapter: Box<dyn ModelAdapter>,
     config: DynamicRecallConfig,
     system: &str,
@@ -193,14 +206,18 @@ fn run_interactive(
                 }
                 if let Ok(embeddings) = trace_embedder.embed(vec![&step.content]) {
                     if let Some(emb) = embeddings.first() {
-                        if let Ok(hits) = trace_store.search_by_embedding(emb, config.top_k) {
-                            load_fragments(
-                                &mut retriever,
-                                &hits,
-                                &mut loaded,
-                                &mut loaded_ids,
-                                &config,
-                            )?;
+                        let index_hits = trace_index.search(emb, config.top_k);
+                        for (stub_id, score) in index_hits {
+                            if loaded_ids.contains(&stub_id) || score < config.thresholds.load {
+                                continue;
+                            }
+                            if let Ok(fragment) = retriever.read_range(&stub_id, "full") {
+                                let current_tokens: usize = loaded.iter().map(|f| f.tokens).sum();
+                                if current_tokens + fragment.tokens <= config.max_workspace_tokens {
+                                    loaded_ids.insert(stub_id);
+                                    loaded.push(fragment);
+                                }
+                            }
                         }
                     }
                 }
@@ -222,7 +239,7 @@ fn run_interactive(
 }
 
 fn load_fragments(
-    retriever: &mut SemanticRetriever<FastEmbedProvider, SqliteVectorStore>,
+    retriever: &mut SemanticRetriever<FastEmbedProvider, SqliteStubStore, HnswVectorIndex>,
     hits: &[caw_core::ScoredStub],
     loaded: &mut Vec<caw_core::RecallFragment>,
     loaded_ids: &mut std::collections::HashSet<caw_core::StubId>,

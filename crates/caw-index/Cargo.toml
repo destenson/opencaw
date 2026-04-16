@@ -19,6 +19,9 @@ candle-transformers = { version = "0.10", optional = true }
 rusqlite = { version = "0.39", features = ["bundled"], optional = true }
 qdrant-client = { version = "1", optional = true }
 
+# Vector index
+instant-distance = "0.6"
+
 # Common utilities
 reqwest = { version = "0.13", features = ["blocking", "json"] }
 serde.workspace = true

@@ -1,4 +1,4 @@
-use caw_core::{CawError, CawResult, EmbeddingProvider, Locator, Range, RecallFragment, Retriever, ScoredStub, Stub, StubId, VectorStore};
+use caw_core::{CawError, CawResult, EmbeddingProvider, Locator, Range, RecallFragment, Retriever, ScoredStub, Stub, StubId, StubStore, VectorIndex};
 
 pub mod embeddings {
     #[cfg(feature = "fastembed")]
@@ -18,34 +18,40 @@ pub mod storage {
     pub mod qdrant_store;
 }
 
+pub mod hnsw_index;
+
 #[cfg(feature = "fastembed")]
 pub use embeddings::fastembed_provider::FastEmbedProvider;
 
 pub use embeddings::api_provider::ApiEmbeddingProvider;
 
 #[cfg(feature = "sqlite")]
-pub use storage::sqlite_store::SqliteVectorStore;
+pub use storage::sqlite_store::SqliteStubStore;
 
-#[cfg(feature = "qdrant")]
-pub use storage::qdrant_store::QdrantVectorStore;
+pub use hnsw_index::HnswVectorIndex;
 
-/// Semantic retriever that combines embedding generation and vector search
-pub struct SemanticRetriever<E, S>
+/// Semantic retriever that combines embedding, storage, and vector index.
+/// The store persists stubs/content/embeddings; the index provides fast
+/// approximate nearest neighbor search.
+pub struct SemanticRetriever<E, S, I>
 where
     E: EmbeddingProvider,
-    S: VectorStore,
+    S: StubStore,
+    I: VectorIndex,
 {
     embedder: E,
     store: S,
+    index: I,
 }
 
-impl<E, S> SemanticRetriever<E, S>
+impl<E, S, I> SemanticRetriever<E, S, I>
 where
     E: EmbeddingProvider,
-    S: VectorStore,
+    S: StubStore,
+    I: VectorIndex,
 {
-    pub fn new(embedder: E, store: S) -> Self {
-        Self { embedder, store }
+    pub fn new(embedder: E, store: S, index: I) -> Self {
+        Self { embedder, store, index }
     }
 
     pub fn insert(&mut self, stub: Stub, content: String) -> CawResult<()> {
@@ -54,26 +60,39 @@ where
         let embedding = embeddings.into_iter().next()
             .ok_or_else(|| CawError::Embedding("No embedding generated".to_string()))?;
 
-        self.store.insert(stub, embedding, content)
+        let id = stub.id.clone();
+        self.store.insert(stub, embedding.clone(), content)?;
+        self.index.add(id, embedding);
+        Ok(())
     }
 
-    /// Direct access to the underlying vector store for embedding-based search
-    pub fn store(&self) -> &S {
-        &self.store
+    pub fn index_mut(&mut self) -> &mut I {
+        &mut self.index
     }
 }
 
-impl<E, S> Retriever for SemanticRetriever<E, S>
+impl<E, S, I> Retriever for SemanticRetriever<E, S, I>
 where
     E: EmbeddingProvider,
-    S: VectorStore,
+    S: StubStore,
+    I: VectorIndex,
 {
     fn search(&mut self, query: &str, top_k: usize) -> CawResult<Vec<ScoredStub>> {
         let embeddings = self.embedder.embed(vec![query])?;
         let query_embedding = embeddings.into_iter().next()
             .ok_or_else(|| CawError::Embedding("No embedding generated for query".to_string()))?;
 
-        self.store.search_by_embedding(&query_embedding, top_k)
+        let hits = self.index.search(&query_embedding, top_k);
+
+        let mut results = Vec::new();
+        for (stub_id, score) in hits {
+            match self.store.get_stub(&stub_id) {
+                Ok(stub) => results.push(ScoredStub { stub, score }),
+                Err(_) => continue,
+            }
+        }
+
+        Ok(results)
     }
 
     fn read_range(&self, id: &StubId, range: &str) -> CawResult<RecallFragment> {
@@ -96,6 +115,9 @@ where
     }
 }
 
+/// Simple keyword-overlap index. No embeddings, no vector search —
+/// just text matching against stub metadata. Useful for probes and
+/// as a fallback when embedding infrastructure isn't available.
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryIndex {
     stubs: Vec<Stub>,
@@ -184,7 +206,5 @@ fn score_query_against_stub(query: &str, stub: &Stub) -> f32 {
 }
 
 fn estimate_tokens(content: &str) -> usize {
-    // Split on whitespace and punctuation boundaries for a rough
-    // subword-tokenizer approximation (closer than len/4 for mixed content)
     content.split_whitespace().count().max(1)
 }

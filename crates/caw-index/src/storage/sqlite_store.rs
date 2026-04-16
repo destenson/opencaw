@@ -1,18 +1,16 @@
-use caw_core::{CawError, CawResult, ScoredStub, Stub, StubId, VectorStore};
+use caw_core::{CawError, CawResult, Stub, StubId, StubStore};
 use rusqlite::{params, Connection};
-use serde_json;
 
-pub struct SqliteVectorStore {
+pub struct SqliteStubStore {
     conn: Connection,
     dimension: usize,
 }
 
-impl SqliteVectorStore {
+impl SqliteStubStore {
     pub fn new(path: &str, dimension: usize) -> CawResult<Self> {
         let conn = Connection::open(path)
             .map_err(|e| CawError::VectorStore(format!("Failed to open database: {}", e)))?;
 
-        // Create tables
         conn.execute(
             "CREATE TABLE IF NOT EXISTS stubs (
                 id TEXT PRIMARY KEY,
@@ -70,21 +68,9 @@ impl SqliteVectorStore {
             .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect()
     }
-
-    fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-        let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-        let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-        let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-
-        if norm_a == 0.0 || norm_b == 0.0 {
-            0.0
-        } else {
-            dot / (norm_a * norm_b)
-        }
-    }
 }
 
-impl VectorStore for SqliteVectorStore {
+impl StubStore for SqliteStubStore {
     fn insert(&mut self, stub: Stub, embedding: Vec<f32>, content: String) -> CawResult<()> {
         if embedding.len() != self.dimension {
             return Err(CawError::VectorStore(format!(
@@ -137,42 +123,6 @@ impl VectorStore for SqliteVectorStore {
         Ok(())
     }
 
-    fn search_by_embedding(&self, query_embedding: &[f32], top_k: usize) -> CawResult<Vec<ScoredStub>> {
-        if query_embedding.len() != self.dimension {
-            return Err(CawError::VectorStore(format!(
-                "Query embedding dimension mismatch: expected {}, got {}",
-                self.dimension,
-                query_embedding.len()
-            )));
-        }
-
-        let mut stmt = self
-            .conn
-            .prepare("SELECT stub_id, embedding, stub_json FROM embeddings e JOIN stubs s ON e.stub_id = s.id")
-            .map_err(|e| CawError::VectorStore(format!("Failed to prepare query: {}", e)))?;
-
-        let mut results: Vec<ScoredStub> = stmt
-            .query_map([], |row| {
-                let embedding_blob: Vec<u8> = row.get(1)?;
-                let stub_json: String = row.get(2)?;
-                Ok((embedding_blob, stub_json))
-            })
-            .map_err(|e| CawError::VectorStore(format!("Query failed: {}", e)))?
-            .filter_map(|result| result.ok())
-            .filter_map(|(embedding_blob, stub_json)| {
-                let embedding = Self::blob_to_embedding(&embedding_blob);
-                let stub: Stub = serde_json::from_str(&stub_json).ok()?;
-                let score = Self::cosine_similarity(query_embedding, &embedding);
-                Some(ScoredStub { stub, score })
-            })
-            .collect();
-
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-        results.truncate(top_k);
-
-        Ok(results)
-    }
-
     fn get_content(&self, id: &StubId) -> CawResult<String> {
         self.conn
             .query_row(
@@ -201,5 +151,24 @@ impl VectorStore for SqliteVectorStore {
 
         serde_json::from_str(&stub_json)
             .map_err(|e| CawError::VectorStore(format!("Failed to deserialize stub: {}", e)))
+    }
+
+    fn all_embeddings(&self) -> CawResult<Vec<(StubId, Vec<f32>)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT stub_id, embedding FROM embeddings")
+            .map_err(|e| CawError::VectorStore(format!("Failed to prepare query: {}", e)))?;
+
+        let results = stmt
+            .query_map([], |row| {
+                let id: String = row.get(0)?;
+                let blob: Vec<u8> = row.get(1)?;
+                Ok((StubId(id), Self::blob_to_embedding(&blob)))
+            })
+            .map_err(|e| CawError::VectorStore(format!("Query failed: {}", e)))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(results)
     }
 }
