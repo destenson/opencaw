@@ -283,6 +283,57 @@ pub struct CompletionResponse {
     pub answer: String,
 }
 
+/// Format for inline provenance tags on recalled content.
+#[derive(Debug, Clone, Copy)]
+pub enum ProvenanceFormat {
+    /// XML tags: `<recalled from="path" locator="range">content</recalled>`
+    /// Preferred by Anthropic models which handle XML natively.
+    Xml,
+    /// Bracket tags: `[recalled from path:range]\ncontent\n[end recall]`
+    /// Preferred by OpenAI-protocol models.
+    Bracketed,
+}
+
+impl CompletionRequest {
+    /// Format workspace fragments with inline provenance for model consumption.
+    /// Each fragment is wrapped with source attribution so the model treats
+    /// recalled content as quoted material, not its own knowledge.
+    pub fn format_workspace(&self, format: ProvenanceFormat) -> String {
+        if self.workspace_fragments.is_empty() {
+            return String::new();
+        }
+
+        let fragments: Vec<String> = self
+            .workspace_fragments
+            .iter()
+            .map(|f| {
+                let source = &f.locator.source;
+                let locator = &f.locator.locator;
+                match format {
+                    ProvenanceFormat::Xml => format!(
+                        "<recalled from=\"{source}\" locator=\"{locator}\">\n\
+                         {content}\n\
+                         </recalled>",
+                        content = f.content,
+                    ),
+                    ProvenanceFormat::Bracketed => format!(
+                        "[recalled from {source}:{locator}]\n\
+                         {content}\n\
+                         [end recall]",
+                        content = f.content,
+                    ),
+                }
+            })
+            .collect();
+
+        format!(
+            "\n\nRecalled workspace context (each block is verbatim from the cited source — \
+             treat as quoted material, not your own knowledge):\n\n{}",
+            fragments.join("\n\n")
+        )
+    }
+}
+
 /// Hysteresis thresholds for recall loading/unloading.
 /// Single source of truth — all orchestrators and schedulers reference this.
 #[derive(Debug, Clone, Copy)]

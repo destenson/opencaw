@@ -1,5 +1,6 @@
 use caw_core::{
     CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities,
+    ProvenanceFormat,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -87,7 +88,7 @@ impl ModelAdapter for AnthropicAdapter {
     }
 
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
-        let workspace_context = format_workspace_xml(&req);
+        let workspace_context = req.format_workspace(ProvenanceFormat::Xml);
         let full_user_message = format!("{}{}", req.user, workspace_context);
 
         let anthropic_req = AnthropicRequest {
@@ -125,24 +126,3 @@ impl ModelAdapter for AnthropicAdapter {
     }
 }
 
-fn format_workspace_xml(req: &CompletionRequest) -> String {
-    if req.workspace_fragments.is_empty() {
-        return String::new();
-    }
-
-    let fragments = req
-        .workspace_fragments
-        .iter()
-        .map(|f| {
-            format!(
-                "\n<recalled from=\"{source}\" locator=\"{locator}\">\n{content}\n</recalled>",
-                source = f.locator.source,
-                locator = f.locator.locator,
-                content = f.content
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    format!("\n\nRecalled workspace context:\n{}", fragments)
-}

@@ -1,5 +1,6 @@
 use caw_core::{
     CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities,
+    ProvenanceFormat,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -94,7 +95,7 @@ impl ModelAdapter for OllamaAdapter {
     }
 
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
-        let workspace_context = format_workspace(&req);
+        let workspace_context = req.format_workspace(ProvenanceFormat::Bracketed);
         let full_user_message = format!("{}{}", req.user, workspace_context);
 
         let ollama_req = OllamaChatRequest {
@@ -135,24 +136,3 @@ impl ModelAdapter for OllamaAdapter {
     }
 }
 
-fn format_workspace(req: &CompletionRequest) -> String {
-    if req.workspace_fragments.is_empty() {
-        return String::new();
-    }
-
-    let fragments = req
-        .workspace_fragments
-        .iter()
-        .map(|f| {
-            format!(
-                "\n[recalled from {source}:{locator}]\n{content}\n[end recall]",
-                source = f.locator.source,
-                locator = f.locator.locator,
-                content = f.content
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    format!("\n\nRecalled workspace context:\n{}", fragments)
-}

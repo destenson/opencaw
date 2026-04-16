@@ -29,7 +29,7 @@ Cross-reference: design doc is `context-as-workspace.md`, scope boundaries are i
 ## Provenance
 
 - [x] **Provenance ledger**: Records recalled fragments, tracks topic terms, detects term-overlap between fragments from different sources (Jaccard >30%).
-- [ ] **Inline provenance tagging**: The `Locator` type exists and is populated on each `RecallFragment`, but provenance tags are never injected into the content the model sees. The adapters format workspace fragments without source attribution. The design doc's core mechanism — model sees `[recalled from spec.md:4-12]` and treats content as quoted source — is absent. This needs to happen in the adapter formatting layer.
+- [x] **Inline provenance tagging**: `CompletionRequest::format_workspace()` in caw-core wraps every recalled fragment with source attribution (`[recalled from path:locator]` or XML equivalent). All adapters use the shared formatter. The preamble instructs the model to treat recalled content as quoted material. Two format modes: `ProvenanceFormat::Xml` (Anthropic) and `ProvenanceFormat::Bracketed` (OpenAI-protocol models).
 - [ ] **Conflict detection beyond term overlap**: Only Jaccard term overlap is implemented. Contradicting assertions, inconsistent numbers, and negation patterns are undetected.
 
 ## Mid-Session Annotation

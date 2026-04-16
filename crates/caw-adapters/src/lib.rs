@@ -1,4 +1,7 @@
-use caw_core::{CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities};
+use caw_core::{
+    CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities,
+    ProvenanceFormat,
+};
 
 mod anthropic;
 mod groq;
@@ -47,18 +50,12 @@ impl ModelAdapter for MockAdapter {
     }
 
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
-        let sources = req
-            .workspace_fragments
-            .iter()
-            .map(|f| format!("{}:{}", f.locator.source, f.locator.locator))
-            .collect::<Vec<_>>();
+        let workspace_context = req.format_workspace(ProvenanceFormat::Bracketed);
 
         Ok(CompletionResponse {
             answer: format!(
-                "[{}] synthesized answer for: {}\n\nGrounded sources:\n- {}",
-                self.name,
-                req.user,
-                sources.join("\n- ")
+                "[{}] synthesized answer for: {}{}",
+                self.name, req.user, workspace_context,
             ),
         })
     }
