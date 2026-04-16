@@ -1,9 +1,18 @@
 use caw_core::{CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities};
 
+mod anthropic;
+mod groq;
+mod ollama;
+
+pub use anthropic::AnthropicAdapter;
+pub use groq::GroqAdapter;
+pub use ollama::OllamaAdapter;
+
 #[derive(Debug, Clone, Copy)]
 pub enum Provider {
     OpenAi,
     Anthropic,
+    Groq,
     Ollama,
     Vllm,
     LlamaCpp,
