@@ -13,6 +13,9 @@ pub mod embeddings {
     #[cfg(feature = "candle")]
     pub mod candle_provider;
 
+    #[cfg(feature = "onnx")]
+    pub mod onnx_provider;
+
     pub mod api_provider;
 }
 
@@ -34,6 +37,9 @@ pub use embeddings::api_provider::ApiEmbeddingProvider;
 
 #[cfg(feature = "sqlite")]
 pub use storage::sqlite_store::SqliteStubStore;
+
+#[cfg(feature = "qdrant")]
+pub use storage::qdrant_store::QdrantStubStore;
 
 pub use hnsw_index::HnswVectorIndex;
 

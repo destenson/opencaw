@@ -9,11 +9,16 @@ caw-core = { path = "../caw-core" }
 
 # Embedding backends
 fastembed = { version = "5", optional = true }
-# ort conflicts with fastembed's ort dependency, so keep it disabled for now
-# ort = { version = "2.0.0-rc.12", optional = true }
+# ort conflicts with fastembed's ort dependency (both link onnxruntime native lib),
+# so the onnx and fastembed features are mutually exclusive.
+# Pinned to match fastembed's ort dependency so workspace resolution succeeds
+ort = { version = "=2.0.0-rc.10", optional = true }
+ndarray = { version = "0.16", optional = true }
 candle-core = { version = "0.10", optional = true }
 candle-nn = { version = "0.10", optional = true }
 candle-transformers = { version = "0.10", optional = true }
+hf-hub = { version = "0.5", optional = true }
+tokenizers = { version = "0.21", optional = true }
 
 # Vector storage backends
 rusqlite = { version = "0.39", features = ["bundled"], optional = true }
@@ -21,6 +26,9 @@ qdrant-client = { version = "1", optional = true }
 
 # Vector index
 instant-distance = "0.6"
+
+# Async runtime (needed by qdrant-client)
+tokio = { workspace = true, optional = true }
 
 # Common utilities
 reqwest = { version = "0.13", features = ["blocking", "json"] }
@@ -31,8 +39,8 @@ thiserror.workspace = true
 [features]
 default = ["fastembed", "sqlite"]
 fastembed = ["dep:fastembed"]
-# onnx = ["dep:ort"]  # Disabled due to conflict with fastembed
-candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers"]
+onnx = ["dep:ort", "dep:ndarray", "dep:tokenizers"]
+candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:hf-hub", "dep:tokenizers"]
 sqlite = ["dep:rusqlite"]
-qdrant = ["dep:qdrant-client"]
+qdrant = ["dep:qdrant-client", "dep:tokio"]
 
