@@ -232,6 +232,7 @@ println!("{}", response.answer);
 - [ ] Thinking-trace recall for reasoning models
 - [ ] Evaluation harness with benchmarks (recall@k, faithfulness)
 - [ ] CLI with semantic retrieval demo
+- [ ] See TODO.md for detailed concerns and issues
 
 ### Future
 - [ ] ONNX embedding provider

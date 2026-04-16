@@ -2,36 +2,38 @@
 
 ## Critical Bugs
 
-- [ ] **caw-ingest sha256 formatting**: `format!("{:x}", hasher.finalize())` fails because `sha2::Digest::finalize()` returns `GenericArray<u8, U64>`, which doesn't implement `LowerHex`. Blocks compilation.
+- [x] **caw-ingest sha256 formatting**: Fixed. Now iterates bytes with `format!("{:02x}")`.
 
-- [ ] **Adapters use sync-wrapped async (`block_on`)**: Calling `tokio::runtime::block_on` inside an existing tokio runtime panics. This will break when embedding the library into any async application (including the planned caw-server). Needs proper async trait design or at minimum `spawn_blocking`.
+- [ ] **Adapters use sync-wrapped async (`block_on`)**: Adapters now take `Arc<Runtime>` and call `runtime.block_on()`, which avoids the "create runtime inside runtime" panic. But calling `block_on` from within an async context (e.g., a tokio task in caw-server) will still panic. The server will need either fully async adapter traits or `spawn_blocking` wrappers.
 
 ## Architecture
 
-- [ ] **Over-decomposed workspace**: 11 crates for ~2400 lines. `caw-provenance` (17 lines), `caw-eval` (37 lines), `caw-scheduler` (81 lines) could be modules within `caw-core`. The crate boundaries impose real costs — feature flag coordination, version pinning, repeated linking — without providing meaningful encapsulation at this scale. Consider consolidating until the codebase actually needs the separation.
+- [ ] **Over-decomposed workspace**: 11 crates for the current codebase size. `caw-provenance`, `caw-eval`, `caw-scheduler` are still very small and could be modules. Not blocking, but adds friction.
 
-- [ ] **`DynamicRecallOrchestrator::run_turn` sequencing problem**: The orchestrator completes the full response *before* processing thinking traces and probes. But the purpose of thinking-trace recall is to load documents *during* reasoning so they influence subsequent steps. Without streaming integration, recalled documents only affect the next turn, not the current one. This makes thinking-trace recall largely ineffective for its stated purpose.
+- [x] **Storage/index responsibility split**: Fixed. `VectorStore` trait was doing double duty (persistence + similarity search). Now cleanly separated into `StubStore` (persistence: stubs, content, embeddings) and `VectorIndex` (similarity search with proper indexing). SQLite implements `StubStore`; HNSW implements `VectorIndex`. This is the right decomposition.
+
+- [ ] **`DynamicRecallOrchestrator::run_turn` sequencing problem**: Still present. The orchestrator completes the full response *before* processing thinking traces and probes. Recalled documents only affect the next turn, not the current one. The thinking-trace recall path now uses `VectorIndex` directly (good), but the fundamental issue is that without streaming, mid-reasoning recall can't happen. The probe/trace processing after completion is essentially pre-loading for a hypothetical next turn.
 
 ## Missing Core Capabilities
 
-- [ ] **No hybrid retrieval**: Embedding-only search fails on exact-match, keyword, and reasoning-shaped queries. BM25 + dense retrieval fusion is well-understood and would meaningfully improve recall on the hardest, most valuable queries. The design doc acknowledges this gap.
+- [ ] **No hybrid retrieval**: Embedding-only search still the only path. BM25 + dense fusion would improve recall on keyword and exact-match queries.
 
-- [ ] **No streaming recall loop**: The entire architecture is single-turn request/response. The novel value proposition — loading documents mid-reasoning based on thinking traces — requires streaming token output with interleaved retrieval. Without this, the system is a conventional RAG pipeline with extra steps.
+- [ ] **No streaming recall loop**: Still single-turn request/response throughout. This remains the biggest gap between the design doc's vision and what's implemented.
 
-- [ ] **No mutable stub consolidation**: When a document evicts from the workspace, the stub should absorb what was learned during the loaded period. This is described in the design doc (Section 4) but not implemented. It's one of the most interesting ideas in the project.
+- [ ] **No mutable stub consolidation**: Not implemented. Stubs are immutable after ingestion.
 
-- [ ] **Eviction is a no-op**: `evict_low_score_fragments()` in `DynamicRecallOrchestrator` is an empty stub. The system can only grow the workspace until it hits the budget ceiling; it cannot intelligently shrink it. The greedy scheduler in `caw-scheduler` handles admission but doesn't re-score loaded fragments against evolving query context.
+- [ ] **Eviction is absent**: The `DynamicRecallOrchestrator` removed the empty `evict_low_score_fragments` stub entirely — it now relies purely on budget limits in `load_fragments` to cap growth. There's no mechanism to shrink the workspace based on relevance decay.
 
-- [ ] **No provenance reconciliation**: `InMemoryProvenanceStore` records fragments but nothing checks for conflicts between stub summaries and actual content, or between multiple recalled fragments. The design doc (Section 3) identifies this as a real failure mode.
+- [ ] **No provenance reconciliation**: `InMemoryProvenanceStore` still just records and returns. No conflict detection between stub summaries and recalled content.
 
 ## Scaling and Performance
 
-- [ ] **Linear-scan vector search in SQLite**: Every query does O(n) cosine similarity computations across all stored embeddings. Acceptable for demos with hundreds of documents, unusable for the thousands-of-files workloads the design doc envisions. Qdrant (stubbed) or an HNSW implementation is needed before real use.
+- [x] **Linear-scan vector search**: Fixed. HNSW index implemented via `instant-distance` crate (`HnswVectorIndex`). Builds an immutable graph, rebuilds lazily on next search after inserts. Uses cosine distance. Good for the expected corpus sizes (hundreds to low thousands). The `VectorIndex` trait makes swapping implementations straightforward.
 
-- [ ] **No summary caching**: The design doc specifies caching summaries on `(path, mtime, hash)`, but the ingestion pipeline regenerates summaries on every run. For large or frequently-changing corpora, this is a meaningful cost.
+- [ ] **No summary caching**: Ingestion still regenerates summaries every run. The `StubStore` now persists stubs (including summaries) in SQLite, so the infrastructure for cache-checking on `(content_hash, mtime)` exists — but the ingestion pipeline doesn't check whether a stub already exists before regenerating.
 
 ## Risk
 
-- [ ] **Commodity work vs. novel work imbalance**: Most completed code is adapter/provider plumbing (Anthropic, Groq, Ollama, FastEmbed, SQLite). Most "in progress" roadmap items are more of the same (OpenAI adapter, Qdrant store, ONNX embeddings). The features that make this project distinctive — streaming recall, mutable stubs, hybrid retrieval, curation policy — remain unimplemented. There's a gravitational pull toward adding backends instead of solving the hard problems.
+- [ ] **Commodity work vs. novel work imbalance**: The HNSW index and StubStore/VectorIndex split are good architectural progress. But the distinctive features — streaming recall, mutable stubs, hybrid retrieval, curation policy — still aren't implemented. The next round of work should prioritize these over adding more adapter/provider backends.
 
-- [ ] **Narrowing window for external context management**: Model providers are building native context management (project files, extended thinking, tool use). The strongest counter-argument is that this works across models and enforces curation that providers won't. But the value proposition needs to be demonstrated on real workloads before the window closes.
+- [ ] **Narrowing window for external context management**: Model providers continue building native context management. The value proposition needs demonstration on real workloads.
