@@ -1,0 +1,27 @@
+[workspace]
+members = [
+  "crates/caw-core",
+  "crates/caw-ingest",
+  "crates/caw-index",
+  "crates/caw-scheduler",
+  "crates/caw-provenance",
+  "crates/caw-adapters",
+  "crates/caw-orchestrator",
+  "crates/caw-eval",
+  "crates/caw-cli",
+  "crates/caw-server",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

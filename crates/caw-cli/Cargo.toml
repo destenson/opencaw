@@ -1,0 +1,15 @@
+[package]
+name = "caw-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+caw-adapters = { path = "../caw-adapters" }
+caw-core = { path = "../caw-core" }
+caw-index = { path = "../caw-index" }
+caw-orchestrator = { path = "../caw-orchestrator" }
+caw-provenance = { path = "../caw-provenance" }
+caw-scheduler = { path = "../caw-scheduler" }
+
