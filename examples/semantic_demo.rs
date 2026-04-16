@@ -7,7 +7,10 @@ use caw_orchestrator::{OrchestratorConfig, RecallOrchestrator};
 use caw_provenance::InMemoryProvenanceStore;
 use caw_scheduler::GreedyBudgetScheduler;
 
+// TODO: allow the user to supply a document or path to query about, instead of hardcoding demo documents and queries.
+
 fn main() -> Result<()> {
+
     println!("OpenCAW Semantic Retrieval Demo\n");
 
     println!("Initializing semantic index...");

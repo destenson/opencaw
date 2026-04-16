@@ -4,7 +4,7 @@ use caw_core::{
     Retriever, ScoredStub, StubId, StubStore, VectorIndex,
 };
 use caw_transform::{extract_annotations, extract_probes, extract_thinking_steps};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Advanced orchestrator with iterative multi-pass recall.
 ///
@@ -19,6 +19,9 @@ pub struct DynamicRecallOrchestrator<R, E, V, P, M, S = ()> {
     pub adapter: M,
     pub loaded: Vec<RecallFragment>,
     pub loaded_ids: HashSet<StubId>,
+    /// Per-fragment relevance scores. Decay each reasoning step;
+    /// refreshed when the model's output re-engages with the fragment.
+    relevance_scores: HashMap<StubId, f32>,
     pub config: DynamicRecallConfig,
     /// Optional persistent store for consolidation notes.
     /// When present, notes survive across sessions.
@@ -31,8 +34,10 @@ pub struct DynamicRecallConfig {
     pub thresholds: RecallThresholds,
     pub max_workspace_tokens: usize,
     pub max_recall_iterations: usize,
-    /// Term-overlap score below which a fragment is eligible for eviction
-    pub eviction_relevance_floor: f32,
+    /// Multiplicative decay applied to each fragment's relevance score per
+    /// reasoning step. 0.8 means a fragment loses 20% of its score each
+    /// step it isn't re-engaged with. Lower values = more aggressive eviction.
+    pub relevance_decay_rate: f32,
     pub enable_thinking_trace_recall: bool,
     pub enable_probe_recall: bool,
 }
@@ -44,7 +49,7 @@ impl Default for DynamicRecallConfig {
             thresholds: RecallThresholds::default_hysteresis(),
             max_workspace_tokens: 12_000,
             max_recall_iterations: 3,
-            eviction_relevance_floor: 0.15,
+            relevance_decay_rate: 0.8,
             enable_thinking_trace_recall: true,
             enable_probe_recall: true,
         }
@@ -76,6 +81,7 @@ where
             adapter,
             loaded: Vec::new(),
             loaded_ids: HashSet::new(),
+            relevance_scores: HashMap::new(),
             config,
             store: None,
         }
@@ -132,6 +138,12 @@ where
         for _ in 0..self.config.max_recall_iterations {
             let loaded_before = self.loaded.len();
 
+            // Decay all scores before this reasoning step
+            self.decay_relevance_scores();
+
+            // Refresh scores for fragments the model engaged with
+            self.refresh_relevance_scores(user, &last_response.answer);
+
             if self.config.enable_thinking_trace_recall
                 && self.adapter.capabilities().supports_visible_reasoning
             {
@@ -144,12 +156,13 @@ where
 
             self.process_annotations(&last_response.answer);
 
-            // Workspace converged — no new fragments loaded
+            // Evict fragments whose relevance has decayed below threshold
+            self.evict_stale_fragments(user);
+
+            // Workspace converged — no new fragments loaded, none evicted
             if self.loaded.len() == loaded_before {
                 break;
             }
-
-            self.evict_stale_fragments(user, &last_response.answer);
 
             // Inject topic overlap warnings if the provenance ledger detected any
             let warnings = self.provenance.format_overlap_warnings();
@@ -244,45 +257,66 @@ where
         }
     }
 
-    /// Evict fragments whose relevance to the current context has decayed.
-    /// Uses term overlap as a fast proxy for relevance. Only triggers when
-    /// the workspace is near its token budget.
-    fn evict_stale_fragments(&mut self, query: &str, response: &str) {
-        let current_tokens: usize = self.loaded.iter().map(|f| f.tokens).sum();
+    /// Apply multiplicative decay to all loaded fragment scores.
+    /// Called once per reasoning step so fragments the model stops
+    /// engaging with gradually become eviction candidates.
+    fn decay_relevance_scores(&mut self) {
+        let rate = self.config.relevance_decay_rate;
+        for score in self.relevance_scores.values_mut() {
+            *score *= rate;
+        }
+    }
+
+    /// Refresh relevance scores for fragments that the model's output
+    /// re-engages with. Uses term overlap between the current context
+    /// and each loaded fragment as a proxy for engagement.
+    fn refresh_relevance_scores(&mut self, query: &str, response: &str) {
+        let context = format!("{} {}", query, response);
+        for frag in &self.loaded {
+            let overlap = term_overlap_score(&context, &frag.content);
+            if let Some(current) = self.relevance_scores.get_mut(&frag.stub_id) {
+                // Take the higher of: decayed score or fresh overlap.
+                // A fragment being discussed should never be penalized by decay.
+                if overlap > *current {
+                    *current = overlap;
+                }
+            }
+        }
+    }
+
+    /// Evict fragments whose decayed relevance has dropped below the
+    /// unload threshold (hysteresis). Also enforces the token budget
+    /// as a hard ceiling — if the workspace is over budget, evict the
+    /// lowest-scoring fragments until it fits.
+    fn evict_stale_fragments(&mut self, query: &str) {
+        let unload_threshold = self.config.thresholds.unload;
         let budget = self.config.max_workspace_tokens;
 
-        // Only evict when workspace is 80%+ full
-        if current_tokens < budget * 4 / 5 {
-            return;
-        }
-
-        let context = format!("{} {}", query, response);
-
+        // Collect (index, score) pairs sorted by score ascending
         let mut scored: Vec<(usize, f32)> = self
             .loaded
             .iter()
             .enumerate()
             .map(|(idx, frag)| {
-                let score = term_overlap_score(&context, &frag.content);
+                let score = self.relevance_scores.get(&frag.stub_id).copied().unwrap_or(0.0);
                 (idx, score)
             })
             .collect();
-
-        // Evict lowest-relevance fragments first
         scored.sort_by(|a, b| a.1.total_cmp(&b.1));
 
         let mut to_evict = Vec::new();
-        let mut tokens_remaining = current_tokens;
+        let mut tokens_after_eviction: usize = self.loaded.iter().map(|f| f.tokens).sum();
 
         for (idx, score) in &scored {
-            if *score >= self.config.eviction_relevance_floor {
+            let below_threshold = *score < unload_threshold;
+            let over_budget = tokens_after_eviction > budget;
+
+            if !below_threshold && !over_budget {
                 break;
             }
-            if tokens_remaining <= budget * 7 / 10 {
-                break;
-            }
+
             to_evict.push(*idx);
-            tokens_remaining -= self.loaded[*idx].tokens;
+            tokens_after_eviction -= self.loaded[*idx].tokens;
         }
 
         // Remove in reverse index order to preserve indices
@@ -291,9 +325,11 @@ where
             let fragment = self.loaded.remove(idx);
             self.loaded_ids.remove(&fragment.stub_id);
 
+            let decayed_score = self.relevance_scores.remove(&fragment.stub_id).unwrap_or(0.0);
             let note = ConsolidationNote {
                 content: format!(
-                    "Evicted during query about '{}'. Source: {}",
+                    "Evicted (relevance decayed to {:.2}) during query about '{}'. Source: {}",
+                    decayed_score,
                     truncate_str(query, 100),
                     fragment.locator.source,
                 ),
@@ -323,6 +359,8 @@ where
             let fragment = self.retriever.read_range(&hit.stub.id, "full")?;
 
             if current_tokens + fragment.tokens <= self.config.max_workspace_tokens {
+                self.relevance_scores
+                    .insert(hit.stub.id.clone(), hit.score);
                 self.loaded_ids.insert(hit.stub.id.clone());
                 self.provenance.record_with_context(fragment.clone(), "", 0);
                 self.loaded.push(fragment);
