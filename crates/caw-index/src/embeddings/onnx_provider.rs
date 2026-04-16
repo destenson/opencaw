@@ -42,11 +42,7 @@ impl OnnxEmbeddingProvider {
     }
 
     /// Load with an explicit tokenizer path rather than expecting it adjacent to the model.
-    pub fn from_paths(
-        model_path: &str,
-        tokenizer_path: &str,
-        dimension: usize,
-    ) -> CawResult<Self> {
+    pub fn from_paths(model_path: &str, tokenizer_path: &str, dimension: usize) -> CawResult<Self> {
         let session = Session::builder()
             .map_err(|e| CawError::Embedding(format!("Failed to create session builder: {e}")))?
             .commit_from_file(model_path)
@@ -122,9 +118,7 @@ impl EmbeddingProvider for OnnxEmbeddingProvider {
             .try_extract_array::<f32>()
             .map_err(|e| CawError::Embedding(format!("Failed to extract output tensor: {e}")))?
             .into_dimensionality::<Ix2>()
-            .map_err(|e| {
-                CawError::Embedding(format!("Output tensor has unexpected shape: {e}"))
-            })?;
+            .map_err(|e| CawError::Embedding(format!("Output tensor has unexpected shape: {e}")))?;
 
         let result: Vec<Vec<f32>> = embeddings
             .rows()

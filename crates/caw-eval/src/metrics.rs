@@ -59,10 +59,7 @@ impl FalseRecallMetrics {
     /// Compute false-recall rate from a set of observations.
     /// Uses term overlap as a heuristic: if the stub summary and recalled content
     /// share very few terms, the recall likely surprised the model.
-    pub fn from_observations(
-        observations: &[RecallObservation],
-        overlap_threshold: f32,
-    ) -> Self {
+    pub fn from_observations(observations: &[RecallObservation], overlap_threshold: f32) -> Self {
         if observations.is_empty() {
             return Self {
                 total_recalls: 0,
@@ -154,13 +151,23 @@ pub struct CooperationMetrics {
 pub fn term_overlap(a: &str, b: &str) -> f32 {
     let terms_a: std::collections::HashSet<String> = a
         .split_whitespace()
-        .map(|w| w.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect())
+        .map(|w| {
+            w.to_lowercase()
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect()
+        })
         .filter(|w: &String| !w.is_empty())
         .collect();
 
     let terms_b: std::collections::HashSet<String> = b
         .split_whitespace()
-        .map(|w| w.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect())
+        .map(|w| {
+            w.to_lowercase()
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect()
+        })
         .filter(|w: &String| !w.is_empty())
         .collect();
 

@@ -1,16 +1,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use caw_core::{
-    CawError, CawResult, ConsolidationNote, Stub, StubId, StubStore, VectorIndex,
-};
+use caw_core::{CawError, CawResult, ConsolidationNote, Stub, StubId, StubStore, VectorIndex};
+use qdrant_client::Payload;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
-    Condition, CreateCollectionBuilder, Distance, Filter, GetPointsBuilder, PointStruct,
-    ScrollPointsBuilder, SearchPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder,
-    CreateFieldIndexCollectionBuilder, FieldType,
+    Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, Distance, FieldType,
+    Filter, GetPointsBuilder, PointStruct, PointsIdsList, ScrollPointsBuilder, SearchPointsBuilder,
+    SetPayloadPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder, vector_output,
 };
-use qdrant_client::Payload;
 use serde_json::json;
 use tokio::runtime::Runtime;
 
@@ -19,8 +17,6 @@ pub struct QdrantStubStore {
     collection_name: String,
     runtime: Arc<Runtime>,
     /// Tracks count locally to avoid a round-trip for every len() call.
-    /// Kept in sync by incrementing on insert and refreshing from Qdrant
-    /// when accuracy matters (e.g. after reconnect).
     point_count: usize,
 }
 
@@ -38,6 +34,23 @@ fn stub_id_to_point_id(id: &StubId) -> u64 {
 
 fn qdrant_err(msg: impl std::fmt::Display) -> CawError {
     CawError::VectorStore(msg.to_string())
+}
+
+/// Extract a string from a Qdrant payload Value.
+fn value_as_string(v: &Value) -> Option<String> {
+    v.as_str().map(|s| s.to_string())
+}
+
+/// Extract the dense vector floats from a VectorsOutput, if present.
+fn extract_dense_vector(
+    vectors: &Option<qdrant_client::qdrant::VectorsOutput>,
+) -> Option<Vec<f32>> {
+    let vout = vectors.as_ref()?;
+    let vector = vout.get_vector()?;
+    match vector {
+        vector_output::Vector::Dense(dense) => Some(dense.data),
+        _ => None,
+    }
 }
 
 impl QdrantStubStore {
@@ -62,37 +75,29 @@ impl QdrantStubStore {
 
             if !exists {
                 client
-                    .create_collection(
-                        CreateCollectionBuilder::new(&coll)
-                            .vectors_config(VectorParamsBuilder::new(
-                                dimension as u64,
-                                Distance::Cosine,
-                            )),
-                    )
+                    .create_collection(CreateCollectionBuilder::new(&coll).vectors_config(
+                        VectorParamsBuilder::new(dimension as u64, Distance::Cosine),
+                    ))
                     .await
                     .map_err(|e| qdrant_err(format!("failed to create collection: {e}")))?;
 
                 // Index content_hash for get_by_content_hash lookups
                 client
-                    .create_field_index(
-                        CreateFieldIndexCollectionBuilder::new(
-                            &coll,
-                            "content_hash",
-                            FieldType::Keyword,
-                        ),
-                    )
+                    .create_field_index(CreateFieldIndexCollectionBuilder::new(
+                        &coll,
+                        "content_hash",
+                        FieldType::Keyword,
+                    ))
                     .await
                     .map_err(|e| qdrant_err(format!("failed to create content_hash index: {e}")))?;
 
-                // Index stub_id for point lookups by StubId string
+                // Index stub_id for payload-based lookups
                 client
-                    .create_field_index(
-                        CreateFieldIndexCollectionBuilder::new(
-                            &coll,
-                            "stub_id",
-                            FieldType::Keyword,
-                        ),
-                    )
+                    .create_field_index(CreateFieldIndexCollectionBuilder::new(
+                        &coll,
+                        "stub_id",
+                        FieldType::Keyword,
+                    ))
                     .await
                     .map_err(|e| qdrant_err(format!("failed to create stub_id index: {e}")))?;
 
@@ -103,7 +108,9 @@ impl QdrantStubStore {
                     .await
                     .map_err(|e| qdrant_err(format!("failed to get collection info: {e}")))?;
 
-                let count = info.result.map_or(0, |r| r.points_count.unwrap_or(0) as usize);
+                let count = info
+                    .result
+                    .map_or(0, |r| r.points_count.unwrap_or(0) as usize);
                 Ok(count)
             }
         })?;
@@ -120,21 +127,14 @@ impl QdrantStubStore {
         self.runtime.block_on(f)
     }
 
-    /// Extract a string field from a Qdrant payload map.
-    fn payload_string(
-        payload: &HashMap<String, qdrant_client::qdrant::Value>,
-        key: &str,
-    ) -> CawResult<String> {
+    fn payload_string(payload: &HashMap<String, Value>, key: &str) -> CawResult<String> {
         payload
             .get(key)
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+            .and_then(value_as_string)
             .ok_or_else(|| qdrant_err(format!("missing or invalid payload field: {key}")))
     }
 
-    fn stub_from_payload(
-        payload: &HashMap<String, qdrant_client::qdrant::Value>,
-    ) -> CawResult<Stub> {
+    fn stub_from_payload(payload: &HashMap<String, Value>) -> CawResult<Stub> {
         let json_str = Self::payload_string(payload, "stub_json")?;
         serde_json::from_str(&json_str)
             .map_err(|e| qdrant_err(format!("failed to deserialize stub: {e}")))
@@ -239,17 +239,7 @@ impl StubStore for QdrantStubStore {
 
         let stub = Self::stub_from_payload(&point.payload)?;
 
-        let embedding = point
-            .vectors
-            .as_ref()
-            .and_then(|v| v.vectors_options.as_ref())
-            .and_then(|opts| {
-                use qdrant_client::qdrant::vectors::VectorsOptions;
-                match opts {
-                    VectorsOptions::Vector(v) => Some(v.data.clone()),
-                    _ => None,
-                }
-            })
+        let embedding = extract_dense_vector(&point.vectors)
             .ok_or_else(|| qdrant_err("point missing vector data"))?;
 
         Ok(Some((stub, embedding)))
@@ -277,22 +267,10 @@ impl StubStore for QdrantStubStore {
             })?;
 
             for point in &page.result {
-                let stub_id_str = Self::payload_string(&point.payload, "stub_id")
-                    .unwrap_or_default();
+                let stub_id_str =
+                    Self::payload_string(&point.payload, "stub_id").unwrap_or_default();
 
-                let embedding = point
-                    .vectors
-                    .as_ref()
-                    .and_then(|v| v.vectors_options.as_ref())
-                    .and_then(|opts| {
-                        use qdrant_client::qdrant::vectors::VectorsOptions;
-                        match opts {
-                            VectorsOptions::Vector(v) => Some(v.data.clone()),
-                            _ => None,
-                        }
-                    });
-
-                if let Some(emb) = embedding {
+                if let Some(emb) = extract_dense_vector(&point.vectors) {
                     results.push((StubId(stub_id_str), emb));
                 }
             }
@@ -306,14 +284,9 @@ impl StubStore for QdrantStubStore {
         Ok(results)
     }
 
-    fn save_consolidation(
-        &mut self,
-        stub_id: &StubId,
-        note: &ConsolidationNote,
-    ) -> CawResult<()> {
+    fn save_consolidation(&mut self, stub_id: &StubId, note: &ConsolidationNote) -> CawResult<()> {
         let point_id = stub_id_to_point_id(stub_id);
 
-        // Load existing notes, append new one, write back
         let mut notes = self.load_consolidation(stub_id)?;
         notes.push(note.clone());
 
@@ -328,11 +301,11 @@ impl StubStore for QdrantStubStore {
         self.block_on(async {
             self.client
                 .set_payload(
-                    qdrant_client::qdrant::SetPayloadPointsBuilder::new(
-                        &self.collection_name,
-                        payload,
-                    )
-                    .points_selector(vec![point_id.into()]),
+                    SetPayloadPointsBuilder::new(&self.collection_name, payload)
+                        .points_selector(PointsIdsList {
+                            ids: vec![point_id.into()],
+                        })
+                        .wait(true),
                 )
                 .await
                 .map_err(|e| qdrant_err(format!("failed to update consolidation notes: {e}")))
@@ -369,7 +342,7 @@ impl StubStore for QdrantStubStore {
 
 impl VectorIndex for QdrantStubStore {
     fn add(&mut self, id: StubId, embedding: Vec<f32>) {
-        // VectorIndex::add is infallible by trait signature, so we log and swallow errors.
+        // VectorIndex::add is infallible by trait signature, so errors are swallowed.
         // In practice, insert() is the primary write path; this exists for trait compliance.
         let point_id = stub_id_to_point_id(&id);
 
@@ -411,8 +384,7 @@ impl VectorIndex for QdrantStubStore {
                 .result
                 .iter()
                 .filter_map(|scored| {
-                    let stub_id_str =
-                        Self::payload_string(&scored.payload, "stub_id").ok()?;
+                    let stub_id_str = value_as_string(scored.get("stub_id"))?;
                     Some((StubId(stub_id_str), scored.score))
                 })
                 .collect(),

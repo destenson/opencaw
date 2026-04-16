@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use caw_core::StubId;
 
 use crate::metrics::{
-    ContextEfficiency, CooperationMetrics, FalseRecallMetrics, HysteresisAnalysis,
-    RecallObservation, RecallMetrics, term_overlap,
+    ContextEfficiency, CooperationMetrics, FalseRecallMetrics, HysteresisAnalysis, RecallMetrics,
+    RecallObservation, term_overlap,
 };
 
 /// Accumulates events during an orchestrator session and produces
@@ -228,15 +228,13 @@ impl SessionEvaluator {
         let observations: Vec<RecallObservation> = self
             .recalls
             .iter()
-            .filter_map(|r| {
-                match (&r.stub_summary, &r.recalled_content) {
-                    (Some(summary), Some(content)) => Some(RecallObservation {
-                        stub_summary: summary.clone(),
-                        recalled_content: content.clone(),
-                        model_flagged_conflict: false,
-                    }),
-                    _ => None,
-                }
+            .filter_map(|r| match (&r.stub_summary, &r.recalled_content) {
+                (Some(summary), Some(content)) => Some(RecallObservation {
+                    stub_summary: summary.clone(),
+                    recalled_content: content.clone(),
+                    model_flagged_conflict: false,
+                }),
+                _ => None,
             })
             .collect();
 
@@ -276,10 +274,9 @@ impl SessionEvaluator {
             if let Some(evicts) = evict_steps.get(stub_id) {
                 // For each eviction, check if there's a reload within the window
                 for &evict_step in evicts {
-                    if loads
-                        .iter()
-                        .any(|&load_step| load_step > evict_step && load_step - evict_step <= self.thrashing_window)
-                    {
+                    if loads.iter().any(|&load_step| {
+                        load_step > evict_step && load_step - evict_step <= self.thrashing_window
+                    }) {
                         thrashing_events += 1;
                     }
                 }
@@ -354,12 +351,7 @@ impl SessionEvaluator {
         let mut quality_scores = Vec::new();
         for ann in &self.annotations {
             // Find the most recent recall for this stub to compare against
-            if let Some(recall) = self
-                .recalls
-                .iter()
-                .rev()
-                .find(|r| r.stub_id == ann.stub_id)
-            {
+            if let Some(recall) = self.recalls.iter().rev().find(|r| r.stub_id == ann.stub_id) {
                 if let Some(ref content) = recall.recalled_content {
                     quality_scores.push(term_overlap(&ann.content, content));
                 }

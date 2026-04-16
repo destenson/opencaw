@@ -1,7 +1,7 @@
-use caw_core::{CawError, CawResult, EmbeddingProvider};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config as BertConfig};
+use caw_core::{CawError, CawResult, EmbeddingProvider};
 use hf_hub::api::sync::Api;
 use tokenizers::Tokenizer;
 
@@ -21,7 +21,8 @@ impl CandleEmbeddingProvider {
     /// Downloads and caches model weights, config, and tokenizer automatically.
     pub fn from_pretrained(model_id: &str) -> CawResult<Self> {
         let device = Device::Cpu;
-        let api = Api::new().map_err(|e| CawError::Embedding(format!("HF Hub init failed: {e}")))?;
+        let api =
+            Api::new().map_err(|e| CawError::Embedding(format!("HF Hub init failed: {e}")))?;
         let repo = api.model(model_id.to_string());
 
         let config_path = repo
@@ -30,9 +31,9 @@ impl CandleEmbeddingProvider {
         let tokenizer_path = repo
             .get("tokenizer.json")
             .map_err(|e| CawError::Embedding(format!("Failed to download tokenizer.json: {e}")))?;
-        let weights_path = repo
-            .get("model.safetensors")
-            .map_err(|e| CawError::Embedding(format!("Failed to download model.safetensors: {e}")))?;
+        let weights_path = repo.get("model.safetensors").map_err(|e| {
+            CawError::Embedding(format!("Failed to download model.safetensors: {e}"))
+        })?;
 
         let config_str = std::fs::read_to_string(&config_path)?;
         let config: BertConfig = serde_json::from_str(&config_str)
@@ -115,8 +116,9 @@ impl CandleEmbeddingProvider {
         let token_type_ids = Tensor::from_vec(all_type_ids, shape, &self.device).map_err(|e| {
             CawError::Embedding(format!("Failed to create token_type_ids tensor: {e}"))
         })?;
-        let attention_mask_f32 = Tensor::from_vec(all_mask, shape, &self.device)
-            .map_err(|e| CawError::Embedding(format!("Failed to create attention_mask tensor: {e}")))?;
+        let attention_mask_f32 = Tensor::from_vec(all_mask, shape, &self.device).map_err(|e| {
+            CawError::Embedding(format!("Failed to create attention_mask tensor: {e}"))
+        })?;
 
         // BertModel.forward expects i64 attention mask for the causal mask,
         // but we need f32 for mean-pooling below
