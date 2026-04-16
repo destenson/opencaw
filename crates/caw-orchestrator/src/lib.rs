@@ -1,14 +1,83 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+use caw_core::{
+    BudgetScheduler, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
+    ProvenanceStore, RecallFragment, Retriever, SchedulerInput, TokenBudget,
+};
+
+#[derive(Debug, Clone)]
+pub struct OrchestratorConfig {
+    pub top_k: usize,
+    pub load_threshold: f32,
+    pub default_range: String,
+    pub budget: TokenBudget,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+impl Default for OrchestratorConfig {
+    fn default() -> Self {
+        Self {
+            top_k: 4,
+            load_threshold: 0.3,
+            default_range: "full".to_string(),
+            budget: TokenBudget {
+                max_total: 16_000,
+                reserved_for_prompt: 2_000,
+                reserved_for_answer: 2_000,
+            },
+        }
+    }
+}
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+pub struct RecallOrchestrator<R, S, P, M>
+where
+    R: Retriever,
+    S: BudgetScheduler,
+    P: ProvenanceStore,
+    M: ModelAdapter,
+{
+    pub retriever: R,
+    pub scheduler: S,
+    pub provenance: P,
+    pub adapter: M,
+    pub loaded: Vec<RecallFragment>,
+    pub config: OrchestratorConfig,
+}
+
+impl<R, S, P, M> RecallOrchestrator<R, S, P, M>
+where
+    R: Retriever,
+    S: BudgetScheduler,
+    P: ProvenanceStore,
+    M: ModelAdapter,
+{
+    pub fn run_turn(&mut self, system: &str, user: &str) -> CawResult<CompletionResponse> {
+        let hits = self.retriever.search(user, self.config.top_k)?;
+        let mut candidates = Vec::new();
+
+        for hit in hits
+            .into_iter()
+            .filter(|h| h.score >= self.config.load_threshold)
+        {
+            let fragment = self
+                .retriever
+                .read_range(&hit.stub.id, &self.config.default_range)?;
+            candidates.push(fragment);
+        }
+
+        let decision = self.scheduler.schedule(SchedulerInput {
+            currently_loaded: self.loaded.clone(),
+            candidates,
+            budget: self.config.budget,
+        });
+
+        self.loaded = decision.keep;
+
+        for frag in decision.admitted {
+            self.provenance.record(frag);
+        }
+
+        self.adapter.complete(CompletionRequest {
+            system: system.to_string(),
+            user: user.to_string(),
+            workspace_fragments: self.loaded.clone(),
+        })
     }
 }
