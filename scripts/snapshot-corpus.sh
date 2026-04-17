@@ -20,7 +20,9 @@ set -euo pipefail
 
 SOURCE="${1:-/usr/share/doc}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_DEST="$(cd "$SCRIPT_DIR/.." && pwd)/../opencaw-corpora/sysdoc"
+# Default dest lives inside the repo so it's co-located with the code that
+# consumes it. `opencaw-corpora/` is gitignored.
+DEFAULT_DEST="$(cd "$SCRIPT_DIR/.." && pwd)/opencaw-corpora/sysdoc"
 DEST="${2:-$DEFAULT_DEST}"
 MANIFEST="$DEST/manifest.jsonl"
 
