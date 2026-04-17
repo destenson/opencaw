@@ -13,6 +13,7 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 clap = { version = "4", features = ["derive"] }
+tokio = { workspace = true }
 caw-core = { path = "../caw-core" }
 caw-adapters = { path = "../caw-adapters" }
 caw-ingest = { path = "../caw-ingest" }

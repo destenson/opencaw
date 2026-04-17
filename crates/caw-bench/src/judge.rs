@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 
-use caw_adapters::ClaudeCodeAdapter;
 use caw_core::{CompletionRequest, ModelAdapter};
 
 #[derive(Debug, Clone)]
@@ -12,13 +11,14 @@ pub struct JudgeVerdict {
 
 /// Ask a cheap model to compare the answer against a reference and return a
 /// numeric score. The judge is intentionally separate from the answering
-/// model so the comparison isn't biased by same-model self-agreement.
-///
-/// Judge runs through the Claude Code CLI; `judge_model` is passed directly
-/// to `claude --model` (typical values: "haiku", "sonnet").
-pub fn judge_answer(judge_model: &str, answer: &str, reference: &str) -> Result<JudgeVerdict> {
-    let adapter = ClaudeCodeAdapter::builder().model(judge_model).build();
-
+/// model so the comparison isn't biased by same-model self-agreement —
+/// configure it via `--judge-adapter`/`--judge-model` to point at a model
+/// that doesn't share weights with the answer adapter.
+pub fn judge_answer(
+    judge_adapter: &dyn ModelAdapter,
+    answer: &str,
+    reference: &str,
+) -> Result<JudgeVerdict> {
     let system = "You are a strict scorer. Compare a candidate answer against a reference \
          answer and output a single line of JSON with fields score (0.0 to 1.0) and rationale \
          (one sentence). 1.0 means the candidate contains all key facts from the reference; \
@@ -31,7 +31,7 @@ pub fn judge_answer(judge_model: &str, answer: &str, reference: &str) -> Result<
         reference, answer
     );
 
-    let response = adapter
+    let response = judge_adapter
         .complete(CompletionRequest {
             system,
             user,

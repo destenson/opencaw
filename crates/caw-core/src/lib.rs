@@ -445,6 +445,24 @@ pub trait ModelAdapter {
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse>;
 }
 
+/// Forward `ModelAdapter` through a boxed trait object so callers that build
+/// adapters dynamically (e.g. CLI-driven harnesses choosing between Ollama,
+/// vLLM, ClaudeCode, etc.) can hand the box directly to generic consumers
+/// like `DynamicRecallOrchestrator<_, _, _, _, M, _>`.
+impl<T: ModelAdapter + ?Sized> ModelAdapter for Box<T> {
+    fn model_name(&self) -> &str {
+        (**self).model_name()
+    }
+
+    fn capabilities(&self) -> ModelCapabilities {
+        (**self).capabilities()
+    }
+
+    fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
+        (**self).complete(req)
+    }
+}
+
 /// Embedding generation trait - abstracts different embedding backends.
 ///
 /// Asymmetric models (BGE, E5) produce better results when queries and documents

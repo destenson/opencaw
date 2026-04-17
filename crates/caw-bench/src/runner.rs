@@ -1,11 +1,7 @@
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 
-use caw_adapters::ClaudeCodeAdapter;
-use caw_core::{EmbeddingProvider, RecallThresholds, StubId, StubStore, VectorIndex};
-// RecallThresholds is constructed inline in orchestrator_config from
-// RunnerConfig's load_threshold / unload_threshold — the type import above
-// is kept for the config builder pattern.
+use caw_core::{EmbeddingProvider, ModelAdapter, RecallThresholds, StubId, StubStore, VectorIndex};
 use caw_index::{FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
 use caw_ingest::{IngestionPipeline, SourceDocument};
 use caw_orchestrator::dynamic::{DynamicRecallConfig, DynamicRecallOrchestrator};
@@ -13,9 +9,6 @@ use caw_provenance::InMemoryProvenanceStore;
 
 use crate::judge::{JudgeVerdict, judge_answer};
 use crate::workload::{RecallMode, Scoring, WorkloadItem};
-
-const DEFAULT_ANSWER_MODEL: &str = "sonnet";
-const DEFAULT_JUDGE_MODEL: &str = "haiku";
 
 pub struct RunnerConfig {
     pub system_prompt: String,
@@ -29,22 +22,16 @@ pub struct RunnerConfig {
     pub load_threshold: f32,
     /// Unload threshold (hysteresis band lower edge).
     pub unload_threshold: f32,
-    /// Answering model for the comparison. Same model is used in both
-    /// recall-on and recall-off so the delta isolates recall's contribution.
-    /// Passed to `claude --model`; typical values: "sonnet", "opus", "haiku".
-    pub answer_model: String,
-    /// Judge model used for JudgeAgainst scoring. Cheap and separate from
-    /// the answering model so judging doesn't bias the comparison.
-    pub judge_model: String,
     /// How many total questions to run (trimmed workload); None = run all.
     pub limit: Option<usize>,
 }
 
 impl Default for RunnerConfig {
     fn default() -> Self {
-        // Permissive thresholds match RecallThresholds::permissive() in
-        // caw-core. Tuning these per workload is a future calibration
-        // exercise; the bench harness is the instrument for that.
+        // Tight workspace + permissive thresholds: forces the orchestrator's
+        // multi-pass / eviction machinery to actually fire when probes
+        // bring in additional fragments. With a 12k budget the budget
+        // ceiling never bit and recall-on collapsed to recall-off.
         Self {
             system_prompt:
                 "You are a helpful assistant. Use the recalled workspace context to answer \
@@ -52,12 +39,10 @@ impl Default for RunnerConfig {
                  context when they support your answer."
                     .to_string(),
             top_k: 5,
-            max_workspace_tokens: 12_000,
+            max_workspace_tokens: 2_000,
             max_recall_iterations: 3,
             load_threshold: 0.3,
             unload_threshold: 0.2,
-            answer_model: DEFAULT_ANSWER_MODEL.to_string(),
-            judge_model: DEFAULT_JUDGE_MODEL.to_string(),
             limit: None,
         }
     }
@@ -79,10 +64,12 @@ pub struct ItemResult {
     pub precision_at_k: f32,
     /// Total tokens in loaded fragments (content).
     pub content_tokens: usize,
-    /// Approximate tokens spent on stubs (summaries + outlines) in the workspace.
+    /// Tokens of stub summaries in the retrieval index (NOT in the model's
+    /// context window). Reported for analysis of pool size; not part of the
+    /// context_efficiency ratio.
     pub stub_tokens: usize,
-    /// content_tokens / (content_tokens + stub_tokens + overhead). Higher is
-    /// better — more of the context window is doing useful work.
+    /// content / (content + system + query + per-fragment provenance tags).
+    /// Higher is better — more of the context window is doing useful work.
     pub context_efficiency: f32,
     /// Per the FalseRecallMetrics heuristic: share of loaded fragments with
     /// low stub-summary-to-content term overlap. Lower is better.
@@ -100,6 +87,8 @@ pub fn run_item(
     item: &WorkloadItem,
     mode: RecallMode,
     cfg: &RunnerConfig,
+    answer_adapter: Box<dyn ModelAdapter>,
+    judge_adapter: &dyn ModelAdapter,
 ) -> Result<ItemResult> {
     let started = std::time::Instant::now();
 
@@ -156,10 +145,6 @@ pub fn run_item(
     let trace_index = HnswVectorIndex::new();
     let provenance = InMemoryProvenanceStore::default();
 
-    let adapter = ClaudeCodeAdapter::builder()
-        .model(&cfg.answer_model)
-        .build();
-
     let config = orchestrator_config(mode, cfg);
 
     let mut orchestrator: DynamicRecallOrchestrator<_, _, _, _, _, SqliteStubStore> =
@@ -168,7 +153,7 @@ pub fn run_item(
             trace_embedder,
             trace_index,
             provenance,
-            adapter,
+            answer_adapter,
             config,
         );
 
@@ -198,8 +183,6 @@ pub fn run_item(
     } else {
         content_tokens as f32 / (content_tokens + overhead_tokens) as f32
     };
-    // Reported for analysis/backcompat; computed as bytes-of-stubs-in-index
-    // rather than tokens-in-context. Useful to know the retrieval pool size.
     let stub_tokens: usize = stub_summaries
         .values()
         .map(|s| estimate_tokens(s))
@@ -208,7 +191,7 @@ pub fn run_item(
     let false_recall_rate = false_recall_rate_heuristic(&loaded, &stub_summaries);
 
     let (answer_score, judge_rationale) =
-        score_answer(&item.scoring, &response.answer, &cfg.judge_model)?;
+        score_answer(&item.scoring, &response.answer, judge_adapter)?;
 
     Ok(ItemResult {
         item_id: item.id.clone(),
@@ -331,7 +314,7 @@ fn estimate_tokens(text: &str) -> usize {
 fn score_answer(
     scoring: &Scoring,
     answer: &str,
-    judge_model: &str,
+    judge_adapter: &dyn ModelAdapter,
 ) -> Result<(f32, String)> {
     match scoring {
         Scoring::ContainsNeedle { needle } => {
@@ -339,7 +322,7 @@ fn score_answer(
             Ok((if pass { 1.0 } else { 0.0 }, String::new()))
         }
         Scoring::JudgeAgainst { reference_answer } => {
-            let verdict: JudgeVerdict = judge_answer(judge_model, answer, reference_answer)
+            let verdict: JudgeVerdict = judge_answer(judge_adapter, answer, reference_answer)
                 .context("judge invocation failed")?;
             Ok((verdict.score, verdict.rationale))
         }

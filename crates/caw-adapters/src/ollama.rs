@@ -45,12 +45,12 @@ impl OllamaAdapter {
         Self::local("llama3.2", runtime)
     }
 
-    pub fn qwen2_5(runtime: Arc<Runtime>) -> Self {
-        Self::local("qwen2.5", runtime)
+    pub fn qwen3_5_9b(runtime: Arc<Runtime>) -> Self {
+        Self::local("qwen3.5:9b", runtime)
     }
 
-    pub fn deepseek_r1(runtime: Arc<Runtime>) -> Self {
-        Self::local("deepseek-r1", runtime)
+    pub fn deepseek_v3_1(runtime: Arc<Runtime>) -> Self {
+        Self::local("deepseek-v3.1:671b-cloud", runtime)
     }
 }
 
@@ -86,11 +86,19 @@ impl ModelAdapter for OllamaAdapter {
     }
 
     fn capabilities(&self) -> ModelCapabilities {
+        // TODO: query Ollama's /api/models endpoint to get actual capabilities per model. For now we hardcode based on known behavior of popular models:
+        // hidden_reasoning is overloaded here to mean "follows
+        // marker-emission instructions in its final answer" — the gate the
+        // orchestrator uses to decide whether to inject probe/note prompts.
+        // Modern instruct models (qwen2.5, llama3.2, mistral-instruct) all
+        // qualify; without this flag the orchestrator silently degrades to
+        // single-shot retrieval. Visible reasoning still gates the
+        // <think>-block parsing path and is detected by model name.
         ModelCapabilities {
             supports_tool_calls: false,
-            supports_hidden_reasoning: false,
-            supports_visible_reasoning: self.model.contains("deepseek-r1")
-                || self.model.contains("qwen-qwq"),
+            supports_hidden_reasoning: true,
+            supports_visible_reasoning: self.model.contains("deepseek")
+                || self.model.contains("qwen"),
         }
     }
 
@@ -117,21 +125,52 @@ impl ModelAdapter for OllamaAdapter {
             },
         };
 
-        let response = self.runtime.block_on(async {
+        let body = self.runtime.block_on(async {
             let url = format!("{}/api/chat", self.base_url);
-            self.client
+            let resp = self
+                .client
                 .post(&url)
                 .json(&ollama_req)
                 .send()
                 .await
-                .map_err(|e| CawError::Adapter(format!("Request failed: {}", e)))?
-                .json::<OllamaChatResponse>()
+                .map_err(|e| CawError::Adapter(format!("Request failed: {}", e)))?;
+            let status = resp.status();
+            let text = resp
+                .text()
                 .await
-                .map_err(|e| CawError::Adapter(format!("Failed to parse response: {}", e)))
+                .map_err(|e| CawError::Adapter(format!("read response body: {}", e)))?;
+            if !status.is_success() {
+                return Err(CawError::Adapter(format!(
+                    "Ollama returned HTTP {}: {}",
+                    status,
+                    text.chars().take(500).collect::<String>()
+                )));
+            }
+            Ok(text)
         })?;
 
-        Ok(CompletionResponse {
-            answer: response.message.content,
-        })
+        // Read the body as text first, then parse — when Ollama returns an
+        // error envelope (e.g. unknown model) the chat-response shape fails
+        // to deserialize and the original error text gets lost. Surfacing
+        // both candidate parses gives the caller something to act on.
+        match serde_json::from_str::<OllamaChatResponse>(&body) {
+            Ok(parsed) => Ok(CompletionResponse {
+                answer: parsed.message.content,
+            }),
+            Err(parse_err) => {
+                #[derive(Deserialize)]
+                struct OllamaError {
+                    error: String,
+                }
+                if let Ok(err) = serde_json::from_str::<OllamaError>(&body) {
+                    return Err(CawError::Adapter(format!("Ollama error: {}", err.error)));
+                }
+                Err(CawError::Adapter(format!(
+                    "Ollama response did not match chat or error schema ({}): {}",
+                    parse_err,
+                    body.chars().take(500).collect::<String>()
+                )))
+            }
+        }
     }
 }

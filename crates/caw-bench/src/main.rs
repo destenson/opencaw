@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
+use caw_bench::adapter_factory::{self, AdapterKind, AdapterSpec};
 use caw_bench::niah::{self, NiahConfig};
 use caw_bench::opencaw;
 use caw_bench::report::{build_report, format_summary};
@@ -24,7 +25,9 @@ struct Cli {
     niah_items: usize,
 
     /// Filler paragraphs per NIAH item (controls effective haystack size).
-    #[arg(long, default_value = "80")]
+    /// Default chosen so the corpus is several times larger than the
+    /// workspace budget — forcing real retrieval competition.
+    #[arg(long, default_value = "200")]
     niah_filler: usize,
 
     /// Seed for NIAH's reproducible RNG.
@@ -35,19 +38,40 @@ struct Cli {
     #[arg(long)]
     limit: Option<usize>,
 
-    /// Answer model. Passed to `claude --model` (typical: sonnet, opus, haiku).
-    /// Same model is used for both recall-on and recall-off runs.
-    #[arg(long, default_value = "sonnet")]
+    /// Adapter for the answering model.
+    #[arg(long, value_enum, default_value_t = AdapterKind::Ollama)]
+    answer_adapter: AdapterKind,
+
+    /// Answering model name. Same value used for both recall-on and
+    /// recall-off so the delta isolates recall's contribution. Format
+    /// depends on `--answer-adapter`: ollama tag (e.g. "qwen3.5:9b"),
+    /// vLLM HF id (e.g. "Qwen/Qwen2.5-7B-Instruct"), or claude alias
+    /// ("sonnet", "opus", "haiku").
+    #[arg(long, default_value = "qwen3.5:9b")]
     answer_model: String,
 
-    /// Judge model for open-ended (JudgeAgainst) scoring. Passed to
-    /// `claude --model`; default is haiku for speed and cost.
+    /// Adapter for the judge model (JudgeAgainst scoring only).
+    #[arg(long, value_enum, default_value_t = AdapterKind::ClaudeCode)]
+    judge_adapter: AdapterKind,
+
+    /// Judge model name. Default keeps the judge on a different model
+    /// family than the answer to avoid same-model self-agreement bias.
     #[arg(long, default_value = "haiku")]
     judge_model: String,
 
+    /// Ollama base URL (used by both answer and judge if either is `ollama`).
+    #[arg(long, default_value = "http://localhost:11434")]
+    ollama_url: String,
+
+    /// vLLM / OpenAI-compatible base URL. Reads OPENAI_COMPATIBLE_API_KEY
+    /// from env if present.
+    #[arg(long, default_value = "http://localhost:8000")]
+    openai_url: String,
+
     /// Max workspace tokens — applied identically to both modes for a
-    /// matched-budget comparison.
-    #[arg(long, default_value = "12000")]
+    /// matched-budget comparison. Tight default forces eviction to engage
+    /// when probes bring in additional fragments.
+    #[arg(long, default_value = "2000")]
     max_workspace_tokens: usize,
 
     /// top-k for retrieval.
@@ -120,11 +144,24 @@ fn main() -> Result<()> {
         max_workspace_tokens: cli.max_workspace_tokens,
         load_threshold: cli.load_threshold,
         unload_threshold: cli.unload_threshold,
-        answer_model: cli.answer_model.clone(),
-        judge_model: cli.judge_model.clone(),
         limit: cli.limit,
         ..Default::default()
     };
+
+    // Single tokio runtime shared across all adapter constructions. Both
+    // OllamaAdapter and OpenAiCompatibleAdapter need it; ClaudeCodeAdapter
+    // ignores it.
+    let runtime = caw_adapters::create_runtime().context("create tokio runtime")?;
+
+    let judge_adapter = adapter_factory::build(
+        AdapterSpec {
+            kind: cli.judge_adapter,
+            model: &cli.judge_model,
+            ollama_url: &cli.ollama_url,
+            openai_url: &cli.openai_url,
+        },
+        &runtime,
+    )?;
 
     let modes: Vec<RecallMode> = match cli.only_mode {
         Some(m) => vec![m.into()],
@@ -144,7 +181,26 @@ fn main() -> Result<()> {
                 mode.as_str(),
                 truncate(&item.question, 80)
             );
-            match run_item(item, *mode, &cfg) {
+
+            // Each item gets a fresh answer adapter — the orchestrator
+            // takes ownership, and we want no state carried between runs.
+            let answer_adapter = match adapter_factory::build(
+                AdapterSpec {
+                    kind: cli.answer_adapter,
+                    model: &cli.answer_model,
+                    ollama_url: &cli.ollama_url,
+                    openai_url: &cli.openai_url,
+                },
+                &runtime,
+            ) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("  error building answer adapter: {:#}", e);
+                    continue;
+                }
+            };
+
+            match run_item(item, *mode, &cfg, answer_adapter, judge_adapter.as_ref()) {
                 Ok(result) => {
                     eprintln!(
                         "  score={:.2} recall@k={:.2} ctx_eff={:.2} loaded={}",
