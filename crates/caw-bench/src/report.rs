@@ -11,11 +11,16 @@ pub struct ModeSummary {
     /// thesis: does recall improve task-level correctness at matched budget.
     pub mean_answer_score: f32,
     pub mean_recall_at_k: f32,
-    pub mean_precision_at_k: f32,
+    /// Capped at min(|expected|, k) / k. For single-needle workloads this
+    /// is degenerate (max = 1/k); use precision_at_1 or mrr as the
+    /// signal instead.
+    pub mean_relevance_at_k: f32,
+    pub mean_precision_at_1: f32,
+    pub mean_mrr: f32,
     pub mean_content_tokens: f32,
     /// Mean tokens of stub summaries in the retrieval INDEX (not in context).
-    /// Reported for analysis; doesn't enter `context_efficiency`.
-    pub mean_stub_tokens: f32,
+    /// Reported for corpus-pool size analysis.
+    pub mean_index_pool_tokens: f32,
     pub mean_context_efficiency: f32,
     pub mean_false_recall_rate: f32,
     pub mean_latency_ms: f32,
@@ -41,9 +46,11 @@ pub struct SerializableItem {
     pub loaded_paths: Vec<String>,
     pub expected_paths: Vec<String>,
     pub recall_at_k: f32,
-    pub precision_at_k: f32,
+    pub relevance_at_k: f32,
+    pub precision_at_1: f32,
+    pub mrr: f32,
     pub content_tokens: usize,
-    pub stub_tokens: usize,
+    pub index_pool_tokens: usize,
     pub context_efficiency: f32,
     pub false_recall_rate: f32,
     pub answer_score: f32,
@@ -61,9 +68,11 @@ impl From<&ItemResult> for SerializableItem {
             loaded_paths: r.loaded_paths.clone(),
             expected_paths: r.expected_paths.clone(),
             recall_at_k: r.recall_at_k,
-            precision_at_k: r.precision_at_k,
+            relevance_at_k: r.relevance_at_k,
+            precision_at_1: r.precision_at_1,
+            mrr: r.mrr,
             content_tokens: r.content_tokens,
-            stub_tokens: r.stub_tokens,
+            index_pool_tokens: r.index_pool_tokens,
             context_efficiency: r.context_efficiency,
             false_recall_rate: r.false_recall_rate,
             answer_score: r.answer_score,
@@ -101,9 +110,11 @@ fn mean_summary(mode: RecallMode, items: &[&ItemResult]) -> ModeSummary {
     let n = items.len() as f32;
     let sum_answer: f32 = items.iter().map(|r| r.answer_score).sum();
     let sum_recall: f32 = items.iter().map(|r| r.recall_at_k).sum();
-    let sum_precision: f32 = items.iter().map(|r| r.precision_at_k).sum();
+    let sum_relevance: f32 = items.iter().map(|r| r.relevance_at_k).sum();
+    let sum_p1: f32 = items.iter().map(|r| r.precision_at_1).sum();
+    let sum_mrr: f32 = items.iter().map(|r| r.mrr).sum();
     let sum_content: usize = items.iter().map(|r| r.content_tokens).sum();
-    let sum_stub: usize = items.iter().map(|r| r.stub_tokens).sum();
+    let sum_pool: usize = items.iter().map(|r| r.index_pool_tokens).sum();
     let sum_eff: f32 = items.iter().map(|r| r.context_efficiency).sum();
     let sum_fr: f32 = items.iter().map(|r| r.false_recall_rate).sum();
     let sum_latency: u64 = items.iter().map(|r| r.latency_ms).sum();
@@ -113,9 +124,11 @@ fn mean_summary(mode: RecallMode, items: &[&ItemResult]) -> ModeSummary {
         item_count: items.len(),
         mean_answer_score: sum_answer / n,
         mean_recall_at_k: sum_recall / n,
-        mean_precision_at_k: sum_precision / n,
+        mean_relevance_at_k: sum_relevance / n,
+        mean_precision_at_1: sum_p1 / n,
+        mean_mrr: sum_mrr / n,
         mean_content_tokens: sum_content as f32 / n,
-        mean_stub_tokens: sum_stub as f32 / n,
+        mean_index_pool_tokens: sum_pool as f32 / n,
         mean_context_efficiency: sum_eff / n,
         mean_false_recall_rate: sum_fr / n,
         mean_latency_ms: sum_latency as f32 / n,
@@ -144,8 +157,13 @@ pub fn format_summary(report: &BenchReport) -> String {
             summary.mean_recall_at_k
         ));
         out.push_str(&format!(
-            "  precision@k:          {:.3}\n",
-            summary.mean_precision_at_k
+            "  precision@1:          {:.3}\n",
+            summary.mean_precision_at_1
+        ));
+        out.push_str(&format!("  mrr:                  {:.3}\n", summary.mean_mrr));
+        out.push_str(&format!(
+            "  relevance@k:          {:.3}  (capped at min(|expected|,k)/k)\n",
+            summary.mean_relevance_at_k
         ));
         out.push_str(&format!(
             "  context_efficiency:   {:.3}\n",
@@ -158,6 +176,10 @@ pub fn format_summary(report: &BenchReport) -> String {
         out.push_str(&format!(
             "  avg content tokens:   {:.0}\n",
             summary.mean_content_tokens
+        ));
+        out.push_str(&format!(
+            "  avg index pool toks:  {:.0}  (corpus stubs in retrieval pool, not in context)\n",
+            summary.mean_index_pool_tokens
         ));
         out.push_str(&format!(
             "  avg latency ms:       {:.0}\n\n",
@@ -174,6 +196,14 @@ pub fn format_summary(report: &BenchReport) -> String {
         out.push_str(&format!(
             "  Δ recall@k:           {:+.3}\n",
             on.mean_recall_at_k - off.mean_recall_at_k
+        ));
+        out.push_str(&format!(
+            "  Δ precision@1:        {:+.3}\n",
+            on.mean_precision_at_1 - off.mean_precision_at_1
+        ));
+        out.push_str(&format!(
+            "  Δ mrr:                {:+.3}\n",
+            on.mean_mrr - off.mean_mrr
         ));
         out.push_str(&format!(
             "  Δ context_efficiency: {:+.3}\n",

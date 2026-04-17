@@ -59,15 +59,25 @@ pub struct ItemResult {
     pub loaded_paths: Vec<String>,
     pub expected_paths: Vec<String>,
     /// recall@k over the final loaded set (after all orchestrator iterations).
+    /// Fraction of expected paths that ended up in the loaded set.
     pub recall_at_k: f32,
-    /// precision@k over the final loaded set.
-    pub precision_at_k: f32,
+    /// Fraction of the loaded set that's actually relevant (i.e. in
+    /// `expected_paths`). Mathematically capped at `min(expected, k) / k`,
+    /// so for single-needle NIAH this can never exceed `1/k`. Renamed from
+    /// `precision_at_k` to avoid implying answer-quality.
+    pub relevance_at_k: f32,
+    /// Binary: was the top-1 retrieved fragment in `expected_paths`?
+    /// More discriminating than relevance@k for single-needle workloads.
+    pub precision_at_1: f32,
+    /// Mean reciprocal rank — for each expected path, `1 / (rank + 1)` if
+    /// found in `loaded_paths`, 0 otherwise. Averaged across expected
+    /// paths. Captures *how high* each needle landed in the ranking.
+    pub mrr: f32,
     /// Total tokens in loaded fragments (content).
     pub content_tokens: usize,
-    /// Tokens of stub summaries in the retrieval index (NOT in the model's
-    /// context window). Reported for analysis of pool size; not part of the
-    /// context_efficiency ratio.
-    pub stub_tokens: usize,
+    /// Total tokens of stub summaries in the retrieval index (NOT in the
+    /// model's context window). Reported per item for the corpus-pool size.
+    pub index_pool_tokens: usize,
     /// content / (content + system + query + per-fragment provenance tags).
     /// Higher is better — more of the context window is doing useful work.
     pub context_efficiency: f32,
@@ -165,7 +175,7 @@ pub fn run_item(
     let loaded = orchestrator.loaded.clone();
     let loaded_paths: Vec<String> = loaded.iter().map(|f| f.locator.source.clone()).collect();
 
-    let (recall_at_k, precision_at_k) = recall_precision(&loaded_paths, &item.expected_paths);
+    let metrics = retrieval_metrics(&loaded_paths, &item.expected_paths);
     let content_tokens: usize = loaded.iter().map(|f| f.tokens).sum();
     // Provenance-tag overhead: each recalled fragment is wrapped in
     // `<recalled from="..." locator="...">...</recalled>` or the bracketed
@@ -183,7 +193,7 @@ pub fn run_item(
     } else {
         content_tokens as f32 / (content_tokens + overhead_tokens) as f32
     };
-    let stub_tokens: usize = stub_summaries
+    let index_pool_tokens: usize = stub_summaries
         .values()
         .map(|s| estimate_tokens(s))
         .sum();
@@ -200,16 +210,26 @@ pub fn run_item(
         answer: response.answer,
         loaded_paths,
         expected_paths: item.expected_paths.clone(),
-        recall_at_k,
-        precision_at_k,
+        recall_at_k: metrics.recall_at_k,
+        relevance_at_k: metrics.relevance_at_k,
+        precision_at_1: metrics.precision_at_1,
+        mrr: metrics.mrr,
         content_tokens,
-        stub_tokens,
+        index_pool_tokens,
         context_efficiency,
         false_recall_rate,
         answer_score,
         judge_rationale,
         latency_ms: started.elapsed().as_millis() as u64,
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RetrievalMetrics {
+    recall_at_k: f32,
+    relevance_at_k: f32,
+    precision_at_1: f32,
+    mrr: f32,
 }
 
 fn orchestrator_config(mode: RecallMode, cfg: &RunnerConfig) -> DynamicRecallConfig {
@@ -241,22 +261,44 @@ fn orchestrator_config(mode: RecallMode, cfg: &RunnerConfig) -> DynamicRecallCon
     }
 }
 
-fn recall_precision(loaded: &[String], expected: &[String]) -> (f32, f32) {
+fn retrieval_metrics(loaded: &[String], expected: &[String]) -> RetrievalMetrics {
     let loaded_set: HashSet<&String> = loaded.iter().collect();
     let expected_set: HashSet<&String> = expected.iter().collect();
     let intersection = loaded_set.intersection(&expected_set).count();
 
-    let recall = if expected.is_empty() {
+    let recall_at_k = if expected.is_empty() {
         1.0
     } else {
         intersection as f32 / expected.len() as f32
     };
-    let precision = if loaded.is_empty() {
+    let relevance_at_k = if loaded.is_empty() {
         0.0
     } else {
         intersection as f32 / loaded.len() as f32
     };
-    (recall, precision)
+    let precision_at_1 = match loaded.first() {
+        Some(top) if expected_set.contains(top) => 1.0,
+        _ => 0.0,
+    };
+    // Reciprocal rank of each expected path; missing paths contribute 0.
+    let mrr = if expected.is_empty() {
+        1.0
+    } else {
+        let total: f32 = expected
+            .iter()
+            .map(|exp| match loaded.iter().position(|l| l == exp) {
+                Some(rank) => 1.0 / (rank as f32 + 1.0),
+                None => 0.0,
+            })
+            .sum();
+        total / expected.len() as f32
+    };
+    RetrievalMetrics {
+        recall_at_k,
+        relevance_at_k,
+        precision_at_1,
+        mrr,
+    }
 }
 
 /// Share of loaded fragments with low stub-summary-to-content term overlap.
