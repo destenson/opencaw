@@ -120,7 +120,7 @@ let adapter = GroqAdapter::new("api_key", "llama-3.3-70b-versatile");
 ### Ollama (Local)
 - Any Ollama-compatible model
 - DeepSeek R1 (with visible reasoning)
-- Qwen 2.5
+- Qwen 3.5
 - Llama 3.2
 
 ```rust
