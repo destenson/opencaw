@@ -13,7 +13,17 @@ use caw_core::ContentKind;
 use caw_ingest::SourceDocument;
 use std::path::Path;
 
-const QA_JSON: &str = include_str!("qa/opencaw_qa.json");
+// Embedded fallback so the binary is self-contained when no --qa-file is given.
+const QA_JSON_EMBEDDED: &str = include_str!("qa/opencaw_qa.json");
+
+fn load_qa_json(path: Option<&std::path::Path>) -> Result<String> {
+    if let Some(p) = path {
+        std::fs::read_to_string(p)
+            .with_context(|| format!("read qa-file {}", p.display()))
+    } else {
+        Ok(QA_JSON_EMBEDDED.to_owned())
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct RawQa {
@@ -26,12 +36,13 @@ struct RawQa {
 }
 
 /// Build the opencaw Q&A workload. `repo_root` is the opencaw checkout
-/// whose files become the corpus. Each question uses the whole repo as
-/// its corpus; fresh per-item ingestion preserves runner independence at
-/// the cost of repeated work (acceptable for a small repo).
-pub fn build(repo_root: &Path) -> Result<Vec<WorkloadItem>> {
+/// whose files become the corpus. If `qa_file` is provided the Q&A JSON
+/// is loaded from disk at runtime; otherwise the binary's embedded copy
+/// is used, keeping the binary self-contained.
+pub fn build(repo_root: &Path, qa_file: Option<&Path>) -> Result<Vec<WorkloadItem>> {
+    let json = load_qa_json(qa_file)?;
     let raw: Vec<RawQa> =
-        serde_json::from_str(QA_JSON).context("parse embedded opencaw_qa.json")?;
+        serde_json::from_str(&json).context("parse opencaw_qa.json")?;
 
     let corpus = load_corpus(repo_root)?;
     if corpus.is_empty() {

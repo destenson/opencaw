@@ -76,7 +76,7 @@ questions are a separate exercise.
 ## Usage
 
 ```bash
-# Smoke test (3 NIAH items, both modes, default Ollama qwen3.5:9b)
+# Smoke test (3 NIAH items, both modes, default Ollama huihui_ai/phi4-reasoning-abliterated:3.8b)
 cargo run -p caw-bench --release -- --workload niah --niah-items 3 --limit 3
 
 # Full NIAH sweep against a different local model
@@ -101,6 +101,52 @@ cargo run -p caw-bench --release -- \
   --judge-adapter claude-code --judge-model haiku \
   --out opencaw_report.json
 ```
+
+## Sweeps
+
+`caw-bench-sweep` drives `caw-bench` across a grid of parameters defined in a
+TOML config. It writes one report per cell and resumes where it left off if
+interrupted or crashed.
+
+```bash
+# Smoke test the sweep wiring (2 cells, 2 items each)
+cargo build -p caw-bench --release
+./target/release/caw-bench-sweep --config crates/caw-bench/sweeps/minimal.toml
+
+# The full roadmap grid (48 cells: 3 models × 4 workload/seed × 2 thresholds × 2 budgets)
+./target/release/caw-bench-sweep --config crates/caw-bench/sweeps/default.toml
+
+# See what would run without executing
+./target/release/caw-bench-sweep --config … --dry-run
+
+# Force a re-run of every cell (ignore cached reports)
+./target/release/caw-bench-sweep --config … --force
+```
+
+Output layout (`out_dir` from the config, relative to the config file):
+
+```
+bench-results/default/
+├── manifest.jsonl         # one line per completed cell {hash, params}
+├── 2430eff2b7f9625b/      # cell hash = sha256 of sorted params, truncated
+│   ├── params.json        # the exact param set this cell ran
+│   └── report.json        # full caw-bench BenchReport for this cell
+└── …
+```
+
+**Failure model.** A non-zero exit from any cell halts the sweep with the
+offending command printed verbatim. Fix the root cause (missing model,
+ollama down, timeout too tight) and re-run the same `caw-bench-sweep`
+command — cells whose `report.json` already exists are skipped. Cell hashes
+cover the full merged parameter set, so editing `fixed` values or an axis
+entry invalidates exactly the cells that were affected; unchanged cells
+still skip.
+
+Config shape: `fixed` holds flags applied to every cell; `axes.<name>` is
+a list of tables where each table is one choice along that axis. The
+Cartesian product of all axes is the cell list. Any `caw-bench` flag is
+valid in either section — keys convert `snake_case → kebab-case` when
+passed to the subprocess.
 
 ## Caveats
 

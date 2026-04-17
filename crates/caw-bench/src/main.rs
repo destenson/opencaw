@@ -47,7 +47,7 @@ struct Cli {
     /// depends on `--answer-adapter`: ollama tag (e.g. "qwen3.5:9b"),
     /// vLLM HF id (e.g. "Qwen/Qwen2.5-7B-Instruct"), or claude alias
     /// ("sonnet", "opus", "haiku").
-    #[arg(long, default_value = "qwen3.5:9b")]
+    #[arg(long, default_value = "huihui_ai/phi4-reasoning-abliterated:3.8b")]
     answer_model: String,
 
     /// Adapter for the judge model (JudgeAgainst scoring only).
@@ -103,6 +103,11 @@ struct Cli {
     /// becomes an eviction candidate). Must be less than `load_threshold`.
     #[arg(long, default_value = "0.2")]
     unload_threshold: f32,
+
+    /// Path to a Q&A JSON file for the `opencaw` workload. When provided the
+    /// file is loaded at runtime; otherwise the binary's embedded copy is used.
+    #[arg(long)]
+    qa_file: Option<PathBuf>,
 
     /// Where to write the JSON report (stdout if omitted).
     #[arg(long)]
@@ -264,7 +269,7 @@ fn build_workload(cli: &Cli) -> Result<Vec<WorkloadItem>> {
             };
             Ok(niah::build(&config))
         }
-        Workload::Opencaw => opencaw::build(&cli.repo_root).context("build opencaw workload"),
+        Workload::Opencaw => opencaw::build(&cli.repo_root, cli.qa_file.as_deref()).context("build opencaw workload"),
     }
 }
 

@@ -66,6 +66,10 @@ impl OllamaAdapter {
     pub fn deepseek_v3_1(runtime: Arc<Runtime>) -> Self {
         Self::local("deepseek-v3.1:671b-cloud", runtime)
     }
+
+    pub fn phi4_reasoning_3_8b(runtime: Arc<Runtime>) -> Self {
+        Self::local("huihui_ai/phi4-reasoning-abliterated:3.8b", runtime)
+    }
 }
 
 /// Uses Ollama's /api/chat endpoint with proper message roles

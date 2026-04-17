@@ -8,12 +8,18 @@ license.workspace = true
 name = "caw-bench"
 path = "src/main.rs"
 
+[[bin]]
+name = "caw-bench-sweep"
+path = "src/bin/sweep.rs"
+
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 clap = { version = "4", features = ["derive"] }
 tokio = { workspace = true }
+toml = "0.8"
+sha2 = "0.11"
 caw-core = { path = "../caw-core" }
 caw-adapters = { path = "../caw-adapters" }
 caw-ingest = { path = "../caw-ingest" }

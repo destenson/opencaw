@@ -1,0 +1,29 @@
+# Minimal sweep — a smoke test. 2 cells, both workloads, one model, one seed,
+# one threshold setting, `limit = 2` so each cell runs in under a minute on a
+# warm local model. Useful for verifying the sweep driver wiring and
+# reproducing results before committing to the default.toml grid.
+
+out_dir = "../../../bench-results/minimal"
+
+[fixed]
+answer_adapter = "ollama"
+answer_model = "huihui_ai/phi4-reasoning-abliterated:3.8b"
+judge_adapter = "claude-code"
+judge_model = "haiku"
+judge_temperature = 0.0
+temperature = 0.0
+ollama_url = "http://localhost:11434"
+niah_items = 2
+niah_filler = 50
+limit = 2
+max_workspace_tokens = 2000
+top_k = 5
+load_threshold = 0.3
+unload_threshold = 0.2
+
+[[axes.workload]]
+workload = "niah"
+niah_seed = 12345
+
+[[axes.workload]]
+workload = "opencaw"

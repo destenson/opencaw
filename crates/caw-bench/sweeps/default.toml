@@ -1,0 +1,81 @@
+# Default sweep — the grid the codebase-review roadmap calls for.
+#
+# Shape: 3 models × (3 niah seeds + 1 opencaw) × 2 threshold settings ×
+# 2 budgets = 48 cells. Expect ~10-30 minutes per cell depending on the
+# model; plan for 8-24 hours wall-clock on one machine.
+#
+# What each axis tests:
+# - `model` — compares cooperation-protocol compliance across model
+#   families. The first two are local (Ollama); the third goes through
+#   claude-code for a cloud reference point. Swap in whatever you have
+#   pulled — the harness reports per-cell so partial model sets still
+#   yield usable data.
+# - `workload` — NIAH (synthetic, out-of-distribution needle) vs
+#   opencaw (repo Q&A against real reference answers). Different seeds
+#   within NIAH produce different needles; opencaw ignores seeds.
+# - `thresholds` — library default (0.7/0.4) vs bench default (0.3/0.2).
+#   BGE-small rarely clears 0.7 on short synthetic text, so the looser
+#   setting is expected to win on NIAH; the question is whether it
+#   degrades opencaw.
+# - `budget` — 2000 tokens forces eviction to engage; 6000 gives the
+#   workspace enough slack that eviction is rare. The delta between
+#   them isolates how much of recall's value comes from the eviction
+#   machinery vs just the initial retrieval.
+#
+# To run: `caw-bench-sweep --config crates/caw-bench/sweeps/default.toml`.
+# To resume after a crash: same command. Completed cells skip.
+
+out_dir = "../../../bench-results/default"
+
+[fixed]
+judge_adapter = "claude-code"
+judge_model = "haiku"
+judge_temperature = 0.0
+temperature = 0.0
+ollama_url = "http://localhost:11434"
+openai_url = "http://localhost:8000"
+niah_items = 10
+niah_filler = 200
+limit = 10
+top_k = 5
+
+[[axes.model]]
+answer_adapter = "ollama"
+answer_model = "huihui_ai/phi4-reasoning-abliterated:3.8b"
+
+[[axes.model]]
+answer_adapter = "ollama"
+answer_model = "qwen3:8b"
+
+[[axes.model]]
+answer_adapter = "claude-code"
+answer_model = "sonnet"
+
+[[axes.workload]]
+workload = "niah"
+niah_seed = 12345
+
+[[axes.workload]]
+workload = "niah"
+niah_seed = 67890
+
+[[axes.workload]]
+workload = "niah"
+niah_seed = 11111
+
+[[axes.workload]]
+workload = "opencaw"
+
+[[axes.thresholds]]
+load_threshold = 0.7
+unload_threshold = 0.4
+
+[[axes.thresholds]]
+load_threshold = 0.3
+unload_threshold = 0.2
+
+[[axes.budget]]
+max_workspace_tokens = 2000
+
+[[axes.budget]]
+max_workspace_tokens = 6000
