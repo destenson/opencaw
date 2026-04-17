@@ -2,3 +2,4 @@ target/
 .fastembed*/
 bench-results/
 opencaw_report.json
+data/
