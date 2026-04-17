@@ -139,9 +139,10 @@ def sample_weighted(entries: list[dict], count: int, rng: random.Random) -> list
 
 
 def run_claude(model: str, prompt: str, timeout: int) -> tuple[str | None, str | None]:
+    # No --bare: we want to use the user's existing keychain auth.
     try:
         r = subprocess.run(
-            ["claude", "--bare", "-p", "--model", model, prompt],
+            ["claude", "-p", "--model", model, prompt],
             capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
@@ -149,7 +150,10 @@ def run_claude(model: str, prompt: str, timeout: int) -> tuple[str | None, str |
     except FileNotFoundError:
         return None, "claude CLI not found on PATH"
     if r.returncode != 0:
-        return None, f"claude exit {r.returncode}: {r.stderr.strip()[:400]}"
+        # claude writes auth/login errors to stdout, API errors to stderr.
+        # Show whichever is non-empty.
+        msg = r.stderr.strip() or r.stdout.strip() or "(no output)"
+        return None, f"claude exit {r.returncode}: {msg[:400]}"
     return r.stdout.strip(), None
 
 
