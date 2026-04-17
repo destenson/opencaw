@@ -7,22 +7,22 @@ A **Rust library** for context-as-workspace management in LLM applications. Embe
 ## v1 deliverables
 
 ### Must have (blocks usefulness)
-- Measurement infrastructure: recall quality, false-recall rate, hysteresis tuning, effective vs. nominal context ratio
-- Model cooperation calibration: per-model benchmarking of probe/annotation/tool protocol compliance, automatic mode selection
-- Curation hooks: history summarization, tool output compression, system prompt budgeting
-- LLM-generated stub summaries for prose (deterministic extraction is fine for code)
-- Summary caching in the ingestion pipeline (infrastructure exists in SQLite, not wired up)
+- [x] Measurement primitives (recall quality, false-recall heuristic, hysteresis analysis, context efficiency, cooperation metrics) — see `caw-eval`. Still open: a harness that drives these across real workloads to produce tuning numbers.
+- [ ] Model cooperation calibration: per-model benchmarking of probe/annotation/tool protocol compliance, automatic mode selection. Metrics exist; calibration harness does not.
+- [x] Curation hooks: history summarization, tool output compression, system prompt budgeting — see `caw-curation`.
+- [x] LLM-generated stub summaries for prose: `LlmSummarizer` in `caw-ingest`.
+- [x] Summary caching: `StubStore::get_by_content_hash()` lets the CLI skip re-embedding unchanged files.
 
 ### Should have (significant quality improvement)
-- Richer consolidation notes (LLM-summarized, not just mechanical "evicted during query about X")
-- Adaptive chunking for large files (token-based threshold at minimum)
-- Degradation monitoring and tiered fallback (section 6 of design doc)
-- Provenance conflict detection beyond topic overlap (contradicting assertions, inconsistent values)
+- [ ] Richer consolidation notes: `MechanicalConsolidation` is the default; `LlmConsolidation` exists but the default still emits mechanical strings. Open question whether the LLM variant should be on by default under `--llm-consolidation`.
+- [x] Adaptive chunking for large files: `caw-ingest/src/chunking.rs`. Token-threshold splitting with structural boundaries for code and markdown.
+- [x] Degradation monitoring and tiered fallback: `caw-orchestrator/src/degradation.rs`. Opt-in via `with_degradation_monitor()`.
+- [ ] Provenance conflict detection beyond topic overlap: still only Jaccard. Contradicting assertions and inconsistent numbers are undetected.
 
 ### Nice to have (polish)
-- Probe rate limiting for models that thrash
-- Insertion-order experiments (relevance-ranked vs. reverse-relevance vs. stub-order)
-- Few-shot token cost surfacing (no automatic policy — just measurement)
+- [x] Probe rate limiting for models that thrash: `ProbeRateLimiter` in the degradation module.
+- [ ] Insertion-order experiments (relevance-ranked vs. reverse-relevance vs. stub-order): no harness wired up.
+- [ ] Few-shot token cost surfacing (no automatic policy — just measurement): callers can use the `Tokenizer` trait directly, but no framework-level utility.
 
 ## v2 and beyond (no active work in v1)
 
@@ -37,13 +37,16 @@ These are future goals documented in the design doc. Some have placeholder stubs
 - **Async trait refactoring**: Only needed for middleware/server. Sync traits are simpler for library consumers.
 - **Streaming mid-token recall**: Multi-pass orchestration is the v1 approach. True streaming requires async adapter traits and engine cooperation.
 
-### Additional backends (stubs exist, not functional)
-- **Candle embedding provider**: Stub returns errors. Has fastembed conflicts to resolve.
-- **ONNX embedding provider**: Stub returns errors. Adds ort dependency for marginal gain.
-- **Qdrant vector store**: Stub returns errors. SQLite + HNSW covers v1 scale.
+### Additional backends (implemented but feature-gated)
+All three compile and function when their Cargo feature is enabled. None are on
+by default. They are not v1 focus and the CLI doesn't wire them up, but they
+are no longer stubs.
+- **Candle embedding provider** (`candle` feature): Loads BERT-family models from HuggingFace Hub (e.g., BGE). Mutually exclusive with `fastembed` because both link `onnxruntime` native lib via different versions of `ort`.
+- **ONNX embedding provider** (`onnx` feature): Loads arbitrary ONNX models from a local path with an adjacent `tokenizer.json`. Mutually exclusive with `fastembed`, same native-lib reason.
+- **Qdrant vector store** (`qdrant` feature): Full `qdrant_client` integration with payload indexes and stub persistence. SQLite + HNSW remains the default; Qdrant covers higher-scale deployments.
 
 ### Additional adapters
-- OpenAI, vLLM, llama.cpp model adapters. Three working adapters (Anthropic, Groq, Ollama) cover cloud, fast inference, and local. More are additive, not architectural.
+- OpenAI (via the generic `OpenAiCompatibleAdapter`), `ClaudeCodeAdapter` for local CLI integration. Four working remote/local adapters plus MockAdapter cover cloud, fast inference, local, and test. vLLM and llama.cpp speak the OpenAI protocol — no new adapter needed.
 
 ### Already implemented, included in v1 as-is
 - **API embedding provider** (OpenAI functional, Cohere/Voyage stubbed): Works today, useful for v1. No gating needed.

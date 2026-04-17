@@ -597,7 +597,11 @@ dependencies = [
 name = "caw-orchestrator"
 version = "0.1.0"
 dependencies = [
+ "caw-adapters",
  "caw-core",
+ "caw-index",
+ "caw-ingest",
+ "caw-provenance",
  "caw-transform",
  "regex",
 ]

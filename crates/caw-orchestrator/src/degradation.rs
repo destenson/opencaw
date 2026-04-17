@@ -99,6 +99,10 @@ impl ComponentHealth {
             HealthStatus::Healthy => {
                 if self.should_degrade() {
                     self.status = HealthStatus::Degraded;
+                    // The call that caused degradation (e.g. high-latency success)
+                    // must not count toward recovery — otherwise a single bad call
+                    // degrades and immediately begins recovering from its own success.
+                    self.consecutive_successes = 0;
                 }
             }
             HealthStatus::Degraded => {

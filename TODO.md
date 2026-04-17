@@ -13,10 +13,10 @@ Cross-reference: design doc is `context-as-workspace.md`, scope boundaries are i
 - [x] **File ingestion pipeline**: Reads filesystem, detects content kind, captures mtime, generates stubs.
 - [x] **SHA256 content hashing**: Fixed formatting with `format!("{:02x}")`.
 - [x] **Summary caching**: `StubStore::get_by_content_hash()` allows callers to skip re-ingestion and re-embedding when file content hasn't changed. CLI ingestion loop checks the store before generating embeddings.
-- [ ] **LLM-generated summaries**: Stub summaries are deterministic extraction (first heading + paragraph for markdown, function list for code). The design doc calls for LLM-generated 1-3 sentence summaries for prose. Deterministic extraction is fine for code but insufficient for prose triage.
-- [ ] **Target-model tokenizer**: Token estimation uses `content.split_whitespace().count()` everywhere. The design doc specifies using the target model's actual tokenizer. Whitespace splitting diverges significantly from real token counts, especially for code.
-- [ ] **Tree-sitter outlines**: Code outline extraction uses `starts_with("pub fn ")` string matching, Rust-centric with minimal Python/JS support. Misses items inside impl blocks, attributed functions, and most languages. Tree-sitter would give correct, language-agnostic symbol extraction.
-- [ ] **Adaptive chunking**: Files are treated as single units regardless of size. Large files should be chunked (token-based threshold at minimum, structural boundaries ideally) with each chunk indexed independently.
+- [x] **LLM-generated summaries**: `LlmSummarizer` in `caw-ingest/src/summarizer.rs` wraps any `ModelAdapter` to produce 1-3 sentence summaries from a truncated content window. Falls back to the deterministic summarizer on empty model output. CLI opts in via `--llm-summarize`.
+- [x] **Target-model tokenizer**: `TiktokenTokenizer` in `caw-core/src/tokenizer.rs` supports cl100k / p50k / o200k with `for_model()` auto-selection. `IngestionPipeline::new()` now defaults to cl100k (close enough for GPT-4 and Claude); CLI exposes `--tokenizer` for explicit choice. `WhitespaceTokenizer` remains for callers that want trivial counting.
+- [x] **Tree-sitter outlines**: `caw-ingest/src/tree_sitter_outline.rs` extracts structural outlines for Rust, Python, JS, TS, Go. `extract_outline` calls tree-sitter first and falls back to the string-matching heuristic only when no grammar matches the file's extension.
+- [x] **Adaptive chunking**: `caw-ingest/src/chunking.rs` splits files over a token threshold (default 2000) at structural boundaries — code items, markdown headings, or paragraph breaks — with configurable target chunk size and overlap. Sub-threshold files pass through as a single chunk.
 - [ ] **Background indexer with lazy fallback**: Ingestion is synchronous, single-pass, batch-only. The design doc envisions a background process that continuously indexes workspace files, with on-demand fallback for files referenced before the indexer reaches them.
 
 ## Eviction & Consolidation
@@ -59,32 +59,38 @@ Cross-reference: design doc is `context-as-workspace.md`, scope boundaries are i
 
 ## Curation Hooks (design doc section 8.1)
 
-None implemented. These are the "context quality" half of the framework.
+Live in `caw-curation`. CLI opts in via `--curate`. Extractive variants avoid
+LLM calls entirely; LLM variants route through any configured `ModelAdapter`.
 
-- [ ] **History summarization**: Compress old conversation turns when history exceeds a token threshold. Preserve decisions and facts established; drop dead-end reasoning and verbose tool output from completed steps.
-- [ ] **Tool output compression**: Stub verbose tool results using the same stub architecture. Full output stored in index, context receives a summary.
-- [ ] **System prompt budgeting**: Measure system prompt token usage, warn or truncate when budget exceeded.
-- [ ] **Few-shot management**: Surface token cost of each example. No automatic policy — framework measures, deployment decides.
+- [x] **History summarization**: `HistorySummarizer` trait with `ExtractiveHistorySummarizer` (keeps first/last sentences per turn) and `LlmHistorySummarizer` (calls a model). `HistorySummarizerConfig` controls trigger threshold (default 30% of budget), retain-recent count (default 3 verbatim), and summary budget. `partition_turns()` selects eligible vs. retained turns.
+- [x] **Tool output compression**: `ToolOutputCompressor` trait with extractive + LLM variants. Individual turn metadata (`inline_required`) lets specific tool outputs bypass compression. Config threshold controls when compression fires.
+- [x] **System prompt budgeting**: `SystemPromptBudget` with `from_context_window()` constructor and `check_budget()` / `check_system_prompt()` functions returning `Ok` / `Warning` / `Exceeded`. Callers decide whether to truncate or just warn.
+- [ ] **Few-shot management**: Not explicit. Callers can use `caw_core::Tokenizer` to measure individual example costs, but no framework-level utility surfaces the delta.
 
 ## Measurement (design doc section 10)
 
 Minimal. This is the prerequisite for tuning everything above.
 
 - [x] **Basic eval metrics**: recall@k and precision@k over RecallFragment.
-- [ ] **False-recall rate**: Track provenance-tagged conflicts — cases where recalled content contradicts what the model expected from the stub summary.
-- [ ] **Effective vs nominal context ratio**: Measure how much of the context window is doing useful work vs noise.
-- [ ] **Hysteresis threshold tuning**: Instrument the load/unload decisions to find optimal thresholds per workload.
-- [ ] **Insertion-order experiments**: Test relevance-ranked vs reverse-relevance vs original-stub order for recalled content placement.
-- [ ] **Model cooperation calibration**: Per-model benchmarking of probe emission reliability, annotation quality, tool usage effectiveness. Drives automatic cooperative-vs-transparent mode selection.
+- [x] **SessionEvaluator**: Single-session aggregator that records recalls, evictions, probes, annotations, and turns. Produces recall metrics, false-recall metrics, hysteresis analysis, context efficiency, and cooperation metrics on demand. In `caw-eval/src/session.rs`.
+- [x] **False-recall heuristic**: `FalseRecallMetrics::from_observations` scores stub-summary vs recalled-content term overlap. Configurable threshold flags potential misreads for review. Still a heuristic — contradiction detection across recalled fragments is a separate open item.
+- [x] **Effective vs nominal context ratio**: `ContextEfficiency::compute` exposes the ratio of content tokens to total workspace tokens (content + stubs + overhead).
+- [x] **Hysteresis threshold analysis**: `HysteresisAnalysis` detects thrashing (load-evict-reload within a window) and suggests load/unload threshold adjustments. Still needs a harness that drives it across workloads to produce tuning recommendations rather than per-session diagnostics.
+- [ ] **Insertion-order experiments**: Test relevance-ranked vs reverse-relevance vs original-stub order for recalled content placement. No harness wired up yet.
+- [ ] **Model cooperation calibration**: `CooperationMetrics` tracks probes-per-turn, annotations-per-turn, useful-probe percentage, and annotation quality. No calibration harness exists yet — per-model benchmarking that drives automatic cooperative-vs-transparent mode selection is still open.
+- [ ] **End-to-end benchmarking against a held-out workload**: No eval harness exercises the full recall loop on real traces from real models and reports the central thesis numbers (effective vs nominal context ratio across tasks, recall@k on retrieval-shaped tasks). Prerequisite for threshold tuning and model cooperation calibration above.
 
 ## Degradation & Monitoring (design doc section 6)
 
-Not implemented.
+In `caw-orchestrator/src/degradation.rs`. Opt-in via
+`DynamicRecallOrchestrator::with_degradation_monitor()`. Without one, the
+orchestrator runs at full capability unconditionally.
 
-- [ ] **Per-component health checks**: Embedding service latency/error rate, summary generator queue depth, probe rate monitoring.
-- [ ] **Tiered fallback**: Full recall → stubs+tools → pass-through, with automatic recovery when components come back.
-- [ ] **Probe rate limiting**: Throttle automatic recall if model emits probes at excessive rate (thrashing or gaming).
+- [x] **Per-component health checks**: `ComponentHealth` tracks latency and error rate for the embedding service and summary generator independently. `ProbeRateLimiter` tracks probe frequency within a sliding window. Each has configurable thresholds and hysteresis (N consecutive successes to recover).
+- [x] **Tiered fallback**: `OperatingTier::{FullRecall, StubsAndToolsOnly, PassThrough}`. `DegradationMonitor::effective_tier()` combines component health into the current tier. Orchestrator skips automatic recall and/or stub generation based on tier. Recovery is automatic when components return to healthy.
+- [x] **Probe rate limiting**: `ProbeRateLimiter` with configurable window + max probes. When tripped, the effective tier drops to `StubsAndToolsOnly` until old probes age out of the window.
 
 ## Infrastructure
 
-- [ ] **Over-decomposed workspace**: 11 crates for the current codebase size. `caw-provenance`, `caw-eval`, `caw-scheduler` could be modules within larger crates. Not blocking but adds friction.
+- [ ] **Over-decomposed workspace**: 12 crates for the current codebase size. `caw-provenance`, `caw-eval`, `caw-scheduler` could be modules within larger crates. Not blocking but adds friction. Do not restructure without explicit approval.
+- [x] **End-to-end integration test**: `crates/caw-orchestrator/tests/end_to_end.rs` wires ingest → embed → index → retrieve → schedule → complete → provenance through `MockAdapter` and a deterministic hash embedder. Offline, no API keys. Primary smoke test for API-surface breakage.

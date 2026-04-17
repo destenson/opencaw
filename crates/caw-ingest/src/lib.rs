@@ -2,6 +2,7 @@ pub mod chunking;
 pub mod summarizer;
 mod tree_sitter_outline;
 
+use caw_core::tokenizer::TiktokenTokenizer;
 use caw_core::{CawError, CawResult, ContentKind, Stub, StubId, Tokenizer, WhitespaceTokenizer};
 use chunking::{ChunkingConfig, chunk_document, chunk_summary};
 use sha2::{Digest, Sha256};
@@ -9,6 +10,18 @@ use std::path::Path;
 use std::sync::Arc;
 use summarizer::{DeterministicSummarizer, Summarizer};
 use walkdir::WalkDir;
+
+/// Default tokenizer for the ingestion pipeline.
+/// cl100k_base matches GPT-4 / GPT-3.5 and is close enough for Claude's
+/// vocabulary that budget accounting stays within a few percent. Whitespace
+/// counting (the previous default) systematically underestimates by ~30% for
+/// prose and ~50% for code, which corrupts every downstream budget decision.
+fn default_tokenizer() -> Arc<dyn Tokenizer> {
+    match TiktokenTokenizer::cl100k() {
+        Ok(t) => Arc::new(t),
+        Err(_) => Arc::new(WhitespaceTokenizer),
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SourceDocument {
@@ -55,7 +68,7 @@ impl IngestionPipeline {
     pub fn new() -> Self {
         Self {
             summarizer: Box::new(DeterministicSummarizer),
-            tokenizer: Arc::new(WhitespaceTokenizer),
+            tokenizer: default_tokenizer(),
             chunking: Some(ChunkingConfig::default()),
         }
     }
@@ -63,7 +76,7 @@ impl IngestionPipeline {
     pub fn with_summarizer(summarizer: Box<dyn Summarizer>) -> Self {
         Self {
             summarizer,
-            tokenizer: Arc::new(WhitespaceTokenizer),
+            tokenizer: default_tokenizer(),
             chunking: Some(ChunkingConfig::default()),
         }
     }

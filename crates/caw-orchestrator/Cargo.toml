@@ -9,3 +9,8 @@ caw-core = { path = "../caw-core" }
 caw-transform = { path = "../caw-transform" }
 regex = "1"
 
+[dev-dependencies]
+caw-adapters = { path = "../caw-adapters" }
+caw-index = { path = "../caw-index" }
+caw-ingest = { path = "../caw-ingest" }
+caw-provenance = { path = "../caw-provenance" }
