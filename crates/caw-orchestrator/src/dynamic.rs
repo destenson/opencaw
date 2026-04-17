@@ -115,10 +115,20 @@ where
     }
 
     /// Build the system prompt, optionally injecting cooperation instructions
-    /// for models that support tool calls or visible reasoning.
+    /// for models capable enough to follow them.
+    ///
+    /// Per the design doc (§ 3.2), probe markers are *for* hidden-reasoning
+    /// models — they're the explicit instruction-based equivalent of visible
+    /// `<think>` blocks. Any reasoning-capable model (tool-call, hidden, or
+    /// visible) can follow the marker instruction. The `<probe>` tag name
+    /// itself is a convention; the orchestrator's `extract_probes` parses
+    /// whatever tag the system prompt asks the model to emit.
     fn build_system_prompt(&self, base: &str) -> String {
         let caps = self.adapter.capabilities();
-        if !caps.supports_tool_calls && !caps.supports_visible_reasoning {
+        let reasoning_capable = caps.supports_tool_calls
+            || caps.supports_visible_reasoning
+            || caps.supports_hidden_reasoning;
+        if !reasoning_capable {
             return base.to_string();
         }
 
@@ -131,13 +141,15 @@ where
             "later unloaded. Keep annotations concise (1-2 sentences).",
         ));
 
-        if caps.supports_visible_reasoning {
-            prompt.push_str(concat!(
-                " You can also emit <probe>topic or question</probe> in your reasoning ",
-                "to request additional context on a topic. The system will automatically ",
-                "retrieve relevant material.",
-            ));
-        }
+        // Probes: explicit tagged markers the model emits when it wants more
+        // context. Works for hidden-reasoning models (the design doc's
+        // canonical use case) as well as visible-reasoning models.
+        prompt.push_str(concat!(
+            " You can also emit <probe>topic or question</probe> anywhere in your response ",
+            "to request additional context on a topic. The system will automatically retrieve ",
+            "relevant material. Use probes when the recalled context is missing something you ",
+            "need to answer well — not for every turn.",
+        ));
 
         prompt
     }

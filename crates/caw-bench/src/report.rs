@@ -13,6 +13,8 @@ pub struct ModeSummary {
     pub mean_recall_at_k: f32,
     pub mean_precision_at_k: f32,
     pub mean_content_tokens: f32,
+    /// Mean tokens of stub summaries in the retrieval INDEX (not in context).
+    /// Reported for analysis; doesn't enter `context_efficiency`.
     pub mean_stub_tokens: f32,
     pub mean_context_efficiency: f32,
     pub mean_false_recall_rate: f32,

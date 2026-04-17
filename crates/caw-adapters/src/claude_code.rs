@@ -132,9 +132,14 @@ impl ModelAdapter for ClaudeCodeAdapter {
     }
 
     fn capabilities(&self) -> ModelCapabilities {
+        // Claude models reason internally and will follow marker-emission
+        // instructions even though `--print` doesn't surface the reasoning
+        // trace. Flagging hidden-reasoning signals to the orchestrator that
+        // probe/annotation instructions are worth injecting — visible trace
+        // parsing stays off because the CLI doesn't expose it.
         ModelCapabilities {
             supports_tool_calls: !self.allowed_tools.is_empty(),
-            supports_hidden_reasoning: false,
+            supports_hidden_reasoning: true,
             supports_visible_reasoning: false,
         }
     }

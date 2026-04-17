@@ -118,7 +118,6 @@ pub fn run_item(
     let mut stub_summaries: HashMap<StubId, String> = HashMap::new();
 
     let pipeline = IngestionPipeline::new();
-    let mut stub_tokens: usize = 0;
     for doc in &item.corpus {
         let source_doc = SourceDocument {
             path: doc.path.clone(),
@@ -141,10 +140,6 @@ pub fn run_item(
                 .next()
                 .context("empty embedding batch")?;
             let stub_id = stub.id.clone();
-            // Stub-side tokens accounting uses the summary text itself rather
-            // than token_estimate (which counts the source content, not the
-            // stub representation).
-            stub_tokens += estimate_tokens(&stub_summary_text);
             stub_summaries.insert(stub_id.clone(), stub.summary.clone());
             store
                 .insert(stub.clone(), embedding.clone(), doc.content.clone())
@@ -187,12 +182,28 @@ pub fn run_item(
 
     let (recall_at_k, precision_at_k) = recall_precision(&loaded_paths, &item.expected_paths);
     let content_tokens: usize = loaded.iter().map(|f| f.tokens).sum();
-    let overhead_tokens = estimate_tokens(&cfg.system_prompt) + estimate_tokens(&item.question);
-    let context_efficiency = if content_tokens + stub_tokens + overhead_tokens == 0 {
+    // Provenance-tag overhead: each recalled fragment is wrapped in
+    // `<recalled from="..." locator="...">...</recalled>` or the bracketed
+    // equivalent. Rough constant per fragment; close enough for a ratio.
+    let provenance_overhead = loaded.len() * 15;
+    let overhead_tokens = estimate_tokens(&cfg.system_prompt)
+        + estimate_tokens(&item.question)
+        + provenance_overhead;
+    // Context efficiency: of the tokens that actually enter the model's
+    // context window (recalled content + system/query/provenance), how much
+    // is useful content. Stubs never enter the context window — they live
+    // in the index — so they're not in this denominator.
+    let context_efficiency = if content_tokens + overhead_tokens == 0 {
         0.0
     } else {
-        content_tokens as f32 / (content_tokens + stub_tokens + overhead_tokens) as f32
+        content_tokens as f32 / (content_tokens + overhead_tokens) as f32
     };
+    // Reported for analysis/backcompat; computed as bytes-of-stubs-in-index
+    // rather than tokens-in-context. Useful to know the retrieval pool size.
+    let stub_tokens: usize = stub_summaries
+        .values()
+        .map(|s| estimate_tokens(s))
+        .sum();
 
     let false_recall_rate = false_recall_rate_heuristic(&loaded, &stub_summaries);
 
