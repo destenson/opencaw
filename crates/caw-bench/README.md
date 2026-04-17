@@ -55,9 +55,11 @@ via `include_str!`. Add or edit pairs there.
 
 ## Usage
 
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+Uses the local `claude` CLI (Claude Code) for both answering and judging —
+no API key required. Pass `--model` shortcuts (`sonnet`, `opus`, `haiku`)
+via `--answer-model` and `--judge-model`.
 
+```bash
 # Small smoke test (3 NIAH items, both modes)
 cargo run -p caw-bench -- --workload niah --niah-items 3 --limit 3
 
@@ -87,8 +89,9 @@ human-readable summary is written to stderr at the end.
   costs a few hundred ms of setup per item (embedder init, HNSW build) —
   predictable but real.
 - The default answer model is Sonnet, the default judge is Haiku. Both
-  are Anthropic. vLLM and other backends work at the adapter layer but
-  aren't wired to the harness CLI yet.
+  run via the local `claude` CLI (Claude Code). Remote Anthropic API,
+  vLLM, and other backends work at the adapter layer but aren't wired to
+  the harness CLI yet.
 - `false_recall_rate` is a heuristic (stub-summary-to-content term
   overlap), not a ground-truth correctness measure. Interpretation is
   relative — compare on-vs-off for the same workload, not an absolute

@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
-use caw_adapters::AnthropicAdapter;
+use caw_adapters::ClaudeCodeAdapter;
 use caw_core::{EmbeddingProvider, RecallThresholds, StubId, StubStore, VectorIndex};
 use caw_index::{FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
 use caw_ingest::{IngestionPipeline, SourceDocument};
@@ -12,8 +11,8 @@ use caw_provenance::InMemoryProvenanceStore;
 use crate::judge::{JudgeVerdict, judge_answer};
 use crate::workload::{RecallMode, Scoring, WorkloadItem};
 
-const DEFAULT_ANSWER_MODEL: &str = "claude-sonnet-4-5-20250929";
-const DEFAULT_JUDGE_MODEL: &str = "claude-haiku-4-5-20251001";
+const DEFAULT_ANSWER_MODEL: &str = "sonnet";
+const DEFAULT_JUDGE_MODEL: &str = "haiku";
 
 pub struct RunnerConfig {
     pub system_prompt: String,
@@ -22,6 +21,7 @@ pub struct RunnerConfig {
     pub max_recall_iterations: usize,
     /// Answering model for the comparison. Same model is used in both
     /// recall-on and recall-off so the delta isolates recall's contribution.
+    /// Passed to `claude --model`; typical values: "sonnet", "opus", "haiku".
     pub answer_model: String,
     /// Judge model used for JudgeAgainst scoring. Cheap and separate from
     /// the answering model so judging doesn't bias the comparison.
@@ -82,7 +82,6 @@ pub struct ItemResult {
 }
 
 pub fn run_item(
-    runtime: Arc<tokio::runtime::Runtime>,
     item: &WorkloadItem,
     mode: RecallMode,
     cfg: &RunnerConfig,
@@ -147,9 +146,9 @@ pub fn run_item(
     let trace_index = HnswVectorIndex::new();
     let provenance = InMemoryProvenanceStore::default();
 
-    let api_key = std::env::var("ANTHROPIC_API_KEY")
-        .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;
-    let adapter = AnthropicAdapter::new_with(api_key, cfg.answer_model.clone(), runtime.clone());
+    let adapter = ClaudeCodeAdapter::builder()
+        .model(&cfg.answer_model)
+        .build();
 
     let config = orchestrator_config(mode, cfg);
 
@@ -183,7 +182,7 @@ pub fn run_item(
     let false_recall_rate = false_recall_rate_heuristic(&loaded, &stub_summaries);
 
     let (answer_score, judge_rationale) =
-        score_answer(&runtime, &item.scoring, &response.answer, &cfg.judge_model)?;
+        score_answer(&item.scoring, &response.answer, &cfg.judge_model)?;
 
     Ok(ItemResult {
         item_id: item.id.clone(),
@@ -301,7 +300,6 @@ fn estimate_tokens(text: &str) -> usize {
 }
 
 fn score_answer(
-    runtime: &Arc<tokio::runtime::Runtime>,
     scoring: &Scoring,
     answer: &str,
     judge_model: &str,
@@ -312,9 +310,8 @@ fn score_answer(
             Ok((if pass { 1.0 } else { 0.0 }, String::new()))
         }
         Scoring::JudgeAgainst { reference_answer } => {
-            let verdict: JudgeVerdict =
-                judge_answer(runtime.clone(), judge_model, answer, reference_answer)
-                    .context("judge invocation failed")?;
+            let verdict: JudgeVerdict = judge_answer(judge_model, answer, reference_answer)
+                .context("judge invocation failed")?;
             Ok((verdict.score, verdict.rationale))
         }
     }

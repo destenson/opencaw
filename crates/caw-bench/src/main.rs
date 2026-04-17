@@ -35,12 +35,14 @@ struct Cli {
     #[arg(long)]
     limit: Option<usize>,
 
-    /// Answer model. Use the same model for both recall-on and recall-off runs.
-    #[arg(long, default_value = "claude-sonnet-4-5-20250929")]
+    /// Answer model. Passed to `claude --model` (typical: sonnet, opus, haiku).
+    /// Same model is used for both recall-on and recall-off runs.
+    #[arg(long, default_value = "sonnet")]
     answer_model: String,
 
-    /// Judge model for open-ended (JudgeAgainst) scoring.
-    #[arg(long, default_value = "claude-haiku-4-5-20251001")]
+    /// Judge model for open-ended (JudgeAgainst) scoring. Passed to
+    /// `claude --model`; default is haiku for speed and cost.
+    #[arg(long, default_value = "haiku")]
     judge_model: String,
 
     /// Max workspace tokens — applied identically to both modes for a
@@ -102,8 +104,6 @@ fn main() -> Result<()> {
         ..Default::default()
     };
 
-    let runtime = caw_adapters::create_runtime().context("create tokio runtime")?;
-
     let modes: Vec<RecallMode> = match cli.only_mode {
         Some(m) => vec![m.into()],
         None => vec![RecallMode::On, RecallMode::Off],
@@ -122,7 +122,7 @@ fn main() -> Result<()> {
                 mode.as_str(),
                 truncate(&item.question, 80)
             );
-            match run_item(runtime.clone(), item, *mode, &cfg) {
+            match run_item(item, *mode, &cfg) {
                 Ok(result) => {
                     eprintln!(
                         "  score={:.2} recall@k={:.2} ctx_eff={:.2} loaded={}",

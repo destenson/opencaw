@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
-use std::sync::Arc;
 
-use caw_adapters::AnthropicAdapter;
+use caw_adapters::ClaudeCodeAdapter;
 use caw_core::{CompletionRequest, ModelAdapter};
 
 #[derive(Debug, Clone)]
@@ -14,15 +13,11 @@ pub struct JudgeVerdict {
 /// Ask a cheap model to compare the answer against a reference and return a
 /// numeric score. The judge is intentionally separate from the answering
 /// model so the comparison isn't biased by same-model self-agreement.
-pub fn judge_answer(
-    runtime: Arc<tokio::runtime::Runtime>,
-    judge_model: &str,
-    answer: &str,
-    reference: &str,
-) -> Result<JudgeVerdict> {
-    let api_key = std::env::var("ANTHROPIC_API_KEY")
-        .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;
-    let adapter = AnthropicAdapter::new_with(api_key, judge_model.to_string(), runtime);
+///
+/// Judge runs through the Claude Code CLI; `judge_model` is passed directly
+/// to `claude --model` (typical values: "haiku", "sonnet").
+pub fn judge_answer(judge_model: &str, answer: &str, reference: &str) -> Result<JudgeVerdict> {
+    let adapter = ClaudeCodeAdapter::builder().model(judge_model).build();
 
     let system = "You are a strict scorer. Compare a candidate answer against a reference \
          answer and output a single line of JSON with fields score (0.0 to 1.0) and rationale \
