@@ -3,8 +3,6 @@ members = [
   "crates/caw-core",
   "crates/caw-ingest",
   "crates/caw-index",
-  "crates/caw-scheduler",
-  "crates/caw-provenance",
   "crates/caw-adapters",
   "crates/caw-orchestrator",
   "crates/caw-eval",

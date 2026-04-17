@@ -16,7 +16,7 @@ use caw_core::{CawResult, ContentKind, EmbeddingProvider, RecallThresholds};
 use caw_index::{HnswVectorIndex, SemanticRetriever, SqliteStubStore};
 use caw_ingest::{IngestionPipeline, SourceDocument};
 use caw_orchestrator::dynamic::{DynamicRecallConfig, DynamicRecallOrchestrator};
-use caw_provenance::InMemoryProvenanceStore;
+use caw_core::provenance::InMemoryProvenanceStore;
 
 /// Deterministic embedder that hashes tokens into fixed-dimensional buckets.
 /// Not semantically meaningful in general, but for the disjoint vocabularies

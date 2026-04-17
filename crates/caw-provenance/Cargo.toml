@@ -1,9 +1,0 @@
-[package]
-name = "caw-provenance"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-caw-core = { path = "../caw-core" }
-

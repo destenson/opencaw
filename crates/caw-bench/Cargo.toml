@@ -25,5 +25,4 @@ caw-adapters = { path = "../caw-adapters" }
 caw-ingest = { path = "../caw-ingest" }
 caw-index = { path = "../caw-index" }
 caw-orchestrator = { path = "../caw-orchestrator" }
-caw-provenance = { path = "../caw-provenance" }
 caw-eval = { path = "../caw-eval" }

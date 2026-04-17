@@ -5,7 +5,7 @@ use caw_core::{EmbeddingProvider, ModelAdapter, RecallThresholds, StubId, StubSt
 use caw_index::{FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
 use caw_ingest::{IngestionPipeline, SourceDocument};
 use caw_orchestrator::dynamic::{DynamicRecallConfig, DynamicRecallOrchestrator};
-use caw_provenance::InMemoryProvenanceStore;
+use caw_core::provenance::InMemoryProvenanceStore;
 
 use crate::judge::{JudgeVerdict, judge_answer};
 use crate::workload::{RecallMode, Scoring, WorkloadItem};

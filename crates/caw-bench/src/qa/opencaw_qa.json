@@ -177,6 +177,6 @@
     "id": "qa_030_jaccard_overlap",
     "question": "What similarity metric does the provenance ledger use to detect topic overlap between recalled fragments, and at what threshold?",
     "reference_answer": "Jaccard term overlap at greater than 30%.",
-    "expected_paths": ["crates/caw-provenance/src/lib.rs", "TODO.md"]
+    "expected_paths": ["crates/caw-core/src/provenance.rs", "TODO.md"]
   }
 ]

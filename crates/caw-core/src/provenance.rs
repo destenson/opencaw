@@ -1,4 +1,4 @@
-use caw_core::{ConsolidationNote, ProvenanceStore, RecallFragment, StubId, TopicOverlap};
+use crate::{ConsolidationNote, ProvenanceStore, RecallFragment, StubId, TopicOverlap};
 use std::collections::{HashMap, HashSet};
 
 /// Simple provenance store that records recalled fragments.

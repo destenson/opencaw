@@ -1,4 +1,4 @@
-use caw_core::{
+use crate::{
     BudgetScheduler, RecallFragment, RecallThresholds, SchedulerDecision, SchedulerInput, StubId,
 };
 use std::cell::RefCell;

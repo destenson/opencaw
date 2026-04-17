@@ -1,35 +1,47 @@
 # OpenCAW - Context as Workspace
 
-A Rust implementation of context-as-workspace architecture for LLMs, enabling intelligent context management through stub-and-recall patterns with provenance tracking.
+A Rust implementation of context-as-workspace architecture for LLMs, enabling
+intelligent context management through stub-and-recall patterns with provenance
+tracking.
 
 ## Architecture
 
-OpenCAW treats LLM context as a managed workspace rather than a simple container. It implements:
+OpenCAW treats LLM context as a managed workspace rather than a simple
+container. It implements:
 
-- **On-demand recall**: Retrieval-based context loading that multiplies effective context by 1-2 orders of magnitude
-- **Budget scheduling**: Token-aware admission/eviction policies for optimal workspace utilization
-- **Provenance tracking**: Every recalled fragment includes precise source locators for grounding
-- **Model-agnostic adapters**: Unified interface for API and local model providers
+- **On-demand recall**: Retrieval-based context loading that multiplies
+  effective context by 1-2 orders of magnitude
+- **Budget scheduling**: Token-aware admission/eviction policies for optimal
+  workspace utilization
+- **Provenance tracking**: Every recalled fragment includes precise source
+  locators for grounding
+- **Model-agnostic adapters**: Unified interface for API and local model
+  providers
 
 ## Crates
 
 - **caw-core**: Shared types, traits, tokenizer abstractions
-- **caw-ingest**: Document parsing, adaptive chunking, tree-sitter outlines, summaries
+- **caw-ingest**: Document parsing, adaptive chunking, tree-sitter outlines,
+  summaries
 - **caw-index**: Embedding providers, vector stores, BM25, hybrid retrieval
 - **caw-transform**: Prompt transformer — replaces file references with stubs
-- **caw-scheduler**: Token budget admission/eviction (greedy)
-- **caw-provenance**: In-memory store + provenance ledger with overlap detection
-- **caw-adapters**: Model adapters (Anthropic, Groq, Ollama, OpenAI-compat, ClaudeCode, Mock)
-- **caw-orchestrator**: `DynamicRecallOrchestrator`, degradation monitor, consolidation
-- **caw-curation**: History summarization, tool output compression, system prompt budgeting
-- **caw-eval**: `SessionEvaluator` and metrics (recall@k, false-recall, hysteresis, cooperation)
+- **caw-adapters**: Model adapters (Anthropic, Groq, Ollama, OpenAI-compat,
+  ClaudeCode, Mock)
+- **caw-orchestrator**: `DynamicRecallOrchestrator`, degradation monitor,
+  consolidation
+- **caw-curation**: History summarization, tool output compression, system
+  prompt budgeting
+- **caw-eval**: `SessionEvaluator` and metrics (recall@k, false-recall,
+  hysteresis, cooperation)
 - **caw-cli**: Command-line interface tying it all together
-- **caw-bench**: Benchmark harness (NIAH + opencaw Q&A workloads, recall-on vs recall-off)
+- **caw-bench**: Benchmark harness (NIAH + opencaw Q&A workloads, recall-on vs
+  recall-off)
 - **caw-server**: HTTP/gRPC service (scaffold only)
 
 ## Embedding Providers
 
 ### FastEmbed (MVP - default)
+
 - Rust-native with bundled quantized models
 - BGE-small-en-v1.5 (384d), BGE-base-en-v1.5 (768d)
 - No external dependencies
@@ -41,6 +53,7 @@ let embedder = FastEmbedProvider::bge_small()?;
 ```
 
 ### API-based (OpenAI, Cohere, Voyage)
+
 ```rust
 use caw_index::ApiEmbeddingProvider;
 
@@ -48,21 +61,24 @@ let embedder = ApiEmbeddingProvider::openai_small()?;
 ```
 
 ### ONNX (feature-gated)
+
 - Custom models via the `ort` crate
 - Loads a model file plus adjacent `tokenizer.json`
 - Enable with `--features onnx`. Mutually exclusive with `fastembed`.
 
 ### Candle (feature-gated)
+
 - BERT-family models downloaded directly from HuggingFace Hub
 - Enable with `--features candle`. Mutually exclusive with `fastembed`.
 
 ## Stub Storage
 
-Stubs (with embeddings and raw content) are persisted via the `StubStore`
-trait. Vector similarity lives in a separate `VectorIndex` so the storage
-layer can focus on durability and the index on search performance.
+Stubs (with embeddings and raw content) are persisted via the `StubStore` trait.
+Vector similarity lives in a separate `VectorIndex` so the storage layer can
+focus on durability and the index on search performance.
 
 ### SQLite (default)
+
 - Single-file database; in-memory variant for tests
 - Persists stubs, embeddings, content, and consolidation notes
 - Works for datasets up to ~100k stubs without special tuning
@@ -75,6 +91,7 @@ let store = SqliteStubStore::in_memory(384)?;
 ```
 
 ### Qdrant (feature-gated)
+
 - Full `qdrant_client` integration with payload indexes
 - For deployments that outgrow the SQLite store
 - Enable with `--features qdrant`
@@ -86,12 +103,14 @@ let store = QdrantStubStore::local("collection_name")?;
 ```
 
 ### Vector index
+
 - `HnswVectorIndex` via `instant-distance` is the default search layer; pairs
   with either store.
 
 ## Supported Adapters
 
 ### Anthropic
+
 - Claude Sonnet 4+
 - Claude Opus 4+
 - Extended thinking (hidden reasoning) support
@@ -105,6 +124,7 @@ let adapter = AnthropicAdapter::new("api_key", "claude-sonnet-4-20250514");
 ```
 
 ### Groq
+
 - Llama 3.3 70B Versatile
 - Llama 3.1 8B Instant
 - Mixtral 8x7B
@@ -118,6 +138,7 @@ let adapter = GroqAdapter::new("api_key", "llama-3.3-70b-versatile");
 ```
 
 ### Ollama (Local)
+
 - Any Ollama-compatible model
 - DeepSeek R1 (with visible reasoning)
 - Qwen 3.5
@@ -134,6 +155,7 @@ let adapter = OllamaAdapter::new("http://custom:11434", "model_name");
 ```
 
 ### OpenAI-compatible
+
 - Generic adapter for any provider speaking the chat completions protocol:
   OpenAI, vLLM, Perplexity, HuggingFace Inference Endpoints, llama.cpp-server
 - Configurable headers and per-deployment capability flags
@@ -143,6 +165,7 @@ use caw_adapters::OpenAiCompatibleAdapter;
 ```
 
 ### ClaudeCode
+
 - Local CLI integration for running recall against the Claude Code binary
 
 ```rust
@@ -150,8 +173,9 @@ use caw_adapters::ClaudeCodeAdapter;
 ```
 
 ### MockAdapter
-- Echoes `format_workspace(...)` back into the answer. Use in tests and
-  examples — no network, no API keys.
+
+- Echoes `format_workspace(...)` back into the answer. Use in tests and examples
+  — no network, no API keys.
 
 ## Quick Start
 
@@ -186,7 +210,7 @@ use caw_core::{ContentKind, RecallThresholds};
 use caw_index::{FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
 use caw_ingest::{IngestionPipeline, SourceDocument};
 use caw_orchestrator::dynamic::{DynamicRecallConfig, DynamicRecallOrchestrator};
-use caw_provenance::InMemoryProvenanceStore;
+use caw_core::provenance::InMemoryProvenanceStore;
 
 // Build the retrieval stack
 let embedder = FastEmbedProvider::bge_small()?;
@@ -245,8 +269,10 @@ A runnable end-to-end example using `MockAdapter` (no API keys needed) lives at
 
 ## Design Principles
 
-1. **Context is a workspace**: Quality over quantity - manage what's active, not just accessible
-2. **Recall over retrieval**: Fragments materialize inline with precise provenance
+1. **Context is a workspace**: Quality over quantity - manage what's active, not
+   just accessible
+2. **Recall over retrieval**: Fragments materialize inline with precise
+   provenance
 3. **Budget awareness**: Explicit token accounting with reserved bands
 4. **Provider independence**: Same substrate for cloud APIs and local models
 5. **Measurement first**: Recall@k, precision, grounding metrics before scaling
@@ -256,30 +282,47 @@ A runnable end-to-end example using `MockAdapter` (no API keys needed) lives at
 See `TODO.md` for line-item status and `SCOPE.md` for v1 boundaries.
 
 ### Working today
+
 - Core types and trait contracts (`caw-core`)
-- Ingestion pipeline with adaptive chunking, tree-sitter outlines, deterministic + LLM summaries, cl100k token estimation (`caw-ingest`)
+- Ingestion pipeline with adaptive chunking, tree-sitter outlines,
+  deterministic + LLM summaries, cl100k token estimation (`caw-ingest`)
 - Hybrid retrieval: semantic (embeddings) + BM25, min-max normalized fusion
 - HNSW vector index via `instant-distance`
-- SQLite stub store with consolidation persistence; Qdrant as feature-gated alternative
-- FastEmbed (BGE), API (OpenAI/Cohere/Voyage shape), Candle, ONNX embedding providers
-- `DynamicRecallOrchestrator`: multi-pass recall with probes, thinking-trace extraction, relevance decay, budget-triggered eviction, and consolidation notes
+- SQLite stub store with consolidation persistence; Qdrant as feature-gated
+  alternative
+- FastEmbed (BGE), API (OpenAI/Cohere/Voyage shape), Candle, ONNX embedding
+  providers
+- `DynamicRecallOrchestrator`: multi-pass recall with probes, thinking-trace
+  extraction, relevance decay, budget-triggered eviction, and consolidation
+  notes
 - Degradation monitoring with tiered fallback and probe rate limiting
-- Curation pipeline: history summarization, tool output compression, system prompt budgeting
-- Provenance ledger with inline source tagging (XML for Anthropic, bracketed for OpenAI-shape)
-- Adapters: Anthropic, Groq, Ollama, OpenAI-compatible (covers vLLM / Perplexity / HF Inference / llama.cpp-server), ClaudeCode, Mock
-- Evaluation primitives: `SessionEvaluator` with recall metrics, false-recall heuristic, hysteresis analysis, context efficiency, cooperation metrics
+- Curation pipeline: history summarization, tool output compression, system
+  prompt budgeting
+- Provenance ledger with inline source tagging (XML for Anthropic, bracketed for
+  OpenAI-shape)
+- Adapters: Anthropic, Groq, Ollama, OpenAI-compatible (covers vLLM / Perplexity
+  / HF Inference / llama.cpp-server), ClaudeCode, Mock
+- Evaluation primitives: `SessionEvaluator` with recall metrics, false-recall
+  heuristic, hysteresis analysis, context efficiency, cooperation metrics
 - End-to-end integration test in `crates/caw-orchestrator/tests/end_to_end.rs`
 
 ### Open
-- Sweep runs of the benchmark harness (caw-bench) across enough seeds and workloads to produce threshold-tuning recommendations and cooperation-calibration numbers
+
+- Sweep runs of the benchmark harness (caw-bench) across enough seeds and
+  workloads to produce threshold-tuning recommendations and
+  cooperation-calibration numbers
 - Richer consolidation notes as default (LLM-synthesized, not mechanical)
-- Background indexer with lazy fallback (ingestion is currently synchronous, single-pass)
-- Insertion-order experiments (relevance-ranked vs reverse-relevance vs stub-order)
+- Background indexer with lazy fallback (ingestion is currently synchronous,
+  single-pass)
+- Insertion-order experiments (relevance-ranked vs reverse-relevance vs
+  stub-order)
 - Provenance conflict detection beyond Jaccard term overlap
-- Additional prompt transformer surfaces (fenced blocks with `path=`, bare-path regex)
+- Additional prompt transformer surfaces (fenced blocks with `path=`, bare-path
+  regex)
 - Few-shot token cost surfacing utility
 
 ### Deferred (v2+, see SCOPE.md)
+
 - Server API (gRPC/HTTP) — `caw-server` is a scaffold
 - Async adapter traits / middleware proxy deployment target
 - Engine plugins for mid-stream recall (vLLM, Ollama native)

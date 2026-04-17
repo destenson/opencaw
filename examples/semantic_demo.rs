@@ -4,7 +4,7 @@ use caw_core::{ContentKind, RecallThresholds, TokenBudget};
 use caw_index::{FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
 use caw_ingest::{IngestionPipeline, SourceDocument};
 use caw_orchestrator::{OrchestratorConfig, RecallOrchestrator};
-use caw_provenance::InMemoryProvenanceStore;
+use caw_core::provenance::InMemoryProvenanceStore;
 use caw_scheduler::GreedyBudgetScheduler;
 
 // TODO: allow the user to supply a document or path to query about, instead of hardcoding demo documents and queries.
