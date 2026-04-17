@@ -146,6 +146,20 @@ while IFS= read -r -d '' src; do
         continue
     fi
 
+    # Soft fast-path: dest exists with plausible size, manifest has no
+    # matching entry (prior run died before dedup or manifest was wiped).
+    # Trust the dest file to avoid re-decompressing tens of thousands of
+    # files; the src_sha is still the authoritative key going forward.
+    if [[ -s "$dest_path" ]]; then
+        existing_bytes=$(stat -c%s "$dest_path" 2>/dev/null || echo 0)
+        if (( existing_bytes >= MIN_BYTES )); then
+            printf '{"rel":"%s","source":"%s","sha256":"%s","bytes":%s}\n' \
+                "$rel_out" "$src" "$src_sha" "$existing_bytes" >> "$MANIFEST"
+            total_cached=$((total_cached + 1))
+            continue
+        fi
+    fi
+
     mkdir -p "$(dirname "$dest_path")"
 
     case "$class" in
@@ -203,33 +217,35 @@ while IFS= read -r -d '' src; do
     fi
 done < <(find "$SOURCE" -type f -print0)
 
-# Dedup manifest — keep the last entry per (rel, source) pair. Streams in,
-# stores last-seen line keyed by rel+source, writes out. Cheap enough
-# even for very large manifests.
-awk -F'"' '
-{
-    # Extract rel and source from the JSON fields. Field layout:
-    # {"rel":"...","source":"...","sha256":"...","bytes":N}
-    rel = ""; src = "";
-    for (i = 1; i < NF; i++) {
-        if ($i ~ /rel$/) rel = $(i+1);
-        if ($i ~ /source$/) src = $(i+1);
-    }
-    key = rel "|" src;
-    last[key] = $0;
-    order[NR] = key;
-}
-END {
-    seen["__none__"] = 1;
-    for (i = 1; i <= NR; i++) {
-        k = order[i];
-        if (!(k in emitted)) {
-            print last[k];
-            emitted[k] = 1;
-        }
-    }
-}
-' "$MANIFEST" > "$MANIFEST.dedup" && mv "$MANIFEST.dedup" "$MANIFEST"
+# Dedup — keep the last manifest entry per source path (resumed runs
+# accumulate duplicates). Python keeps this correct; the earlier awk
+# version miscounted fields across quoted JSON. Skipped if python3 is
+# missing; duplicates are harmless at load time because prior[] uses
+# last-wins semantics.
+if command -v python3 >/dev/null; then
+    python3 -c '
+import json, sys
+path = sys.argv[1]
+last = {}
+order = []
+with open(path) as f:
+    for line in f:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        key = obj.get("source", "")
+        if key not in last:
+            order.append(key)
+        last[key] = line
+with open(path + ".dedup", "w") as f:
+    for k in order:
+        f.write(last[k] + "\n")
+' "$MANIFEST" && mv "$MANIFEST.dedup" "$MANIFEST"
+fi
 
 echo ""
 echo "snapshot complete"
