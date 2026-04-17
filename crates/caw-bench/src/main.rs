@@ -54,6 +54,18 @@ struct Cli {
     #[arg(long, default_value = "5")]
     top_k: usize,
 
+    /// Hysteresis load threshold (score above which a candidate is loaded
+    /// into the workspace). The library default is 0.7, tuned for real
+    /// document corpora; the bench defaults lower because short synthetic
+    /// text and small symbols rarely clear 0.7 on BGE-small.
+    #[arg(long, default_value = "0.3")]
+    load_threshold: f32,
+
+    /// Hysteresis unload threshold (score below which a loaded fragment
+    /// becomes an eviction candidate). Must be less than `load_threshold`.
+    #[arg(long, default_value = "0.2")]
+    unload_threshold: f32,
+
     /// Where to write the JSON report (stdout if omitted).
     #[arg(long)]
     out: Option<PathBuf>,
@@ -95,9 +107,19 @@ fn main() -> Result<()> {
         anyhow::bail!("workload produced zero items");
     }
 
+    if cli.unload_threshold >= cli.load_threshold {
+        anyhow::bail!(
+            "unload_threshold ({}) must be strictly less than load_threshold ({}) for hysteresis to work",
+            cli.unload_threshold,
+            cli.load_threshold,
+        );
+    }
+
     let cfg = RunnerConfig {
         top_k: cli.top_k,
         max_workspace_tokens: cli.max_workspace_tokens,
+        load_threshold: cli.load_threshold,
+        unload_threshold: cli.unload_threshold,
         answer_model: cli.answer_model.clone(),
         judge_model: cli.judge_model.clone(),
         limit: cli.limit,

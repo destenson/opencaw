@@ -31,56 +31,60 @@ impl Default for NiahConfig {
 }
 
 pub fn build(config: &NiahConfig) -> Vec<WorkloadItem> {
+    // Needle topics deliberately do NOT share vocabulary with filler
+    // project / operator / sector names (see niah_corpus::PROJECTS etc.).
+    // Otherwise filler paragraphs mentioning the topic beat the needle
+    // memo in cosine similarity and the test becomes unanswerable.
     let needles: &[(&str, &str, &str)] = &[
         (
             "authorization_code",
             "QUATRAFIN-7719",
-            "the secret authorization code for the audit system",
+            "the authorization code for the Bluecapsule audit system",
         ),
         (
             "decommission_date",
             "2028-11-04",
-            "the scheduled decommission date for the Heliotrope cluster",
+            "the scheduled decommission date for the Zephyrglass archive",
         ),
         (
             "quorum_threshold",
             "0.6183",
-            "the consensus quorum threshold used by the Beacon-Loop protocol",
+            "the consensus quorum threshold used by the Starkwood protocol",
         ),
         (
             "failover_peer",
             "NODE-ALPHA-812",
-            "the designated failover peer for the Carbon-Node primary",
+            "the designated failover peer for the Portmanteau primary",
         ),
         (
             "reconciliation_rate",
             "11.42 units/hour",
-            "the steady-state reconciliation rate for Sandbed-12",
+            "the steady-state reconciliation rate for the Quillmark ledger",
         ),
         (
             "regional_code",
             "RX-44-EAST",
-            "the regional code assigned to the Feldspar telemetry channel",
+            "the regional code assigned to the Nimbus telemetry channel",
         ),
         (
             "checksum_prefix",
             "BLAKE3-8F02C1",
-            "the mandated checksum prefix for Orbital-Drift-2 payloads",
+            "the mandated checksum prefix for Silvermint payloads",
         ),
         (
             "courier_route",
             "ROUTE-M7-SOUTHBOUND",
-            "the emergency courier route used by the Meridian-7 program",
+            "the emergency courier route used by the Harrow program",
         ),
         (
             "safety_clearance",
             "CLEARANCE-AURIC-3",
-            "the minimum safety clearance for the Turnstile-9 enclosure",
+            "the minimum safety clearance for the Westgarden enclosure",
         ),
         (
             "reagent_id",
             "REAGENT-NX-47",
-            "the controlled reagent identifier for Kiln-4 operations",
+            "the controlled reagent identifier for Sandpaperer operations",
         ),
     ];
 
@@ -91,9 +95,12 @@ pub fn build(config: &NiahConfig) -> Vec<WorkloadItem> {
         let mut pos_rng = Lcg::new(seed);
         let needle_position = pos_rng.next_range(config.filler_paragraphs.max(1));
 
+        // First line becomes the stub summary under DeterministicSummarizer's
+        // plain-text strategy, so it must be the sentence retrieval should
+        // match on. Memo boilerplate comes after.
         let needle_memo = format!(
-            "MEMO — restricted\n\n\
-             This note records {phrase}.\n\n\
+            "This memo records {phrase}.\n\n\
+             RESTRICTED — authoritative reference copy.\n\n\
              The value is: {needle}. Do not re-key; cite this memo verbatim if asked.\n",
         );
 

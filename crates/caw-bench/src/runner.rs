@@ -3,6 +3,9 @@ use std::collections::{HashMap, HashSet};
 
 use caw_adapters::ClaudeCodeAdapter;
 use caw_core::{EmbeddingProvider, RecallThresholds, StubId, StubStore, VectorIndex};
+// RecallThresholds is constructed inline in orchestrator_config from
+// RunnerConfig's load_threshold / unload_threshold — the type import above
+// is kept for the config builder pattern.
 use caw_index::{FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
 use caw_ingest::{IngestionPipeline, SourceDocument};
 use caw_orchestrator::dynamic::{DynamicRecallConfig, DynamicRecallOrchestrator};
@@ -19,6 +22,13 @@ pub struct RunnerConfig {
     pub top_k: usize,
     pub max_workspace_tokens: usize,
     pub max_recall_iterations: usize,
+    /// Load threshold passed into the orchestrator's hysteresis config.
+    /// The library default (0.7) is tuned for real document corpora; short
+    /// synthetic text (like NIAH filler) and small code symbols rarely
+    /// clear it, so the bench defaults lower to keep workloads live.
+    pub load_threshold: f32,
+    /// Unload threshold (hysteresis band lower edge).
+    pub unload_threshold: f32,
     /// Answering model for the comparison. Same model is used in both
     /// recall-on and recall-off so the delta isolates recall's contribution.
     /// Passed to `claude --model`; typical values: "sonnet", "opus", "haiku".
@@ -32,6 +42,9 @@ pub struct RunnerConfig {
 
 impl Default for RunnerConfig {
     fn default() -> Self {
+        // Permissive thresholds match RecallThresholds::permissive() in
+        // caw-core. Tuning these per workload is a future calibration
+        // exercise; the bench harness is the instrument for that.
         Self {
             system_prompt:
                 "You are a helpful assistant. Use the recalled workspace context to answer \
@@ -41,6 +54,8 @@ impl Default for RunnerConfig {
             top_k: 5,
             max_workspace_tokens: 12_000,
             max_recall_iterations: 3,
+            load_threshold: 0.3,
+            unload_threshold: 0.2,
             answer_model: DEFAULT_ANSWER_MODEL.to_string(),
             judge_model: DEFAULT_JUDGE_MODEL.to_string(),
             limit: None,
@@ -204,7 +219,10 @@ pub fn run_item(
 }
 
 fn orchestrator_config(mode: RecallMode, cfg: &RunnerConfig) -> DynamicRecallConfig {
-    let thresholds = RecallThresholds::default_hysteresis();
+    let thresholds = RecallThresholds {
+        load: cfg.load_threshold,
+        unload: cfg.unload_threshold,
+    };
     match mode {
         RecallMode::On => DynamicRecallConfig {
             top_k: cfg.top_k,
