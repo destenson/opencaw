@@ -3,3 +3,4 @@ target/
 bench-results/
 opencaw_report.json
 data/
+opencaw-corpora/
