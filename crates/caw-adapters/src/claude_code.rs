@@ -3,7 +3,8 @@ use caw_core::{
     ProvenanceFormat,
 };
 use serde::Deserialize;
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 /// Adapter that shells out to the Claude Code CLI in single-shot print mode.
 /// Intended for cheap auxiliary tasks (summarization, consolidation, outline
@@ -173,12 +174,31 @@ impl ModelAdapter for ClaudeCodeAdapter {
             cmd.arg("--add-dir").arg(dir);
         }
 
-        // The prompt goes as the positional argument
-        cmd.arg(&full_user_message);
+        // Pass the prompt via stdin rather than as a positional argument.
+        // `--tools <tools...>` is variadic and greedily swallows trailing
+        // positional args; stdin delivery sidesteps that argument-parsing
+        // trap and also avoids any ARG_MAX ceiling on very large prompts.
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
-        let output = cmd
-            .output()
-            .map_err(|e| CawError::Adapter(format!("Failed to run claude CLI: {}", e)))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| CawError::Adapter(format!("Failed to spawn claude CLI: {}", e)))?;
+
+        {
+            let stdin = child
+                .stdin
+                .as_mut()
+                .ok_or_else(|| CawError::Adapter("claude CLI stdin unavailable".to_string()))?;
+            stdin
+                .write_all(full_user_message.as_bytes())
+                .map_err(|e| CawError::Adapter(format!("write prompt to claude stdin: {}", e)))?;
+        }
+
+        let output = child
+            .wait_with_output()
+            .map_err(|e| CawError::Adapter(format!("wait on claude CLI: {}", e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
