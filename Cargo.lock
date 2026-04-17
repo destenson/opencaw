@@ -514,6 +514,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "caw-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "caw-adapters",
+ "caw-core",
+ "caw-eval",
+ "caw-index",
+ "caw-ingest",
+ "caw-orchestrator",
+ "caw-provenance",
+ "clap",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "caw-cli"
 version = "0.1.0"
 dependencies = [

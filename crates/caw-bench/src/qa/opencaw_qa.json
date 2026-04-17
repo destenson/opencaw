@@ -1,0 +1,182 @@
+[
+  {
+    "id": "qa_001_default_max_recall_iterations",
+    "question": "What is the default value of `max_recall_iterations` in `DynamicRecallConfig`?",
+    "reference_answer": "3",
+    "expected_paths": ["crates/caw-orchestrator/src/dynamic.rs"]
+  },
+  {
+    "id": "qa_002_default_hysteresis_load",
+    "question": "What load threshold does `RecallThresholds::default_hysteresis` return?",
+    "reference_answer": "0.7",
+    "expected_paths": ["crates/caw-core/src/lib.rs"]
+  },
+  {
+    "id": "qa_003_default_hysteresis_unload",
+    "question": "What unload threshold does `RecallThresholds::default_hysteresis` return?",
+    "reference_answer": "0.4",
+    "expected_paths": ["crates/caw-core/src/lib.rs"]
+  },
+  {
+    "id": "qa_004_session_evaluator_crate",
+    "question": "Which crate owns the `SessionEvaluator` type?",
+    "reference_answer": "caw-eval",
+    "expected_paths": ["crates/caw-eval/src/session.rs", "crates/caw-eval/src/lib.rs"]
+  },
+  {
+    "id": "qa_005_default_decay_rate",
+    "question": "What is the default `relevance_decay_rate` in `DynamicRecallConfig`?",
+    "reference_answer": "0.8",
+    "expected_paths": ["crates/caw-orchestrator/src/dynamic.rs"]
+  },
+  {
+    "id": "qa_006_default_top_k",
+    "question": "What is the default `top_k` in `DynamicRecallConfig`?",
+    "reference_answer": "4",
+    "expected_paths": ["crates/caw-orchestrator/src/dynamic.rs"]
+  },
+  {
+    "id": "qa_007_default_workspace_tokens",
+    "question": "What is the default `max_workspace_tokens` in `DynamicRecallConfig`?",
+    "reference_answer": "12000 (twelve thousand)",
+    "expected_paths": ["crates/caw-orchestrator/src/dynamic.rs"]
+  },
+  {
+    "id": "qa_008_fastembed_exclusives",
+    "question": "Which Cargo features in caw-index are mutually exclusive with `fastembed`?",
+    "reference_answer": "The `onnx` and `candle` features are mutually exclusive with `fastembed` because all three link the onnxruntime native library via different versions of `ort`.",
+    "expected_paths": ["crates/caw-index/Cargo.toml", "SCOPE.md"]
+  },
+  {
+    "id": "qa_009_default_index_features",
+    "question": "What are the default Cargo features of the caw-index crate?",
+    "reference_answer": "fastembed and sqlite",
+    "expected_paths": ["crates/caw-index/Cargo.toml"]
+  },
+  {
+    "id": "qa_010_vector_index_impl",
+    "question": "Which type implements `VectorIndex` in caw-index and what crate does it wrap?",
+    "reference_answer": "`HnswVectorIndex` implements `VectorIndex`; it wraps the `instant-distance` crate.",
+    "expected_paths": ["crates/caw-index/src/hnsw_index.rs", "crates/caw-index/Cargo.toml"]
+  },
+  {
+    "id": "qa_011_bm25_constants",
+    "question": "What K1 and B constants does the BM25 index use?",
+    "reference_answer": "K1 = 1.2, B = 0.75",
+    "expected_paths": ["crates/caw-index/src/bm25.rs", "TODO.md"]
+  },
+  {
+    "id": "qa_012_hybrid_weights",
+    "question": "What are the default hybrid retrieval weights between semantic and BM25 scores?",
+    "reference_answer": "0.6 for semantic, 0.4 for BM25",
+    "expected_paths": ["TODO.md", "crates/caw-index/src/bm25.rs"]
+  },
+  {
+    "id": "qa_013_degradation_tiers",
+    "question": "Name the three operating tiers of the degradation monitor.",
+    "reference_answer": "FullRecall, StubsAndToolsOnly, PassThrough",
+    "expected_paths": ["crates/caw-orchestrator/src/degradation.rs", "context-as-workspace.md"]
+  },
+  {
+    "id": "qa_014_probe_marker_format",
+    "question": "What XML-like tag does the framework use for model-emitted probe markers?",
+    "reference_answer": "<probe>...</probe>",
+    "expected_paths": ["crates/caw-orchestrator/src/dynamic.rs", "crates/caw-transform/src/lib.rs"]
+  },
+  {
+    "id": "qa_015_annotation_tag",
+    "question": "What tag does the framework use for model-emitted consolidation annotations?",
+    "reference_answer": "<note id=\"stub_id\">...</note>",
+    "expected_paths": ["crates/caw-orchestrator/src/dynamic.rs", "crates/caw-transform/src/lib.rs"]
+  },
+  {
+    "id": "qa_016_provenance_xml_format",
+    "question": "What XML tag wraps recalled content for Anthropic models?",
+    "reference_answer": "<recalled from=\"path\" locator=\"range\">...</recalled>",
+    "expected_paths": ["crates/caw-core/src/lib.rs"]
+  },
+  {
+    "id": "qa_017_provenance_bracketed",
+    "question": "What bracketed format wraps recalled content for OpenAI-protocol models?",
+    "reference_answer": "[recalled from path:range]\\n...\\n[end recall]",
+    "expected_paths": ["crates/caw-core/src/lib.rs"]
+  },
+  {
+    "id": "qa_018_curation_crate",
+    "question": "Which crate provides `ExtractiveHistorySummarizer` and `LlmHistorySummarizer`?",
+    "reference_answer": "caw-curation",
+    "expected_paths": ["crates/caw-curation/src/lib.rs"]
+  },
+  {
+    "id": "qa_019_default_history_budget",
+    "question": "At what fraction of the context budget does `HistorySummarizerConfig` trigger history summarization by default?",
+    "reference_answer": "30% (0.3)",
+    "expected_paths": ["crates/caw-curation/src/lib.rs", "context-as-workspace.md"]
+  },
+  {
+    "id": "qa_020_default_retain_recent",
+    "question": "How many recent turns are retained verbatim by default during history summarization?",
+    "reference_answer": "3",
+    "expected_paths": ["crates/caw-curation/src/lib.rs", "context-as-workspace.md"]
+  },
+  {
+    "id": "qa_021_server_state",
+    "question": "What is the current state of the caw-server crate?",
+    "reference_answer": "An empty scaffold — its main.rs prints a placeholder message and exits. Deferred to v2.",
+    "expected_paths": ["crates/caw-server/src/main.rs", "SCOPE.md", "README.md"]
+  },
+  {
+    "id": "qa_022_sync_adapter_limit",
+    "question": "Why do the adapters use sync-wrapped async via `block_on`, and when will that break?",
+    "reference_answer": "Simplicity for library consumers; it will panic if called from inside an async context (e.g., the future HTTP server). Async refactoring is deferred to v2 per SCOPE.md.",
+    "expected_paths": ["SCOPE.md", "TODO.md", "crates/caw-adapters/src/anthropic.rs"]
+  },
+  {
+    "id": "qa_023_tokenizer_default",
+    "question": "What tokenizer does `IngestionPipeline::new()` default to, and why?",
+    "reference_answer": "cl100k_base (via TiktokenTokenizer). It matches GPT-4's BPE vocabulary and is close enough to Claude's that budget accounting stays within a few percent — whitespace counting systematically underestimates by ~30% for prose and ~50% for code.",
+    "expected_paths": ["crates/caw-ingest/src/lib.rs"]
+  },
+  {
+    "id": "qa_024_tree_sitter_langs",
+    "question": "Which languages does the tree-sitter outline extractor support?",
+    "reference_answer": "Rust, Python, JavaScript, TypeScript, Go",
+    "expected_paths": ["crates/caw-ingest/src/tree_sitter_outline.rs", "TODO.md"]
+  },
+  {
+    "id": "qa_025_chunking_default_threshold",
+    "question": "What default token threshold does the adaptive chunker use to decide whether a file gets split?",
+    "reference_answer": "2000 tokens",
+    "expected_paths": ["crates/caw-ingest/src/chunking.rs", "TODO.md"]
+  },
+  {
+    "id": "qa_026_adapters_list",
+    "question": "List the concrete model adapters that caw-adapters re-exports.",
+    "reference_answer": "AnthropicAdapter, ClaudeCodeAdapter, GroqAdapter, OllamaAdapter, OpenAiCompatibleAdapter, and MockAdapter",
+    "expected_paths": ["crates/caw-adapters/src/lib.rs"]
+  },
+  {
+    "id": "qa_027_central_thesis",
+    "question": "What effective-context expansion does the design doc claim is plausible for retrieval-shaped tasks?",
+    "reference_answer": "1 to 2 orders of magnitude, at roughly flat inference compute.",
+    "expected_paths": ["context-as-workspace.md"]
+  },
+  {
+    "id": "qa_028_eviction_trigger",
+    "question": "At what fraction of the token budget does budget-triggered eviction fire, and to what target does it free?",
+    "reference_answer": "Fires above 80% of the budget and frees down to 70%. Also evicts fragments below the 0.15 relevance floor.",
+    "expected_paths": ["TODO.md", "crates/caw-orchestrator/src/dynamic.rs"]
+  },
+  {
+    "id": "qa_029_consolidation_default",
+    "question": "What consolidation synthesizer does `DynamicRecallOrchestrator::new` install by default?",
+    "reference_answer": "`MechanicalConsolidation` — produces deterministic strings. `LlmConsolidation` is opt-in via `with_consolidation_synthesizer`.",
+    "expected_paths": ["crates/caw-orchestrator/src/dynamic.rs", "crates/caw-orchestrator/src/consolidation.rs", "SCOPE.md"]
+  },
+  {
+    "id": "qa_030_jaccard_overlap",
+    "question": "What similarity metric does the provenance ledger use to detect topic overlap between recalled fragments, and at what threshold?",
+    "reference_answer": "Jaccard term overlap at greater than 30%.",
+    "expected_paths": ["crates/caw-provenance/src/lib.rs", "TODO.md"]
+  }
+]

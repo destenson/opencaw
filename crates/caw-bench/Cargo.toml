@@ -1,0 +1,23 @@
+[package]
+name = "caw-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "caw-bench"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap = { version = "4", features = ["derive"] }
+tokio = { workspace = true }
+caw-core = { path = "../caw-core" }
+caw-adapters = { path = "../caw-adapters" }
+caw-ingest = { path = "../caw-ingest" }
+caw-index = { path = "../caw-index" }
+caw-orchestrator = { path = "../caw-orchestrator" }
+caw-provenance = { path = "../caw-provenance" }
+caw-eval = { path = "../caw-eval" }

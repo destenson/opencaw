@@ -7,7 +7,7 @@ A **Rust library** for context-as-workspace management in LLM applications. Embe
 ## v1 deliverables
 
 ### Must have (blocks usefulness)
-- [x] Measurement primitives (recall quality, false-recall heuristic, hysteresis analysis, context efficiency, cooperation metrics) — see `caw-eval`. Still open: a harness that drives these across real workloads to produce tuning numbers.
+- [x] Measurement primitives (recall quality, false-recall heuristic, hysteresis analysis, context efficiency, cooperation metrics) — see `caw-eval`. Wired into a benchmark harness in `caw-bench` (NIAH + opencaw Q&A workloads, recall-on vs recall-off at matched budget). Still open: sweep runs against enough seeds to produce tuning recommendations.
 - [ ] Model cooperation calibration: per-model benchmarking of probe/annotation/tool protocol compliance, automatic mode selection. Metrics exist; calibration harness does not.
 - [x] Curation hooks: history summarization, tool output compression, system prompt budgeting — see `caw-curation`.
 - [x] LLM-generated stub summaries for prose: `LlmSummarizer` in `caw-ingest`.

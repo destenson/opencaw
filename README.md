@@ -24,6 +24,7 @@ OpenCAW treats LLM context as a managed workspace rather than a simple container
 - **caw-curation**: History summarization, tool output compression, system prompt budgeting
 - **caw-eval**: `SessionEvaluator` and metrics (recall@k, false-recall, hysteresis, cooperation)
 - **caw-cli**: Command-line interface tying it all together
+- **caw-bench**: Benchmark harness (NIAH + opencaw Q&A workloads, recall-on vs recall-off)
 - **caw-server**: HTTP/gRPC service (scaffold only)
 
 ## Embedding Providers
@@ -270,7 +271,7 @@ See `TODO.md` for line-item status and `SCOPE.md` for v1 boundaries.
 - End-to-end integration test in `crates/caw-orchestrator/tests/end_to_end.rs`
 
 ### Open
-- Benchmark harness driving the eval primitives against real workloads to produce threshold tuning and model cooperation calibration numbers
+- Sweep runs of the benchmark harness (caw-bench) across enough seeds and workloads to produce threshold-tuning recommendations and cooperation-calibration numbers
 - Richer consolidation notes as default (LLM-synthesized, not mechanical)
 - Background indexer with lazy fallback (ingestion is currently synchronous, single-pass)
 - Insertion-order experiments (relevance-ranked vs reverse-relevance vs stub-order)
