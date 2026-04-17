@@ -5,7 +5,10 @@
 use anyhow::Result;
 use std::sync::Arc;
 
-use caw_adapters::{ClaudeCodeAdapter, OllamaAdapter, OpenAiCompatibleAdapter, RequestHeaders};
+use caw_adapters::{
+    ClaudeCodeAdapter, OllamaAdapter, OpenAiCompatibleAdapter, RequestHeaders, TraceSink,
+    TracingAdapter,
+};
 use caw_core::{ModelAdapter, ModelCapabilities};
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -33,6 +36,22 @@ pub struct AdapterSpec<'a> {
 }
 
 pub fn build(
+    spec: AdapterSpec<'_>,
+    runtime: &Arc<tokio::runtime::Runtime>,
+) -> Result<Box<dyn ModelAdapter>> {
+    let adapter = build_inner(spec, runtime)?;
+
+    // If CAW_TRACE_FILE is set, wrap the adapter so every complete() call
+    // appends llm_request / llm_response events. The sweep driver sets
+    // this per cell automatically; callers can set it themselves for
+    // one-off debugging.
+    match TraceSink::from_env()? {
+        Some(sink) => Ok(Box::new(TracingAdapter::new(adapter, sink))),
+        None => Ok(adapter),
+    }
+}
+
+fn build_inner(
     spec: AdapterSpec<'_>,
     runtime: &Arc<tokio::runtime::Runtime>,
 ) -> Result<Box<dyn ModelAdapter>> {

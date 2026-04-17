@@ -258,8 +258,14 @@ fn main() -> Result<()> {
             args.join(" ")
         );
 
+        // Point caw-bench's tracing adapter at a per-cell trace file so
+        // every sweep cell gets its own JSONL log. Inherits the rest of
+        // the caller's environment, so operators can override via the
+        // shell if they want a shared file or none at all.
+        let trace_path = cell_dir.join("trace.jsonl");
         let status = Command::new(&caw_bench_path)
             .args(&args)
+            .env("CAW_TRACE_FILE", &trace_path)
             .status()
             .with_context(|| {
                 format!("spawn {} failed", caw_bench_path.display())
