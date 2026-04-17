@@ -24,6 +24,12 @@ pub struct AdapterSpec<'a> {
     pub model: &'a str,
     pub ollama_url: &'a str,
     pub openai_url: &'a str,
+    /// Sampling temperature for ollama / vllm. `None` lets the server pick
+    /// its default; `Some(0.0)` forces deterministic greedy decoding so a
+    /// repeated invocation with the same prompt yields the same answer.
+    /// ClaudeCodeAdapter ignores this — claude CLI doesn't expose a
+    /// temperature flag in `--print` mode.
+    pub temperature: Option<f32>,
 }
 
 pub fn build(
@@ -31,11 +37,14 @@ pub fn build(
     runtime: &Arc<tokio::runtime::Runtime>,
 ) -> Result<Box<dyn ModelAdapter>> {
     let adapter: Box<dyn ModelAdapter> = match spec.kind {
-        AdapterKind::Ollama => Box::new(OllamaAdapter::new_with(
-            spec.ollama_url.to_string(),
-            spec.model.to_string(),
-            runtime.clone(),
-        )),
+        AdapterKind::Ollama => {
+            let mut a =
+                OllamaAdapter::new_with(spec.ollama_url, spec.model, runtime.clone());
+            if let Some(t) = spec.temperature {
+                a = a.with_temperature(t);
+            }
+            Box::new(a)
+        }
         AdapterKind::Vllm => {
             let headers = match std::env::var("OPENAI_COMPATIBLE_API_KEY") {
                 Ok(key) => RequestHeaders::bearer(key),
@@ -45,9 +54,9 @@ pub fn build(
             // qualify for marker-emission instructions per the same logic as
             // OllamaAdapter — flag hidden_reasoning so the orchestrator
             // injects probe/note prompts.
-            Box::new(OpenAiCompatibleAdapter::new_with(
-                spec.openai_url.to_string(),
-                spec.model.to_string(),
+            let mut a = OpenAiCompatibleAdapter::new_with(
+                spec.openai_url,
+                spec.model,
                 headers,
                 ModelCapabilities {
                     supports_tool_calls: false,
@@ -55,7 +64,11 @@ pub fn build(
                     supports_visible_reasoning: false,
                 },
                 runtime.clone(),
-            ))
+            );
+            if let Some(t) = spec.temperature {
+                a = a.with_temperature(t);
+            }
+            Box::new(a)
         }
         AdapterKind::ClaudeCode => {
             Box::new(ClaudeCodeAdapter::builder().model(spec.model).build())

@@ -68,6 +68,20 @@ struct Cli {
     #[arg(long, default_value = "http://localhost:8000")]
     openai_url: String,
 
+    /// Sampling temperature for the answer model. Default 0.0 means
+    /// deterministic greedy decoding — required to isolate framework
+    /// signal from sampling noise when comparing recall-on vs recall-off.
+    /// Pass a higher value (e.g. 0.7) to study real-world stochastic
+    /// behavior; if you do, consider running multiple seeds per item.
+    /// Ignored for `claude-code` (CLI doesn't expose temperature in --print).
+    #[arg(long, default_value = "0.0")]
+    temperature: f32,
+
+    /// Sampling temperature for the judge model. Defaults to 0.0 so the
+    /// judge gives reproducible scores for the same answer/reference pair.
+    #[arg(long, default_value = "0.0")]
+    judge_temperature: f32,
+
     /// Max workspace tokens — applied identically to both modes for a
     /// matched-budget comparison. Tight default forces eviction to engage
     /// when probes bring in additional fragments.
@@ -159,6 +173,7 @@ fn main() -> Result<()> {
             model: &cli.judge_model,
             ollama_url: &cli.ollama_url,
             openai_url: &cli.openai_url,
+            temperature: Some(cli.judge_temperature),
         },
         &runtime,
     )?;
@@ -190,6 +205,7 @@ fn main() -> Result<()> {
                     model: &cli.answer_model,
                     ollama_url: &cli.ollama_url,
                     openai_url: &cli.openai_url,
+                    temperature: Some(cli.temperature),
                 },
                 &runtime,
             ) {

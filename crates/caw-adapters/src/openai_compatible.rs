@@ -45,6 +45,10 @@ pub struct OpenAiCompatibleAdapter {
     client: Client,
     runtime: Arc<Runtime>,
     max_tokens: u32,
+    /// Sampling temperature. `None` lets the server pick its default.
+    /// Set to 0.0 for deterministic greedy decoding — required when
+    /// comparing two orchestrator modes against the same input.
+    temperature: Option<f32>,
 }
 
 impl std::fmt::Debug for OpenAiCompatibleAdapter {
@@ -73,11 +77,19 @@ impl OpenAiCompatibleAdapter {
             client: Client::new(),
             runtime,
             max_tokens: 4096,
+            temperature: None,
         }
     }
 
     pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
         self.max_tokens = max_tokens;
+        self
+    }
+
+    /// Override the default sampling temperature. Pass 0.0 for deterministic
+    /// greedy decoding (vLLM and most providers honor this).
+    pub fn with_temperature(mut self, temperature: f32) -> Self {
+        self.temperature = Some(temperature);
         self
     }
 
@@ -180,6 +192,8 @@ struct ChatCompletionRequest {
     model: String,
     messages: Vec<ChatMessage>,
     max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -224,6 +238,7 @@ impl ModelAdapter for OpenAiCompatibleAdapter {
         let chat_req = ChatCompletionRequest {
             model: self.model.clone(),
             max_tokens: self.max_tokens,
+            temperature: self.temperature,
             messages: vec![
                 ChatMessage {
                     role: "system".to_string(),

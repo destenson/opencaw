@@ -12,6 +12,12 @@ pub struct OllamaAdapter {
     model: String,
     client: Client,
     runtime: Arc<Runtime>,
+    /// Sampling temperature passed in the request `options`. `None` lets
+    /// the model server pick its default (typically 0.8). Set to 0.0 for
+    /// deterministic greedy decoding — required when comparing two
+    /// orchestrator modes against the same input, since stochastic
+    /// sampling otherwise dominates any framework-level signal.
+    temperature: Option<f32>,
 }
 
 impl std::fmt::Debug for OllamaAdapter {
@@ -34,7 +40,15 @@ impl OllamaAdapter {
             model: model.into(),
             client: Client::new(),
             runtime,
+            temperature: None,
         }
+    }
+
+    /// Override the default sampling temperature. Pass 0.0 for deterministic
+    /// greedy decoding.
+    pub fn with_temperature(mut self, temperature: f32) -> Self {
+        self.temperature = Some(temperature);
+        self
     }
 
     pub fn local(model: impl Into<String>, runtime: Arc<Runtime>) -> Self {
@@ -71,7 +85,8 @@ struct OllamaChatMessage {
 
 #[derive(Serialize)]
 struct OllamaOptions {
-    temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
     num_predict: i32,
 }
 
@@ -120,7 +135,7 @@ impl ModelAdapter for OllamaAdapter {
             ],
             stream: false,
             options: OllamaOptions {
-                temperature: 0.7,
+                temperature: self.temperature,
                 num_predict: 4096,
             },
         };
