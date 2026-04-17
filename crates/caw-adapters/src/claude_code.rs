@@ -145,7 +145,6 @@ impl ModelAdapter for ClaudeCodeAdapter {
 
         let mut cmd = Command::new("claude");
         cmd.arg("--print")
-            .arg("--bare")
             .arg("--output-format")
             .arg("json")
             .arg("--model")
@@ -154,7 +153,13 @@ impl ModelAdapter for ClaudeCodeAdapter {
             .arg(&req.system)
             .arg("--effort")
             .arg(&self.effort)
-            .arg("--no-session-persistence");
+            .arg("--no-session-persistence")
+            // Skip project/local CLAUDE.md + settings so programmatic
+            // callers get predictable context, independent of whatever
+            // repo they happen to be invoked from.
+            .arg("--setting-sources")
+            .arg("user")
+            .arg("--disable-slash-commands");
 
         if let Some(budget) = self.max_budget_usd {
             cmd.arg("--max-budget-usd").arg(budget.to_string());
@@ -200,43 +205,47 @@ impl ModelAdapter for ClaudeCodeAdapter {
             .wait_with_output()
             .map_err(|e| CawError::Adapter(format!("wait on claude CLI: {}", e)))?;
 
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        // With `--output-format json`, the CLI writes structured output on
+        // stdout even when it's reporting an error (auth failure, rate
+        // limit, etc.). Parse first so we surface the human-readable error
+        // text before falling back to raw diagnostics.
+        if let Ok(parsed) = serde_json::from_str::<ClaudeJsonResponse>(&stdout) {
+            if parsed.is_error {
+                return Err(CawError::Adapter(format!(
+                    "claude CLI returned error: {}",
+                    parsed.result
+                )));
+            }
+
+            if let (Some(cost), Some(ms)) = (parsed.total_cost_usd, parsed.duration_ms) {
+                eprintln!(
+                    "[claude-code] model={} cost=${:.4} duration={}ms",
+                    self.model, cost, ms
+                );
+            }
+
+            return Ok(CompletionResponse {
+                answer: parsed.result,
+            });
+        }
+
+        // No parseable JSON — either the CLI crashed before emitting its
+        // envelope or --output-format wasn't honored. Surface everything
+        // we have so the caller can see why.
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(CawError::Adapter(format!(
-                "claude CLI exited with {}: {}",
-                output.status, stderr
+                "claude CLI exited with {} (stdout: {}) (stderr: {})",
+                output.status,
+                stdout.trim(),
+                stderr.trim()
             )));
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        // JSON output wraps the result in a structured envelope
-        match serde_json::from_str::<ClaudeJsonResponse>(&stdout) {
-            Ok(parsed) => {
-                if parsed.is_error {
-                    return Err(CawError::Adapter(format!(
-                        "claude CLI returned error: {}",
-                        parsed.result
-                    )));
-                }
-
-                if let (Some(cost), Some(ms)) = (parsed.total_cost_usd, parsed.duration_ms) {
-                    eprintln!(
-                        "[claude-code] model={} cost=${:.4} duration={}ms",
-                        self.model, cost, ms
-                    );
-                }
-
-                Ok(CompletionResponse {
-                    answer: parsed.result,
-                })
-            }
-            Err(_) => {
-                // Fall back to raw text if JSON parsing fails
-                Ok(CompletionResponse {
-                    answer: stdout.trim().to_string(),
-                })
-            }
-        }
+        Ok(CompletionResponse {
+            answer: stdout.trim().to_string(),
+        })
     }
 }
