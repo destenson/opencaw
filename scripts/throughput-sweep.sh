@@ -57,10 +57,14 @@ run() {
     } | tee -a "${OUTDIR}/summary.txt"
 }
 
-run candle-512-256 candle 512 256
-run candle-128-64  candle 128 64
-run onnx-512-256   onnx   512 256
-run onnx-128-64    onnx   128 64
+if [[ -z "${NO_CANDLE:-}" ]]; then
+    run candle-512-256 candle 512 256
+    run candle-128-64  candle 128 64
+fi
+if [[ -z "${NO_ONNX:-}" ]]; then
+    run onnx-512-256   onnx   512 256
+    run onnx-128-64    onnx   128 64
+fi
 
 echo
 echo "results: ${OUTDIR}/summary.txt"
