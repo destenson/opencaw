@@ -23,6 +23,7 @@ use rayon::prelude::*;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::sync_channel;
 use std::time::Instant;
 
@@ -80,6 +81,20 @@ struct Cli {
     /// typically much faster than candle's eager op-by-op eval.
     #[arg(long, value_enum, default_value_t = BackendArg::Candle)]
     backend: BackendArg,
+
+    /// Seconds between progress logs. `0` disables periodic logging (first-
+    /// item/first-batch markers and the final summary still print unless
+    /// `--quiet` is set). Diagnostics are always compiled in — this flag
+    /// only controls how often they're emitted.
+    #[arg(long, default_value_t = 10)]
+    log_interval: u64,
+
+    /// Suppress all non-error output, including the startup banner, intake
+    /// pulses, periodic progress, first-item/first-batch markers, and the
+    /// final summary. Errors still go to stderr. Equivalent to
+    /// `--log-interval 0` plus silencing the one-shot messages.
+    #[arg(long)]
+    quiet: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -125,10 +140,36 @@ fn main() -> Result<()> {
                 .with_context(|| format!("create parent dir {}", parent.display()))?;
         }
     }
+    // `verbose` gates one-shot informational output; `log_interval_s` gates
+    // the periodic progress/intake loops. `--quiet` forces both off; an
+    // explicit `--log-interval 0` disables only periodic logging while
+    // keeping the startup/summary messages. Errors always print regardless.
+    let verbose = !cli.quiet;
+    let log_interval_s = if cli.quiet { 0 } else { cli.log_interval };
+    macro_rules! vlog {
+        ($($arg:tt)*) => { if verbose { eprintln!($($arg)*); } };
+    }
+
+    if verbose {
+        if log_interval_s == 0 {
+            eprintln!(
+                "diagnostics: periodic progress logging disabled ({}). \
+                 Pass --log-interval N (seconds) to enable.",
+                if cli.quiet { "--quiet" } else { "--log-interval 0" },
+            );
+        } else {
+            eprintln!(
+                "diagnostics: logging progress every {}s (override with \
+                 --log-interval N, or --quiet to silence)",
+                log_interval_s,
+            );
+        }
+    }
+
     if cli.rebuild && cli.out.exists() {
         std::fs::remove_file(&cli.out)
             .with_context(|| format!("remove existing index {}", cli.out.display()))?;
-        eprintln!("--rebuild: cleared existing index");
+        vlog!("--rebuild: cleared existing index");
     }
 
     let mut embedder = build_embedder(cli.backend)?;
@@ -143,10 +184,10 @@ fn main() -> Result<()> {
         .into_iter()
         .collect();
     if !already.is_empty() {
-        eprintln!("resume: {} (path, mtime) pairs already indexed; skipping", already.len());
+        vlog!("resume: {} (path, mtime) pairs already indexed; skipping", already.len());
     }
 
-    eprintln!("walking {}", cli.corpus.display());
+    vlog!("walking {}", cli.corpus.display());
     let mut archive_skipped: usize = 0;
     let paths: Vec<PathBuf> = WalkDir::new(&cli.corpus)
         .follow_links(false)
@@ -165,7 +206,7 @@ fn main() -> Result<()> {
         .collect();
 
     if archive_skipped > 0 {
-        eprintln!(
+        vlog!(
             "note: skipped {} archive files (.gz/.tar/.bz2/.xz/.zip). Package inspection is \
              not yet implemented — if this corpus contains documentation inside archives, \
              decompress first (see scripts/snapshot-corpus.sh) or wait for archive support.",
@@ -190,11 +231,11 @@ fn main() -> Result<()> {
         .collect();
 
     if todo.is_empty() {
-        eprintln!("nothing to do: all files already indexed");
+        vlog!("nothing to do: all files already indexed");
         return Ok(());
     }
     let todo_total = todo.len();
-    eprintln!("{} files to ingest", todo_total);
+    vlog!("{} files to ingest", todo_total);
 
     // Pipeline: rayon producers → bounded channel → single GPU consumer.
     // The channel's capacity is the bound on in-flight stubs, which caps
@@ -223,7 +264,7 @@ fn main() -> Result<()> {
         .thread_name(|i| format!("ingest-{}", i))
         .build()
         .context("build producer rayon pool")?;
-    eprintln!(
+    vlog!(
         "producer pool: {} threads (tokenizer keeps global pool of {})",
         producer_threads, total_cpus
     );
@@ -233,12 +274,25 @@ fn main() -> Result<()> {
     // is portable (not tied to where the snapshot happens to sit in the
     // filesystem) and matches how downstream QA files reference documents.
     let corpus_root = cli.corpus.clone();
+    // Producer-side instrumentation. `emitted` counts stubs handed to the
+    // channel; `send_block_ns` sums wall-clock nanoseconds spent blocked on
+    // `tx.send` across all producer threads — high values mean the embedder
+    // is the bottleneck and producers are waiting on channel space. Low
+    // values with low consumer throughput mean the producer is the
+    // bottleneck (ingest + chunk + outline).
+    let emitted = Arc::new(AtomicU64::new(0));
+    let send_block_ns = Arc::new(AtomicU64::new(0));
+    let ingest_ns = Arc::new(AtomicU64::new(0));
+    let emitted_p = emitted.clone();
+    let send_block_p = send_block_ns.clone();
+    let ingest_p = ingest_ns.clone();
     let producer = std::thread::spawn(move || {
         producer_pool.install(|| {
             todo.par_iter().for_each(|path| {
                 if should_skip(path) {
                     return;
                 }
+                let t_ing = Instant::now();
                 let mut doc = match SourceDocument::from_path(path) {
                     Ok(d) => d,
                     Err(_) => return,
@@ -247,12 +301,17 @@ fn main() -> Result<()> {
                     doc.path = rel.to_string_lossy().into_owned();
                 }
                 let content = doc.content.clone();
-                for stub in producer_pipeline.ingest(doc) {
+                let stubs = producer_pipeline.ingest(doc);
+                ingest_p.fetch_add(t_ing.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                for stub in stubs {
+                    let t_send = Instant::now();
                     // Send error means the consumer exited — nothing else to
                     // do but stop producing.
                     if tx.send((stub, content.clone())).is_err() {
                         return;
                     }
+                    send_block_p.fetch_add(t_send.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                    emitted_p.fetch_add(1, Ordering::Relaxed);
                 }
             });
         });
@@ -270,11 +329,26 @@ fn main() -> Result<()> {
 
     let sub_batch = cli.sub_batch_size.max(1);
 
+    // Consumer-side cumulative timers. Paired with the producer counters,
+    // these partition wall time into ingest / wait-for-stubs / embed / sqlite,
+    // which is what you need to tell GPU-bound from CPU-bound from IO-bound.
+    let mut recv_block_ns: u64 = 0;
+    let mut embed_ns_total: u64 = 0;
+    let mut sqlite_ns_total: u64 = 0;
     let mut last_recv_log = Instant::now();
-    for item in rx.iter() {
+    let mut last_emitted: u64 = 0;
+    let mut last_done: usize = 0;
+    let mut last_tick = Instant::now();
+    loop {
+        let t_recv = Instant::now();
+        let item = match rx.recv() {
+            Ok(it) => it,
+            Err(_) => break,
+        };
+        recv_block_ns += t_recv.elapsed().as_nanos() as u64;
         received += 1;
         if !first_item_seen {
-            eprintln!(
+            vlog!(
                 "  first stub received at {:.1}s",
                 t_start.elapsed().as_secs_f64()
             );
@@ -282,9 +356,10 @@ fn main() -> Result<()> {
         }
         // Intake pulse: the consumer pulls from the channel, buffering
         // until the batch is full. Without this log a slow batch-fill
-        // period looks identical to a hang.
-        if last_recv_log.elapsed().as_secs() >= 2 {
-            eprintln!(
+        // period looks identical to a hang. Gated on log_interval_s so
+        // `--quiet` / `--log-interval 0` silences it.
+        if log_interval_s > 0 && last_recv_log.elapsed().as_secs() >= log_interval_s {
+            vlog!(
                 "  intake: received={} buf={} (waiting for batch of {})",
                 received,
                 buf.len() + 1,
@@ -296,36 +371,83 @@ fn main() -> Result<()> {
         if buf.len() >= batch_size {
             let t0 = Instant::now();
             let n = buf.len();
-            flush_batch(&mut buf, &mut embedder, &mut store, &mut done_files, sub_batch)
-                .context("flush batch")?;
+            let mut stage_embed_ns: u64 = 0;
+            let mut stage_sqlite_ns: u64 = 0;
+            flush_batch(
+                &mut buf,
+                &mut embedder,
+                &mut store,
+                &mut done_files,
+                sub_batch,
+                &mut stage_embed_ns,
+                &mut stage_sqlite_ns,
+            )
+            .context("flush batch")?;
             let batch_ms = t0.elapsed().as_millis();
+            embed_ns_total += stage_embed_ns;
+            sqlite_ns_total += stage_sqlite_ns;
             done_stubs += n;
             if done_stubs == n {
-                eprintln!("  first batch flushed in {}ms", batch_ms);
+                vlog!(
+                    "  first batch flushed in {}ms (embed {}ms, sqlite {}ms)",
+                    batch_ms,
+                    stage_embed_ns / 1_000_000,
+                    stage_sqlite_ns / 1_000_000,
+                );
             }
-            if last_log.elapsed().as_secs() >= 2 {
+            if log_interval_s > 0 && last_log.elapsed().as_secs() >= log_interval_s {
                 let done_f = done_files.len();
                 let remaining = todo_total.saturating_sub(done_f);
-                let rate = done_stubs as f64 / t_start.elapsed().as_secs_f64();
-                // Rough ETA based on file rate (stubs-per-file varies, but
-                // files are the user-visible unit of "how much is left").
-                let file_rate = done_f as f64 / t_start.elapsed().as_secs_f64().max(0.001);
+                let elapsed_s = t_start.elapsed().as_secs_f64();
+                let rate = done_stubs as f64 / elapsed_s;
+                // Instant (since-last-tick) rates — steady-state throughput
+                // after warmup is more informative than the since-start mean.
+                let emitted_now = emitted.load(Ordering::Relaxed);
+                let tick_s = last_tick.elapsed().as_secs_f64().max(1e-3);
+                let emit_rate = (emitted_now - last_emitted) as f64 / tick_s;
+                let consume_rate = (done_stubs - last_done) as f64 / tick_s;
+                last_emitted = emitted_now;
+                last_done = done_stubs;
+                last_tick = Instant::now();
+
+                let file_rate = done_f as f64 / elapsed_s.max(0.001);
                 let eta_s = if file_rate > 0.0 {
                     remaining as f64 / file_rate
                 } else {
                     0.0
                 };
-                eprintln!(
-                    "  {} stubs / {} files ({}/{}, {} left) in {:.1}s \
-                     (last batch {}ms, {:.1} stubs/s, eta ~{:.0}s)",
+
+                // Pipeline-share percentages of consumer wall time. The three
+                // numbers should roughly sum to the consumer thread's wall
+                // time (the small remainder is loop overhead + logging).
+                let wall_ns = (elapsed_s * 1e9) as u64;
+                let pct = |n: u64| 100.0 * n as f64 / wall_ns.max(1) as f64;
+                let send_block_total = send_block_ns.load(Ordering::Relaxed);
+                let ingest_total = ingest_ns.load(Ordering::Relaxed);
+
+                vlog!(
+                    "  {} stubs / {} files ({}/{}, {} left) in {:.1}s\n    \
+                     rates: emit={:.0}/s consume={:.0}/s mean={:.1}/s   \
+                     consumer: recv={:.0}% embed={:.0}% sqlite={:.0}%   \
+                     producer: ingest={}s send-block={}s   \
+                     last batch {}ms (embed {}ms sqlite {}ms)   eta ~{:.0}s",
                     done_stubs,
                     done_f,
                     done_f,
                     todo_total,
                     remaining,
-                    t_start.elapsed().as_secs_f64(),
-                    batch_ms,
+                    elapsed_s,
+                    emit_rate,
+                    consume_rate,
                     rate,
+                    pct(recv_block_ns),
+                    pct(embed_ns_total),
+                    pct(sqlite_ns_total),
+                    ingest_total / 1_000_000_000,
+                    send_block_total / 1_000_000_000,
+                    batch_ms,
+                    stage_embed_ns / 1_000_000,
+                    stage_sqlite_ns / 1_000_000,
                     eta_s,
                 );
                 last_log = Instant::now();
@@ -335,8 +457,20 @@ fn main() -> Result<()> {
 
     if !buf.is_empty() {
         let n = buf.len();
-        flush_batch(&mut buf, &mut embedder, &mut store, &mut done_files, sub_batch)
-            .context("flush final batch")?;
+        let mut stage_embed_ns: u64 = 0;
+        let mut stage_sqlite_ns: u64 = 0;
+        flush_batch(
+            &mut buf,
+            &mut embedder,
+            &mut store,
+            &mut done_files,
+            sub_batch,
+            &mut stage_embed_ns,
+            &mut stage_sqlite_ns,
+        )
+        .context("flush final batch")?;
+        embed_ns_total += stage_embed_ns;
+        sqlite_ns_total += stage_sqlite_ns;
         done_stubs += n;
     }
 
@@ -344,11 +478,25 @@ fn main() -> Result<()> {
         .join()
         .map_err(|_| anyhow::anyhow!("ingestion producer panicked"))?;
 
-    eprintln!(
-        "done: {} stubs across {} files in {:.1}s",
+    let total_s = t_start.elapsed().as_secs_f64();
+    vlog!(
+        "done: {} stubs across {} files in {:.1}s ({:.1} stubs/s)",
         done_stubs,
         done_files.len(),
-        t_start.elapsed().as_secs_f64()
+        total_s,
+        done_stubs as f64 / total_s.max(1e-3),
+    );
+    vlog!(
+        "  consumer breakdown: recv-block={:.1}s embed={:.1}s sqlite={:.1}s",
+        recv_block_ns as f64 / 1e9,
+        embed_ns_total as f64 / 1e9,
+        sqlite_ns_total as f64 / 1e9,
+    );
+    vlog!(
+        "  producer breakdown: ingest={:.1}s send-block={:.1}s emitted={} stubs",
+        ingest_ns.load(Ordering::Relaxed) as f64 / 1e9,
+        send_block_ns.load(Ordering::Relaxed) as f64 / 1e9,
+        emitted.load(Ordering::Relaxed),
     );
 
     Ok(())
@@ -369,6 +517,8 @@ fn flush_batch(
     store: &mut SqliteStubStore,
     done_files: &mut HashSet<String>,
     sub_batch_size: usize,
+    embed_ns_out: &mut u64,
+    sqlite_ns_out: &mut u64,
 ) -> Result<()> {
     if buf.is_empty() {
         return Ok(());
@@ -401,9 +551,11 @@ fn flush_batch(
     let mut embeddings_by_idx: Vec<Option<Vec<f32>>> = (0..n).map(|_| None).collect();
     for chunk in indexed.chunks(sub) {
         let refs: Vec<&str> = chunk.iter().map(|(_, t)| t.as_str()).collect();
+        let t_emb = Instant::now();
         let vecs = embedder
             .embed_document(refs)
             .context("embed sub-batch on GPU")?;
+        *embed_ns_out += t_emb.elapsed().as_nanos() as u64;
         if vecs.len() != chunk.len() {
             anyhow::bail!(
                 "embedder returned {} vectors for sub-batch of {}",
@@ -425,7 +577,9 @@ fn flush_batch(
             (stub, emb, content)
         })
         .collect();
+    let t_sql = Instant::now();
     store.insert_batch(items).context("insert_batch")?;
+    *sqlite_ns_out += t_sql.elapsed().as_nanos() as u64;
     Ok(())
 }
 
