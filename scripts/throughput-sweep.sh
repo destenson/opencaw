@@ -29,7 +29,7 @@ if [[ ! -x "${BIN}" ]]; then
 fi
 
 run() {
-    local tag="$1" backend="$2" bs="$3" sb="$4"
+    local tag="$1" backend="$2" bs="$3" sb="$4" variant="${5:-}"
     local idx="${OUTDIR}/index-${tag}.sqlite"
     local log="${OUTDIR}/${tag}.log"
     if [[ -f "${idx}" ]]; then
@@ -40,7 +40,13 @@ run() {
     # sqlite on open and either corrupt numbers or fail the rebuild. Clear
     # them whenever the main file is gone.
     rm -f "${idx}-wal" "${idx}-shm"
-    echo "=== ${tag}: backend=${backend} batch=${bs} sub_batch=${sb}" | tee -a "${OUTDIR}/summary.txt"
+    local variant_args=()
+    local variant_desc=""
+    if [[ -n "${variant}" ]]; then
+        variant_args=(--onnx-variant "${variant}")
+        variant_desc=" variant=${variant}"
+    fi
+    echo "=== ${tag}: backend=${backend} batch=${bs} sub_batch=${sb}${variant_desc}" | tee -a "${OUTDIR}/summary.txt"
     "${BIN}" \
         --corpus "${CORPUS}" \
         --out "${idx}" \
@@ -48,6 +54,7 @@ run() {
         --backend "${backend}" \
         --batch-size "${bs}" \
         --sub-batch-size "${sb}" \
+        "${variant_args[@]}" \
         --log-interval 10 \
         2> "${log}"
     {
@@ -57,13 +64,19 @@ run() {
     } | tee -a "${OUTDIR}/summary.txt"
 }
 
+# ONNX precision variants to sweep. Override with VARIANTS="fp32 fp16" to
+# restrict. Each variant is a separate HF download on first run.
+VARIANTS="${VARIANTS:-fp32 fp16 int8 quantized}"
+
 if [[ -z "${NO_CANDLE:-}" ]]; then
     run candle-512-256 candle 512 256
     run candle-128-64  candle 128 64
 fi
 if [[ -z "${NO_ONNX:-}" ]]; then
-    run onnx-512-256   onnx   512 256
-    run onnx-128-64    onnx   128 64
+    for v in ${VARIANTS}; do
+        run "onnx-${v}-512-256" onnx 512 256 "${v}"
+        run "onnx-${v}-128-64"  onnx 128 64  "${v}"
+    done
 fi
 
 echo

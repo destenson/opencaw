@@ -28,7 +28,7 @@ use std::sync::mpsc::sync_channel;
 use std::time::Instant;
 
 use caw_core::{EmbeddingProvider, Stub};
-use caw_index::{CandleEmbeddingProvider, OnnxEmbeddingProvider, SqliteStubStore};
+use caw_index::{CandleEmbeddingProvider, OnnxEmbeddingProvider, OnnxVariant, SqliteStubStore};
 use caw_ingest::{IngestionPipeline, SourceDocument};
 use clap::ValueEnum;
 use walkdir::WalkDir;
@@ -82,6 +82,12 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = BackendArg::Candle)]
     backend: BackendArg,
 
+    /// ONNX model variant: `fp32` (default, baseline precision), `fp16`,
+    /// `int8`, or `quantized` (dynamic int8). Variants are pulled from
+    /// `Xenova/bge-small-en-v1.5`. Ignored when `--backend candle`.
+    #[arg(long, value_enum, default_value_t = OnnxVariantArg::Fp32)]
+    onnx_variant: OnnxVariantArg,
+
     /// Seconds between progress logs. `0` disables periodic logging (first-
     /// item/first-batch markers and the final summary still print unless
     /// `--quiet` is set). Diagnostics are always compiled in — this flag
@@ -103,6 +109,25 @@ enum BackendArg {
     Onnx,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum OnnxVariantArg {
+    Fp32,
+    Fp16,
+    Int8,
+    Quantized,
+}
+
+impl From<OnnxVariantArg> for OnnxVariant {
+    fn from(v: OnnxVariantArg) -> Self {
+        match v {
+            OnnxVariantArg::Fp32 => OnnxVariant::Fp32,
+            OnnxVariantArg::Fp16 => OnnxVariant::Fp16,
+            OnnxVariantArg::Int8 => OnnxVariant::Int8,
+            OnnxVariantArg::Quantized => OnnxVariant::Quantized,
+        }
+    }
+}
+
 /// Dynamic-dispatch wrapper so `flush_batch` can call the same embed path
 /// regardless of which backend was chosen. The per-call vtable cost is
 /// negligible next to the embedding work itself.
@@ -118,14 +143,16 @@ impl AnyEmbedder {
     }
 }
 
-fn build_embedder(kind: BackendArg) -> Result<AnyEmbedder> {
+fn build_embedder(kind: BackendArg, onnx_variant: OnnxVariantArg) -> Result<AnyEmbedder> {
     match kind {
         BackendArg::Candle => {
             let e = CandleEmbeddingProvider::bge_small().context("init bge-small (candle)")?;
             Ok(AnyEmbedder(Box::new(e)))
         }
         BackendArg::Onnx => {
-            let e = OnnxEmbeddingProvider::bge_small().context("init bge-small (onnx)")?;
+            let variant: OnnxVariant = onnx_variant.into();
+            let e = OnnxEmbeddingProvider::bge_small_variant(variant)
+                .with_context(|| format!("init bge-small onnx variant={}", variant.as_str()))?;
             Ok(AnyEmbedder(Box::new(e)))
         }
     }
@@ -172,7 +199,7 @@ fn main() -> Result<()> {
         vlog!("--rebuild: cleared existing index");
     }
 
-    let mut embedder = build_embedder(cli.backend)?;
+    let mut embedder = build_embedder(cli.backend, cli.onnx_variant)?;
     let dim = embedder.dimension();
     let out_str = cli.out.to_string_lossy().into_owned();
     let mut store = SqliteStubStore::new(&out_str, dim)

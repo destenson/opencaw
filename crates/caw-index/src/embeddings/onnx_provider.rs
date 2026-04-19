@@ -34,6 +34,37 @@ const MAX_TEXT_CHARS: usize = 2_500;
 const BGE_QUERY_PREFIX: &str =
     "Represent this sentence for searching relevant passages: ";
 
+/// Precision variant for `bge_small_variant`. Maps to a specific ONNX file
+/// in `Xenova/bge-small-en-v1.5`. Naming follows the transformers.js export
+/// convention used across Xenova's repos.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OnnxVariant {
+    Fp32,
+    Fp16,
+    Int8,
+    Quantized,
+}
+
+impl OnnxVariant {
+    fn filename(self) -> &'static str {
+        match self {
+            OnnxVariant::Fp32 => "onnx/model.onnx",
+            OnnxVariant::Fp16 => "onnx/model_fp16.onnx",
+            OnnxVariant::Int8 => "onnx/model_int8.onnx",
+            OnnxVariant::Quantized => "onnx/model_quantized.onnx",
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OnnxVariant::Fp32 => "fp32",
+            OnnxVariant::Fp16 => "fp16",
+            OnnxVariant::Int8 => "int8",
+            OnnxVariant::Quantized => "quantized",
+        }
+    }
+}
+
 pub struct OnnxEmbeddingProvider {
     session: Session,
     tokenizer: Tokenizer,
@@ -83,19 +114,37 @@ impl OnnxEmbeddingProvider {
         })
     }
 
-    /// Convenience constructor for BAAI/bge-small-en-v1.5. Downloads the
-    /// ONNX model and tokenizer from HuggingFace Hub on first use; cached
-    /// thereafter in `~/.cache/huggingface`.
+    /// Convenience constructor for BAAI/bge-small-en-v1.5 (fp32). Downloads
+    /// the ONNX model and tokenizer from HuggingFace Hub on first use; cached
+    /// thereafter in `~/.cache/huggingface`. Equivalent to
+    /// `bge_small_variant(OnnxVariant::Fp32)` against BAAI's repo.
     pub fn bge_small() -> CawResult<Self> {
         let api =
             Api::new().map_err(|e| CawError::Embedding(format!("HF Hub init failed: {e}")))?;
         let repo = api.model("BAAI/bge-small-en-v1.5".to_string());
-        // BGE publishes the ONNX export under `onnx/model.onnx` in the
-        // same repo as the PyTorch weights. `tokenizer.json` sits at the
-        // root alongside `config.json`.
         let model_path = repo
             .get("onnx/model.onnx")
             .map_err(|e| CawError::Embedding(format!("Failed to download onnx/model.onnx: {e}")))?;
+        let tokenizer_path = repo
+            .get("tokenizer.json")
+            .map_err(|e| CawError::Embedding(format!("Failed to download tokenizer.json: {e}")))?;
+        let model_str = model_path.to_string_lossy().into_owned();
+        let tok_str = tokenizer_path.to_string_lossy().into_owned();
+        Self::from_paths(&model_str, &tok_str, 384, true)
+    }
+
+    /// Convenience constructor for bge-small-en-v1.5 variants published by
+    /// Xenova/bge-small-en-v1.5. Lets callers pick precision (fp32/fp16/int8/
+    /// quantized) without juggling HF paths. Xenova's repo is the transformers.js
+    /// export which ships a full set of quantized variants side-by-side.
+    pub fn bge_small_variant(variant: OnnxVariant) -> CawResult<Self> {
+        let api =
+            Api::new().map_err(|e| CawError::Embedding(format!("HF Hub init failed: {e}")))?;
+        let repo = api.model("Xenova/bge-small-en-v1.5".to_string());
+        let filename = variant.filename();
+        let model_path = repo.get(filename).map_err(|e| {
+            CawError::Embedding(format!("Failed to download {filename} from Xenova: {e}"))
+        })?;
         let tokenizer_path = repo
             .get("tokenizer.json")
             .map_err(|e| CawError::Embedding(format!("Failed to download tokenizer.json: {e}")))?;
