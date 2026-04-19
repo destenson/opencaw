@@ -230,7 +230,7 @@ fn main() -> Result<()> {
     )
 }
 
-fn build_aux_adapter(model: &str) -> Box<dyn ModelAdapter> {
+fn build_aux_adapter(model: &str) -> Box<dyn ModelAdapter + Send + Sync> {
     match model {
         "sonnet" => Box::new(caw_adapters::ClaudeCodeAdapter::sonnet()),
         _ => Box::new(caw_adapters::ClaudeCodeAdapter::haiku()),

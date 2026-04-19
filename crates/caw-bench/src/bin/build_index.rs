@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::sync_channel;
 use std::time::Instant;
 
-use caw_core::{EmbeddingProvider, Stub, StubStore};
+use caw_core::{EmbeddingProvider, Stub};
 use caw_index::{CandleEmbeddingProvider, OnnxEmbeddingProvider, SqliteStubStore};
 use caw_ingest::{IngestionPipeline, SourceDocument};
 use clap::ValueEnum;

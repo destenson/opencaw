@@ -265,6 +265,8 @@ where
                                 outline: Vec::new(),
                                 content_hash: String::new(),
                                 mtime_unix_secs: 0,
+                                byte_offset: 0,
+                                byte_length: 0,
                                 consolidation_notes: Vec::new(),
                             },
                             score,
