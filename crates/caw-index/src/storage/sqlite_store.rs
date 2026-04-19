@@ -13,6 +13,17 @@ impl SqliteStubStore {
         let conn = Connection::open(path)
             .map_err(|e| CawError::VectorStore(format!("Failed to open database: {}", e)))?;
 
+        // WAL + synchronous=NORMAL is ~10-20x faster for bulk inserts than the
+        // default rollback-journal + synchronous=FULL, with a minor durability
+        // trade-off: a crash in the last second can lose recently-committed
+        // transactions but the DB itself stays consistent. Acceptable for a
+        // cache of embeddings that can always be re-derived from source.
+        // In-memory DBs ignore these PRAGMAs harmlessly.
+        for pragma in ["journal_mode=WAL", "synchronous=NORMAL", "temp_store=MEMORY"] {
+            conn.execute_batch(&format!("PRAGMA {};", pragma))
+                .map_err(|e| CawError::VectorStore(format!("PRAGMA {}: {}", pragma, e)))?;
+        }
+
         conn.execute(
             "CREATE TABLE IF NOT EXISTS stubs (
                 id TEXT PRIMARY KEY,
@@ -90,6 +101,81 @@ impl SqliteStubStore {
             .filter_map(|r| r.ok())
             .collect();
         Ok(rows)
+    }
+
+    /// Insert many stubs + embeddings + contents inside a single transaction
+    /// with prepared statements reused across rows. Orders of magnitude faster
+    /// than calling `insert` in a loop because it collapses N×3 fsyncs into
+    /// one commit and avoids re-planning each statement.
+    ///
+    /// The whole batch is atomic: on error, nothing from this call lands.
+    /// Resume logic upstream can just re-ingest the affected files.
+    pub fn insert_batch(&mut self, items: Vec<(Stub, Vec<f32>, String)>) -> CawResult<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        for (_, embedding, _) in &items {
+            if embedding.len() != self.dimension {
+                return Err(CawError::VectorStore(format!(
+                    "Embedding dimension mismatch: expected {}, got {}",
+                    self.dimension,
+                    embedding.len()
+                )));
+            }
+        }
+
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|e| CawError::VectorStore(format!("begin transaction: {}", e)))?;
+        {
+            let mut stub_stmt = tx
+                .prepare(
+                    "INSERT OR REPLACE INTO stubs \
+                     (id, path, token_estimate, kind, summary, outline, content_hash, mtime_unix_secs, stub_json) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                )
+                .map_err(|e| CawError::VectorStore(format!("prepare stubs: {}", e)))?;
+            let mut content_stmt = tx
+                .prepare("INSERT OR REPLACE INTO contents (stub_id, content) VALUES (?1, ?2)")
+                .map_err(|e| CawError::VectorStore(format!("prepare contents: {}", e)))?;
+            let mut embed_stmt = tx
+                .prepare("INSERT OR REPLACE INTO embeddings (stub_id, embedding) VALUES (?1, ?2)")
+                .map_err(|e| CawError::VectorStore(format!("prepare embeddings: {}", e)))?;
+
+            for (stub, embedding, content) in items {
+                let stub_json = serde_json::to_string(&stub).map_err(|e| {
+                    CawError::VectorStore(format!("serialize stub: {}", e))
+                })?;
+                let kind_str = format!("{:?}", stub.kind);
+                let outline_json = serde_json::to_string(&stub.outline).map_err(|e| {
+                    CawError::VectorStore(format!("serialize outline: {}", e))
+                })?;
+
+                stub_stmt
+                    .execute(params![
+                        stub.id.0,
+                        stub.path,
+                        stub.token_estimate as i64,
+                        kind_str,
+                        stub.summary,
+                        outline_json,
+                        stub.content_hash,
+                        stub.mtime_unix_secs as i64,
+                        stub_json,
+                    ])
+                    .map_err(|e| CawError::VectorStore(format!("insert stub {}: {}", stub.id.0, e)))?;
+                content_stmt
+                    .execute(params![stub.id.0, content])
+                    .map_err(|e| CawError::VectorStore(format!("insert content {}: {}", stub.id.0, e)))?;
+                embed_stmt
+                    .execute(params![stub.id.0, Self::embedding_to_blob(&embedding)])
+                    .map_err(|e| CawError::VectorStore(format!("insert embedding {}: {}", stub.id.0, e)))?;
+            }
+        }
+        tx.commit()
+            .map_err(|e| CawError::VectorStore(format!("commit batch: {}", e)))?;
+        Ok(())
     }
 
     fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {

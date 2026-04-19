@@ -57,6 +57,14 @@ struct Cli {
     /// while still giving the embedder a few batches of slack.
     #[arg(long, default_value_t = 1024)]
     channel_capacity: usize,
+
+    /// GPU sub-batch size. The consumer accumulates `batch_size` stubs,
+    /// sorts them by text length, and dispatches them to the embedder in
+    /// chunks of `sub_batch_size`. Bucketing by length cuts padding waste:
+    /// short texts pad to a short max, long texts to a longer max, instead
+    /// of everything padding to the batch-wide max token count.
+    #[arg(long, default_value_t = 64)]
+    sub_batch_size: usize,
 }
 
 fn main() -> Result<()> {
@@ -141,27 +149,55 @@ fn main() -> Result<()> {
     // Pipeline: rayon producers → bounded channel → single GPU consumer.
     // The channel's capacity is the bound on in-flight stubs, which caps
     // memory regardless of how fast ingestion outruns embedding.
+    //
+    // *** Dedicated threadpool for the producer ***
+    //
+    // The producer's `par_iter` cannot run on the global rayon pool: the
+    // HuggingFace tokenizers crate uses the global pool internally for
+    // `encode_batch`, which the consumer calls. If producer rayon workers
+    // block on `tx.send` (channel full), they starve tokenizer tasks, and
+    // tokenizer waits forever for workers that wait for the consumer —
+    // classic closed-loop deadlock. A dedicated pool isolates the two.
     let (tx, rx) = sync_channel::<(Stub, String)>(cli.channel_capacity);
     let pipeline = Arc::new(IngestionPipeline::new());
 
+    let total_cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    // Leave a few cores for the consumer thread, tokenizer's global pool,
+    // and sqlite/WAL writes. Producer work is I/O-heavy so it oversubscribes
+    // well, but keeping some headroom avoids starving the GPU path.
+    let producer_threads = total_cpus.saturating_sub(4).max(4);
+    let producer_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(producer_threads)
+        .thread_name(|i| format!("ingest-{}", i))
+        .build()
+        .context("build producer rayon pool")?;
+    eprintln!(
+        "producer pool: {} threads (tokenizer keeps global pool of {})",
+        producer_threads, total_cpus
+    );
+
     let producer_pipeline = pipeline.clone();
     let producer = std::thread::spawn(move || {
-        todo.par_iter().for_each(|path| {
-            if should_skip(path) {
-                return;
-            }
-            let doc = match SourceDocument::from_path(path) {
-                Ok(d) => d,
-                Err(_) => return,
-            };
-            let content = doc.content.clone();
-            for stub in producer_pipeline.ingest(doc) {
-                // Send error means the consumer exited — nothing else to do
-                // but stop producing.
-                if tx.send((stub, content.clone())).is_err() {
+        producer_pool.install(|| {
+            todo.par_iter().for_each(|path| {
+                if should_skip(path) {
                     return;
                 }
-            }
+                let doc = match SourceDocument::from_path(path) {
+                    Ok(d) => d,
+                    Err(_) => return,
+                };
+                let content = doc.content.clone();
+                for stub in producer_pipeline.ingest(doc) {
+                    // Send error means the consumer exited — nothing else to
+                    // do but stop producing.
+                    if tx.send((stub, content.clone())).is_err() {
+                        return;
+                    }
+                }
+            });
         });
         drop(tx);
     });
@@ -175,6 +211,9 @@ fn main() -> Result<()> {
     let mut last_log = Instant::now();
     let mut first_item_seen = false;
 
+    let sub_batch = cli.sub_batch_size.max(1);
+
+    let mut last_recv_log = Instant::now();
     for item in rx.iter() {
         received += 1;
         if !first_item_seen {
@@ -184,24 +223,38 @@ fn main() -> Result<()> {
             );
             first_item_seen = true;
         }
+        // Intake pulse: the consumer pulls from the channel, buffering
+        // until the batch is full. Without this log a slow batch-fill
+        // period looks identical to a hang.
+        if last_recv_log.elapsed().as_secs() >= 2 {
+            eprintln!(
+                "  intake: received={} buf={} (waiting for batch of {})",
+                received,
+                buf.len() + 1,
+                batch_size,
+            );
+            last_recv_log = Instant::now();
+        }
         buf.push(item);
         if buf.len() >= batch_size {
             let t0 = Instant::now();
-            flush_batch(&mut buf, &mut embedder, &mut store, &mut done_files)
+            let n = buf.len();
+            flush_batch(&mut buf, &mut embedder, &mut store, &mut done_files, sub_batch)
                 .context("flush batch")?;
             let batch_ms = t0.elapsed().as_millis();
-            done_stubs += batch_size;
-            if done_stubs == batch_size {
+            done_stubs += n;
+            if done_stubs == n {
                 eprintln!("  first batch flushed in {}ms", batch_ms);
             }
             if last_log.elapsed().as_secs() >= 2 {
                 eprintln!(
-                    "  {} stubs / {} files in {:.1}s (recv'd {}, last batch {}ms)",
+                    "  {} stubs / {} files in {:.1}s (recv'd {}, last batch {}ms, {:.1} stubs/s)",
                     done_stubs,
                     done_files.len(),
                     t_start.elapsed().as_secs_f64(),
                     received,
                     batch_ms,
+                    done_stubs as f64 / t_start.elapsed().as_secs_f64(),
                 );
                 last_log = Instant::now();
             }
@@ -210,7 +263,7 @@ fn main() -> Result<()> {
 
     if !buf.is_empty() {
         let n = buf.len();
-        flush_batch(&mut buf, &mut embedder, &mut store, &mut done_files)
+        flush_batch(&mut buf, &mut embedder, &mut store, &mut done_files, sub_batch)
             .context("flush final batch")?;
         done_stubs += n;
     }
@@ -229,39 +282,71 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Flush an accumulated batch: build the embedding texts, sort by length
+/// to reduce padding waste, embed in sub-batches of `sub_batch_size`, then
+/// persist everything in a single transaction.
+///
+/// Length-bucketing: texts are sorted ascending by char count before the
+/// sub-batch split, so each sub-batch contains similar-length texts and
+/// pads only to its own local max. Across a bench run this typically cuts
+/// forward-pass FLOPs by 2-5x on mixed corpora where summary+outline
+/// lengths vary by an order of magnitude.
 fn flush_batch(
     buf: &mut Vec<(Stub, String)>,
     embedder: &mut CandleEmbeddingProvider,
     store: &mut SqliteStubStore,
     done_files: &mut HashSet<String>,
+    sub_batch_size: usize,
 ) -> Result<()> {
     if buf.is_empty() {
         return Ok(());
     }
 
-    let texts: Vec<String> = buf
+    let n = buf.len();
+    // Build (original_index, text) then sort by text length. We need to
+    // invert the sort later to line embeddings back up with buf entries.
+    let mut indexed: Vec<(usize, String)> = buf
         .iter()
-        .map(|(stub, _)| format!("{} {} {}", stub.path, stub.summary, stub.outline.join(" ")))
+        .enumerate()
+        .map(|(i, (stub, _))| {
+            (
+                i,
+                format!("{} {} {}", stub.path, stub.summary, stub.outline.join(" ")),
+            )
+        })
         .collect();
-    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
-    let embeddings = embedder
-        .embed_document(refs)
-        .context("embed batch on GPU")?;
+    indexed.sort_by_key(|(_, t)| t.len());
 
-    if embeddings.len() != buf.len() {
-        anyhow::bail!(
-            "embedder returned {} vectors for batch of {}",
-            embeddings.len(),
-            buf.len()
-        );
+    let sub = sub_batch_size.max(1);
+    // Per-stub embedding, indexed by original buf position.
+    let mut embeddings_by_idx: Vec<Option<Vec<f32>>> = (0..n).map(|_| None).collect();
+    for chunk in indexed.chunks(sub) {
+        let refs: Vec<&str> = chunk.iter().map(|(_, t)| t.as_str()).collect();
+        let vecs = embedder
+            .embed_document(refs)
+            .context("embed sub-batch on GPU")?;
+        if vecs.len() != chunk.len() {
+            anyhow::bail!(
+                "embedder returned {} vectors for sub-batch of {}",
+                vecs.len(),
+                chunk.len()
+            );
+        }
+        for ((orig_idx, _), v) in chunk.iter().zip(vecs.into_iter()) {
+            embeddings_by_idx[*orig_idx] = Some(v);
+        }
     }
 
-    for ((stub, content), embedding) in buf.drain(..).zip(embeddings.into_iter()) {
-        done_files.insert(stub.path.clone());
-        store
-            .insert(stub, embedding, content)
-            .context("insert stub")?;
-    }
+    let items: Vec<(Stub, Vec<f32>, String)> = buf
+        .drain(..)
+        .zip(embeddings_by_idx.into_iter())
+        .map(|((stub, content), emb_opt)| {
+            let emb = emb_opt.expect("every index should have an embedding");
+            done_files.insert(stub.path.clone());
+            (stub, emb, content)
+        })
+        .collect();
+    store.insert_batch(items).context("insert_batch")?;
     Ok(())
 }
 
