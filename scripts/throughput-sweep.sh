@@ -2,14 +2,26 @@
 # Throughput baseline: run caw-bench-build-index across a small config
 # matrix on opencaw-corpora/sysdoc and capture the stderr of each run.
 # --rebuild on each run so resumes don't contaminate the numbers.
+#
+# Resumable: if OUTDIR is set to an existing directory, any config whose
+# index-${tag}.sqlite already exists is skipped (log is preserved). Delete
+# just the index file(s) for configs you want re-run. Without OUTDIR a
+# fresh timestamped directory is created and every config runs.
 set -euo pipefail
 
 CORPUS="${CORPUS:-opencaw-corpora/sysdoc}"
-STAMP="$(date +%Y%m%d-%H%M%S)"
-OUTDIR="bench-results/throughput/${STAMP}"
+if [[ -n "${OUTDIR:-}" ]]; then
+    if [[ ! -d "${OUTDIR}" ]]; then
+        echo "OUTDIR=${OUTDIR} is set but does not exist" >&2
+        exit 1
+    fi
+    echo "resuming into existing ${OUTDIR}" >&2
+else
+    STAMP="$(date +%Y%m%d-%H%M%S)"
+    OUTDIR="bench-results/throughput/${STAMP}"
+    mkdir -p "${OUTDIR}"
+fi
 BIN="target/release/caw-bench-build-index"
-
-mkdir -p "${OUTDIR}"
 
 if [[ ! -x "${BIN}" ]]; then
     echo "missing ${BIN}; run: cargo build --release -p caw-bench --bin caw-bench-build-index" >&2
@@ -20,6 +32,14 @@ run() {
     local tag="$1" backend="$2" bs="$3" sb="$4"
     local idx="${OUTDIR}/index-${tag}.sqlite"
     local log="${OUTDIR}/${tag}.log"
+    if [[ -f "${idx}" ]]; then
+        echo "=== ${tag}: skip (index exists at ${idx})" | tee -a "${OUTDIR}/summary.txt"
+        return
+    fi
+    # Stale WAL/SHM from an interrupted prior run would get picked up by
+    # sqlite on open and either corrupt numbers or fail the rebuild. Clear
+    # them whenever the main file is gone.
+    rm -f "${idx}-wal" "${idx}-shm"
     echo "=== ${tag}: backend=${backend} batch=${bs} sub_batch=${sb}" | tee -a "${OUTDIR}/summary.txt"
     "${BIN}" \
         --corpus "${CORPUS}" \
