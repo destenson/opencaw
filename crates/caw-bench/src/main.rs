@@ -11,7 +11,7 @@ use caw_bench::shared::{SharedEmbedder, SharedIndex, SharedStore};
 use caw_bench::sysdoc;
 use caw_bench::workload::{RecallMode, WorkloadItem};
 use caw_core::{EmbeddingProvider, StubStore, VectorIndex};
-use caw_index::{FastEmbedProvider, HnswVectorIndex, SqliteStubStore};
+use caw_index::{CandleEmbeddingProvider, HnswVectorIndex, SqliteStubStore};
 use std::collections::HashMap;
 
 #[derive(Parser, Debug)]
@@ -310,7 +310,7 @@ fn load_prebuilt_index(path: &std::path::Path) -> Result<PrebuiltIndex> {
     let started = std::time::Instant::now();
     let path_str = path.to_string_lossy().into_owned();
 
-    let embedder = FastEmbedProvider::bge_small().context("init bge-small")?;
+    let embedder = CandleEmbeddingProvider::bge_small().context("init bge-small (candle)")?;
     let dim = embedder.dimension();
 
     let store = SqliteStubStore::new(&path_str, dim)

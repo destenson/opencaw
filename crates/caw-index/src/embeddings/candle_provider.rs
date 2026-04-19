@@ -7,6 +7,20 @@ use tokenizers::Tokenizer;
 
 const DTYPE: DType = DType::F32;
 
+/// BGE / most BERT-family models have 512 position embeddings. Sequences
+/// longer than this must be truncated before forward; candle's BertModel
+/// will otherwise index past the position embedding and either panic or
+/// produce garbage. The fastembed backend truncates automatically; we do
+/// it explicitly here.
+const MAX_SEQ_LEN: usize = 512;
+
+/// Character-level pre-clip before tokenization. BPE tokenization is O(n²)
+/// in the worst case on certain inputs (long runs of rare bytes), so a
+/// text that's 10MB of noise can hang the tokenizer for minutes. BGE only
+/// uses the first 512 tokens anyway (~2KB of normal prose), so clipping at
+/// 32KB is a pure safety net that never throws away useful signal.
+const MAX_TEXT_CHARS: usize = 32_768;
+
 pub struct CandleEmbeddingProvider {
     model: BertModel,
     tokenizer: Tokenizer,
@@ -19,8 +33,21 @@ pub struct CandleEmbeddingProvider {
 impl CandleEmbeddingProvider {
     /// Load a BERT-family model from HuggingFace Hub by model ID.
     /// Downloads and caches model weights, config, and tokenizer automatically.
+    ///
+    /// Tries CUDA:0 first and falls back to CPU if CUDA isn't available. The
+    /// fallback keeps non-GPU hosts working; on a CUDA host a successful
+    /// `new_cuda(0)` is the whole point of this provider.
     pub fn from_pretrained(model_id: &str) -> CawResult<Self> {
-        let device = Device::Cpu;
+        let device = match Device::new_cuda(0) {
+            Ok(d) => {
+                eprintln!("candle: using CUDA:0");
+                d
+            }
+            Err(e) => {
+                eprintln!("candle: CUDA unavailable ({e}); falling back to CPU");
+                Device::Cpu
+            }
+        };
         let api =
             Api::new().map_err(|e| CawError::Embedding(format!("HF Hub init failed: {e}")))?;
         let repo = api.model(model_id.to_string());
@@ -73,16 +100,52 @@ impl CandleEmbeddingProvider {
             return Ok(Vec::new());
         }
 
-        let texts_owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
+        // Phase timings make it obvious when a single call hangs which
+        // phase is at fault (tokenize/tensor-copy/forward/pool). Cheap
+        // relative to the work they bracket.
+        let t_start = std::time::Instant::now();
+        let raw_max_chars = texts.iter().map(|s| s.len()).max().unwrap_or(0);
+        let raw_total_chars: usize = texts.iter().map(|s| s.len()).sum();
 
+        // Clip at the char level before tokenization so a pathological input
+        // can't stall the whole run. Done char-wise (not byte) to preserve
+        // UTF-8 boundaries.
+        let texts_owned: Vec<String> = texts
+            .iter()
+            .map(|s| {
+                if s.len() <= MAX_TEXT_CHARS {
+                    (*s).to_string()
+                } else {
+                    s.chars().take(MAX_TEXT_CHARS).collect()
+                }
+            })
+            .collect();
+        let clipped = texts_owned.iter().filter(|s| s.len() < raw_max_chars).count();
+
+        eprintln!(
+            "    candle: about to tokenize batch={} raw_max_chars={} raw_total_chars={} clipped={}",
+            texts.len(),
+            raw_max_chars,
+            raw_total_chars,
+            clipped
+        );
+
+        let t_tok = std::time::Instant::now();
         let encodings = self
             .tokenizer
             .encode_batch(texts_owned, true)
             .map_err(|e| CawError::Embedding(format!("Tokenization failed: {e}")))?;
+        let tok_ms = t_tok.elapsed().as_millis();
+        let max_tokens = encodings.iter().map(|e| e.get_ids().len()).max().unwrap_or(0);
+        let total_tokens: usize = encodings.iter().map(|e| e.get_ids().len()).sum();
+        eprintln!(
+            "    candle: tokenize done max_tok={} total_tok={} in {}ms",
+            max_tokens, total_tokens, tok_ms
+        );
 
         let padded_len = encodings
             .iter()
-            .map(|e| e.get_ids().len())
+            .map(|e| e.get_ids().len().min(MAX_SEQ_LEN))
             .max()
             .unwrap_or(0);
         let batch_size = encodings.len();
@@ -92,17 +155,17 @@ impl CandleEmbeddingProvider {
         let mut all_mask = Vec::with_capacity(batch_size * padded_len);
 
         for enc in &encodings {
-            let ids = enc.get_ids();
-            let type_ids = enc.get_type_ids();
-            let mask = enc.get_attention_mask();
-            let len = ids.len();
+            let full_ids = enc.get_ids();
+            let full_type_ids = enc.get_type_ids();
+            let full_mask = enc.get_attention_mask();
+            let take = full_ids.len().min(MAX_SEQ_LEN);
 
-            all_ids.extend(ids.iter().map(|&x| x as i64));
-            all_type_ids.extend(type_ids.iter().map(|&x| x as i64));
-            all_mask.extend(mask.iter().map(|&x| x as f32));
+            all_ids.extend(full_ids.iter().take(take).map(|&x| x as i64));
+            all_type_ids.extend(full_type_ids.iter().take(take).map(|&x| x as i64));
+            all_mask.extend(full_mask.iter().take(take).map(|&x| x as f32));
 
-            // Pad to uniform length
-            for _ in len..padded_len {
+            // Pad to uniform length (padded_len already capped at MAX_SEQ_LEN).
+            for _ in take..padded_len {
                 all_ids.push(0);
                 all_type_ids.push(0);
                 all_mask.push(0.0);
@@ -126,10 +189,17 @@ impl CandleEmbeddingProvider {
             .to_dtype(DType::I64)
             .map_err(|e| CawError::Embedding(format!("Attention mask dtype cast failed: {e}")))?;
 
+        let t_fwd = std::time::Instant::now();
         let output = self
             .model
             .forward(&token_ids, &token_type_ids, Some(&attention_mask_i64))
             .map_err(|e| CawError::Embedding(format!("Forward pass failed: {e}")))?;
+        eprintln!(
+            "    candle: forward shape=[{}, {}] in {}ms",
+            batch_size,
+            padded_len,
+            t_fwd.elapsed().as_millis()
+        );
 
         // Mean pooling: average token embeddings weighted by attention mask.
         // output shape: [batch, seq_len, hidden_size]
@@ -180,10 +250,16 @@ impl CandleEmbeddingProvider {
             .flatten()
             .collect();
 
-        Ok(flat
+        let out = flat
             .chunks(self.dimension)
             .map(|chunk| chunk.to_vec())
-            .collect())
+            .collect::<Vec<_>>();
+        eprintln!(
+            "    candle: total embed {}ms (tok {}ms)",
+            t_start.elapsed().as_millis(),
+            tok_ms,
+        );
+        Ok(out)
     }
 }
 

@@ -5,6 +5,7 @@ mod tree_sitter_outline;
 use caw_core::tokenizer::TiktokenTokenizer;
 use caw_core::{CawError, CawResult, ContentKind, Stub, StubId, Tokenizer, WhitespaceTokenizer};
 use chunking::{ChunkingConfig, chunk_document, chunk_summary};
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::Arc;
@@ -91,10 +92,15 @@ impl IngestionPipeline {
         self
     }
 
-    /// Ingest a document, returning one or more stubs. Large files are split
-    /// into multiple chunks, each producing its own stub. Files below the
-    /// chunking threshold produce a single stub.
-    pub fn ingest(&self, doc: SourceDocument) -> Vec<Stub> {
+    /// Ingest a document, returning one or more (stub, content) pairs.
+    /// Large files are split into multiple chunks; each chunk produces its
+    /// own stub *paired with that chunk's own content* — so downstream
+    /// storage and recall get the specific slice the stub describes, not
+    /// the whole file duplicated N times.
+    ///
+    /// Files below the chunking threshold produce a single pair whose
+    /// content is the full file body.
+    pub fn ingest(&self, doc: SourceDocument) -> Vec<(Stub, String)> {
         let outline = extract_outline(doc.kind, &doc.content, &doc.path);
         let content_hash = sha256_hash(&doc.content);
 
@@ -102,11 +108,11 @@ impl IngestionPipeline {
             let chunks = chunk_document(&doc.content, doc.kind, &outline, config, &self.tokenizer);
             if chunks.len() > 1 {
                 return chunks
-                    .iter()
+                    .into_iter()
                     .map(|chunk| {
                         let chunk_hash = sha256_hash(&chunk.content);
                         let chunk_token_estimate = self.tokenizer.count_tokens(&chunk.content);
-                        let position_summary = chunk_summary(&doc.path, chunk);
+                        let position_summary = chunk_summary(&doc.path, &chunk);
                         let base_summary = self
                             .summarizer
                             .summarize(&doc.path, &chunk.content, doc.kind, &chunk.outline_entries)
@@ -129,23 +135,25 @@ impl IngestionPipeline {
                             format!("{} — {}", position_summary, base_summary)
                         };
 
-                        Stub {
+                        let stub = Stub {
                             id: StubId(format!("{}#chunk{}", doc.path, chunk.index)),
                             path: doc.path.clone(),
                             token_estimate: chunk_token_estimate,
                             kind: doc.kind,
                             summary,
-                            outline: chunk.outline_entries.clone(),
+                            outline: chunk.outline_entries,
                             content_hash: chunk_hash,
                             mtime_unix_secs: doc.mtime_unix_secs,
                             consolidation_notes: Vec::new(),
-                        }
+                        };
+                        (stub, chunk.content)
                     })
                     .collect();
             }
         }
 
-        // Single-stub path: file is small or chunking is disabled
+        // Single-stub path: file is small or chunking is disabled. The
+        // stub's content is the full file body.
         let summary = self
             .summarizer
             .summarize(&doc.path, &doc.content, doc.kind, &outline)
@@ -155,8 +163,7 @@ impl IngestionPipeline {
                     .unwrap_or_default()
             });
         let token_estimate = self.tokenizer.count_tokens(&doc.content);
-
-        vec![Stub {
+        let stub = Stub {
             id: StubId(doc.path.clone()),
             path: doc.path,
             token_estimate,
@@ -166,41 +173,31 @@ impl IngestionPipeline {
             content_hash,
             mtime_unix_secs: doc.mtime_unix_secs,
             consolidation_notes: Vec::new(),
-        }]
+        };
+        vec![(stub, doc.content)]
     }
 
-    /// Ingest all supported files under a directory
+    /// Ingest all supported files under a directory.
+    ///
+    /// Directory walk is sequential (walkdir isn't cheap to parallelize and
+    /// the bottleneck isn't here), but per-file work — read, hash, outline
+    /// extraction (tree-sitter), summarization, chunking — runs in parallel
+    /// via rayon. On large corpora this is the dominant win; embedding
+    /// throughput afterwards is gated by the ONNX runtime's own threading.
     pub fn ingest_directory(&self, root: &Path) -> CawResult<Vec<(Stub, String)>> {
-        let mut results = Vec::new();
-
-        for entry in WalkDir::new(root)
+        let paths: Vec<std::path::PathBuf> = WalkDir::new(root)
             .follow_links(false)
             .into_iter()
             .filter_map(|e| e.ok())
-        {
-            let path = entry.path();
+            .filter(|e| e.path().is_file() && !should_skip(e.path()))
+            .map(|e| e.path().to_path_buf())
+            .collect();
 
-            if !path.is_file() {
-                continue;
-            }
-
-            if should_skip(path) {
-                continue;
-            }
-
-            match SourceDocument::from_path(path) {
-                Ok(doc) => {
-                    let content = doc.content.clone();
-                    let stubs = self.ingest(doc);
-                    for stub in stubs {
-                        results.push((stub, content.clone()));
-                    }
-                }
-                Err(_) => {
-                    continue;
-                }
-            }
-        }
+        let results: Vec<(Stub, String)> = paths
+            .par_iter()
+            .filter_map(|path| SourceDocument::from_path(path).ok())
+            .flat_map_iter(|doc| self.ingest(doc).into_iter())
+            .collect();
 
         Ok(results)
     }
@@ -319,7 +316,12 @@ fn should_skip(path: &Path) -> bool {
         }
     }
 
-    // Lock files, binaries, etc.
+    // Lock files, binaries, and archives. Archive extensions (zip/tar/gz/…)
+    // are in here because package/archive inspection is not yet implemented
+    // — so if the corpus contains docs inside archives they're silently
+    // dropped. Callers that need visibility into what was skipped should
+    // walk paths themselves and flag archives before handing them to the
+    // pipeline (see caw-bench-build-index for an example).
     matches!(
         path.extension().and_then(|e| e.to_str()),
         Some(
@@ -340,6 +342,8 @@ fn should_skip(path: &Path) -> bool {
                 | "gz"
                 | "bz2"
                 | "xz"
+                | "7z"
+                | "rar"
                 | "exe"
                 | "dll"
                 | "so"

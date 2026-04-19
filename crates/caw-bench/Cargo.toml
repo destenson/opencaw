@@ -27,6 +27,8 @@ sha2 = "0.11"
 caw-core = { path = "../caw-core" }
 caw-adapters = { path = "../caw-adapters" }
 caw-ingest = { path = "../caw-ingest" }
-caw-index = { path = "../caw-index" }
+caw-index = { path = "../caw-index", features = ["candle"] }
 caw-orchestrator = { path = "../caw-orchestrator" }
 caw-eval = { path = "../caw-eval" }
+rayon.workspace = true
+walkdir = "2"

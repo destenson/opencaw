@@ -3,7 +3,9 @@ use std::collections::{HashMap, HashSet};
 
 use caw_core::provenance::InMemoryProvenanceStore;
 use caw_core::{EmbeddingProvider, ModelAdapter, RecallThresholds, StubId, StubStore, VectorIndex};
-use caw_index::{FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
+use caw_index::{
+    CandleEmbeddingProvider, FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore,
+};
 use caw_ingest::{IngestionPipeline, SourceDocument};
 use caw_orchestrator::dynamic::{DynamicRecallConfig, DynamicRecallOrchestrator};
 
@@ -57,7 +59,7 @@ impl Default for RunnerConfig {
 /// each one clones the shared handles into a fresh `SemanticRetriever`
 /// over the same backing state.
 pub struct PrebuiltIndex {
-    pub embedder: SharedEmbedder<FastEmbedProvider>,
+    pub embedder: SharedEmbedder<CandleEmbeddingProvider>,
     pub store: SharedStore<SqliteStubStore>,
     pub index: SharedIndex<HnswVectorIndex>,
     /// Stub summaries keyed by id — populated at load time so the false-recall
@@ -152,8 +154,8 @@ fn run_item_fresh(
             kind: doc.kind,
             mtime_unix_secs: 0,
         };
-        let stubs = pipeline.ingest(source_doc);
-        for stub in stubs {
+        let pairs = pipeline.ingest(source_doc);
+        for (stub, chunk_content) in pairs {
             let stub_summary_text = format!(
                 "{} {} {}",
                 stub.path,
@@ -169,7 +171,7 @@ fn run_item_fresh(
             let stub_id = stub.id.clone();
             stub_summaries.insert(stub_id.clone(), stub.summary.clone());
             store
-                .insert(stub.clone(), embedding.clone(), doc.content.clone())
+                .insert(stub.clone(), embedding.clone(), chunk_content)
                 .context("insert stub into store")?;
             vector_index.add(stub_id, embedding);
         }

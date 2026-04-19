@@ -13,6 +13,15 @@ impl SqliteStubStore {
         let conn = Connection::open(path)
             .map_err(|e| CawError::VectorStore(format!("Failed to open database: {}", e)))?;
 
+        // WAL + synchronous=NORMAL is ~10-20x faster for bulk inserts than
+        // the default rollback journal + synchronous=FULL, with minor
+        // durability trade-offs (last-second crashes can lose recent commits
+        // but the DB stays consistent). In-memory DBs ignore these PRAGMAs.
+        for pragma in ["journal_mode=WAL", "synchronous=NORMAL", "temp_store=MEMORY"] {
+            conn.execute_batch(&format!("PRAGMA {};", pragma))
+                .map_err(|e| CawError::VectorStore(format!("PRAGMA {}: {}", pragma, e)))?;
+        }
+
         conn.execute(
             "CREATE TABLE IF NOT EXISTS stubs (
                 id TEXT PRIMARY KEY,
@@ -69,6 +78,27 @@ impl SqliteStubStore {
 
     pub fn in_memory(dimension: usize) -> CawResult<Self> {
         Self::new(":memory:", dimension)
+    }
+
+    /// Return the distinct (path, mtime) pairs already indexed. Used by
+    /// resumable builders to skip files that have already been ingested
+    /// without having to decode full stubs. Cheap — a single SELECT DISTINCT
+    /// against the indexed `path` column.
+    pub fn indexed_paths(&self) -> CawResult<Vec<(String, u64)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT path, mtime_unix_secs FROM stubs")
+            .map_err(|e| CawError::VectorStore(format!("prepare indexed_paths: {}", e)))?;
+        let rows = stmt
+            .query_map([], |row| {
+                let path: String = row.get(0)?;
+                let mtime: i64 = row.get(1)?;
+                Ok((path, mtime as u64))
+            })
+            .map_err(|e| CawError::VectorStore(format!("query indexed_paths: {}", e)))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
     }
 
     fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {

@@ -1,6 +1,6 @@
 use caw_core::{CawResult, CompletionRequest, CompletionResponse, ContentKind, ModelAdapter};
 
-pub trait Summarizer {
+pub trait Summarizer: Send + Sync {
     fn summarize(
         &self,
         path: &str,
@@ -29,14 +29,14 @@ impl Summarizer for DeterministicSummarizer {
 /// Uses a ModelAdapter to generate richer summaries. Sends a truncated
 /// content window to keep the summarization call cheap.
 pub struct LlmSummarizer {
-    adapter: Box<dyn ModelAdapter>,
+    adapter: Box<dyn ModelAdapter + Send + Sync>,
     /// Max chars of content to send to the model. Keeps summarization
     /// calls fast and cheap even for large files.
     max_content_chars: usize,
 }
 
 impl LlmSummarizer {
-    pub fn with_adapter(adapter: Box<dyn ModelAdapter>) -> Self {
+    pub fn with_adapter(adapter: Box<dyn ModelAdapter + Send + Sync>) -> Self {
         Self {
             adapter,
             max_content_chars: 2000,
