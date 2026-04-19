@@ -231,16 +231,21 @@ fn build_session(model_path: &str) -> CawResult<(Session, &'static str)> {
     // installed via `uv pip install onnxruntime-gpu` or similar.
     ensure_ort_dylib_path();
 
-    // Try CUDA first. If the CUDA EP fails to register (missing lib,
-    // incompatible CUDA version, no device), fall back to CPU. Emit a
-    // log line either way so the active backend is visible.
-    let cuda_ep = CUDAExecutionProvider::default();
+    // Try CUDA first. `error_on_failure()` is critical: without it,
+    // `with_execution_providers` only registers the EP as a *preference*,
+    // and if CUDA silently fails to bind at inference time (cuDNN ABI
+    // mismatch, CUDA driver/runtime skew, whatever) ort runs the whole
+    // model on CPU while our code happily logs "using CUDA". That misled
+    // a multi-hour sweep into thinking ONNX was 6x slower than candle when
+    // it was really running on 14 CPU cores at 0% GPU utilization. Strict
+    // registration makes CUDA-or-CPU a binary, observable outcome.
+    let cuda_ep = CUDAExecutionProvider::default().build().error_on_failure();
     match Session::builder()
-        .and_then(|b| b.with_execution_providers([cuda_ep.build()]))
+        .and_then(|b| b.with_execution_providers([cuda_ep]))
         .and_then(|b| b.commit_from_file(model_path))
     {
         Ok(session) => {
-            eprintln!("onnx: using CUDA execution provider");
+            eprintln!("onnx: CUDA execution provider bound");
             Ok((session, "onnx-cuda"))
         }
         Err(err) => {
@@ -326,18 +331,21 @@ fn ensure_ort_dylib_path() {
     // to the CPU build in that case rather than pretending we have GPU.
     let pick = if let Some((cuda_path, cuda_version)) = cuda_pick {
         if let Some(extra_lib_dirs) = locate_cuda_sidecars(&home) {
+            // Set LD_LIBRARY_PATH too — it won't help dlopen in THIS process
+            // (glibc caches the search path at startup), but it propagates
+            // to any child processes we exec and is harmless here.
             prepend_ld_library_path(&extra_lib_dirs);
+            // Preload cuDNN with absolute paths. This is what actually makes
+            // ort find cuDNN: once `libcudnn*.so.9` are in the global
+            // namespace, ort's later dlopen of the CUDA provider resolves
+            // their DT_NEEDED entries against the already-loaded libs
+            // instead of going through ld.so's broken search path.
+            let n = preload_cuda_sidecars(&extra_lib_dirs);
             eprintln!(
-                "onnx: LD_LIBRARY_PATH += {}",
+                "onnx: preloaded {} cuDNN libs from {}",
+                n,
                 extra_lib_dirs[0].display()
             );
-            // No preload: loading cuDNN manually races against ort's own
-            // dlopen of libonnxruntime_providers_cuda.so and the cuDNN
-            // version baked into that provider's build. Letting ld.so
-            // resolve cuDNN on-demand via LD_LIBRARY_PATH matches how
-            // onnxruntime is normally loaded in a Python env and avoids
-            // segfaults we've seen from co-loading conflicting patch
-            // versions.
             Some((cuda_path, cuda_version))
         } else {
             eprintln!(
@@ -422,31 +430,60 @@ fn locate_cuda_sidecars(home: &str) -> Option<Vec<std::path::PathBuf>> {
     best.map(|(d, _)| vec![d])
 }
 
-/// Explicitly dlopen the CUDA sidecar libraries so their symbols are in
-/// the process namespace before ort loads the CUDA provider. Uses
-/// RTLD_LAZY | RTLD_GLOBAL so ort's subsequent dlopen of
-/// libonnxruntime_providers_cuda.so resolves against these.
+/// Explicitly dlopen the cuDNN libraries so their symbols are in the global
+/// namespace before ort loads `libonnxruntime_providers_cuda.so`. This is
+/// the ONLY reliable way to make ort find cuDNN when cuDNN lives in a
+/// non-default path: setting `LD_LIBRARY_PATH` from within the process is
+/// a no-op for subsequent `dlopen`, because glibc's dynamic linker caches
+/// its search path at process startup and ignores later env-var changes.
 ///
-/// Leaks the handles intentionally — they must stay loaded for the
-/// lifetime of the process. Returns the count loaded (for logging).
+/// Why preload every `libcudnn*.so.9` in the chosen dir rather than just
+/// the top-level one: the sibling libs (`libcudnn_ops.so.9`, `_cnn.so.9`,
+/// `_graph.so.9`, ...) are pulled in via DT_NEEDED by either cuDNN itself
+/// or by the CUDA EP, and their lookup would also hit the broken
+/// LD_LIBRARY_PATH path. Loading each sibling by absolute path bypasses
+/// ld.so's search entirely, so it doesn't matter that LD_LIBRARY_PATH is
+/// ignored.
+///
+/// We restrict loading to a single directory (picked by `locate_cuda_sidecars`)
+/// to avoid the "two different patch versions from two pip caches load into
+/// the same process" segfault — all siblings come from one install.
+///
+/// Handles are `mem::forget`ted on purpose; they must stay alive for the
+/// whole process. Returns the number of libraries loaded.
 fn preload_cuda_sidecars(dirs: &[std::path::PathBuf]) -> usize {
-    // Just preload the top-level cuDNN lib. Its DT_NEEDED siblings
-    // (libcudnn_ops.so.9, libcudnn_cnn.so.9, etc.) are resolved by ld.so
-    // via the LD_LIBRARY_PATH we've already set to the same directory.
-    // Attempting to preload all siblings manually caused segfaults when
-    // the caches held two different patch versions.
+    let mut loaded = 0usize;
     for dir in dirs {
-        let full = dir.join("libcudnn.so.9");
-        if full.exists() {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let fname = match path.file_name().and_then(|s| s.to_str()) {
+                Some(f) => f,
+                None => continue,
+            };
+            // Match libcudnn.so.9 and libcudnn_*.so.9 — the whole cuDNN
+            // family from this install. Skip .so (unversioned) symlinks
+            // and older majors to avoid ambiguity.
+            if !fname.starts_with("libcudnn") || !fname.ends_with(".so.9") {
+                continue;
+            }
             unsafe {
-                if let Ok(lib) = libloading::Library::new(&full) {
-                    std::mem::forget(lib);
-                    return 1;
+                match libloading::Library::new(&path) {
+                    Ok(lib) => {
+                        std::mem::forget(lib);
+                        loaded += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("onnx: preload {} failed: {}", path.display(), e);
+                    }
                 }
             }
         }
     }
-    0
+    loaded
 }
 
 fn prepend_ld_library_path(dirs: &[std::path::PathBuf]) {
