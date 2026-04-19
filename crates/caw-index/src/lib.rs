@@ -7,6 +7,9 @@ use std::collections::HashMap;
 pub mod bm25;
 
 pub mod embeddings {
+    #[cfg(any(feature = "fastembed", feature = "onnx"))]
+    pub(crate) mod ort_setup;
+
     #[cfg(feature = "fastembed")]
     pub mod fastembed_provider;
 

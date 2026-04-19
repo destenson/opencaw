@@ -1,3 +1,4 @@
+use super::ort_setup::ensure_ort_dylib_path;
 use caw_core::{CawError, CawResult, EmbeddingProvider};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 
@@ -10,6 +11,11 @@ pub struct FastEmbedProvider {
 
 impl FastEmbedProvider {
     pub fn new(model_type: FastEmbedModel) -> CawResult<Self> {
+        // fastembed transitively pulls `ort` compiled with `load-dynamic`,
+        // so it needs ORT_DYLIB_PATH pointing at a real `libonnxruntime.so`
+        // at construction time. Same helper the direct onnx provider uses.
+        ensure_ort_dylib_path();
+
         let (model_enum, dimension, asymmetric) = match model_type {
             FastEmbedModel::BGESmallENV15 => (EmbeddingModel::BGESmallENV15, 384, true),
             FastEmbedModel::BGEBaseENV15 => (EmbeddingModel::BGEBaseENV15, 768, true),

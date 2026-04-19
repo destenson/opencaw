@@ -42,7 +42,7 @@ thiserror.workspace = true
 
 [features]
 default = ["fastembed", "sqlite"]
-fastembed = ["dep:fastembed"]
+fastembed = ["dep:fastembed", "dep:libloading"]
 onnx = ["dep:ort", "dep:ndarray", "dep:tokenizers", "dep:hf-hub", "dep:libloading"]
 candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:hf-hub", "dep:tokenizers"]
 sqlite = ["dep:rusqlite"]
