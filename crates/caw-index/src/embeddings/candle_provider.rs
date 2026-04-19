@@ -14,12 +14,17 @@ const DTYPE: DType = DType::F32;
 /// it explicitly here.
 const MAX_SEQ_LEN: usize = 512;
 
-/// Character-level pre-clip before tokenization. BPE tokenization is O(n²)
-/// in the worst case on certain inputs (long runs of rare bytes), so a
-/// text that's 10MB of noise can hang the tokenizer for minutes. BGE only
-/// uses the first 512 tokens anyway (~2KB of normal prose), so clipping at
-/// 32KB is a pure safety net that never throws away useful signal.
-const MAX_TEXT_CHARS: usize = 32_768;
+/// Character-level pre-clip before tokenization. BGE only uses the first
+/// 512 tokens (`MAX_SEQ_LEN`), which is roughly 2 KB of normal prose at
+/// ~3-4 chars/token. Clipping *before* tokenization means the BPE pass
+/// does ~20x less work on large inputs — previously we tokenized 10-16K
+/// tokens per text and threw away 95% of that in the truncation step,
+/// which dominated batch latency when embedding chunk content.
+///
+/// 2500 leaves modest headroom over 512×4 (2048) for token-dense inputs
+/// (code, heavily-punctuated text). If a text tokenizes denser than the
+/// headroom allows, the 512-token seq-len cap still protects the model.
+const MAX_TEXT_CHARS: usize = 2_500;
 
 pub struct CandleEmbeddingProvider {
     model: BertModel,
@@ -183,11 +188,13 @@ impl CandleEmbeddingProvider {
             CawError::Embedding(format!("Failed to create attention_mask tensor: {e}"))
         })?;
 
-        // BertModel.forward expects i64 attention mask for the causal mask,
-        // but we need f32 for mean-pooling below
+        // BertModel.forward expects i64 attention mask for the causal mask.
         let attention_mask_i64 = attention_mask_f32
             .to_dtype(DType::I64)
             .map_err(|e| CawError::Embedding(format!("Attention mask dtype cast failed: {e}")))?;
+        // attention_mask_f32 is no longer needed after the dtype cast —
+        // CLS pooling doesn't touch the mask.
+        drop(attention_mask_f32);
 
         let t_fwd = std::time::Instant::now();
         let output = self
@@ -201,40 +208,27 @@ impl CandleEmbeddingProvider {
             t_fwd.elapsed().as_millis()
         );
 
-        // Mean pooling: average token embeddings weighted by attention mask.
-        // output shape: [batch, seq_len, hidden_size]
-        // mask shape:   [batch, seq_len] -> unsqueeze to [batch, seq_len, 1]
-        let mask_expanded = attention_mask_f32
-            .unsqueeze(2)
-            .map_err(|e| CawError::Embedding(format!("Mask unsqueeze failed: {e}")))?;
+        // CLS pooling: BGE-v1.5 (and most BERT-style encoders trained with
+        // MLM + next-sentence or sentence-pair objectives) use the [CLS]
+        // token's hidden state as the sentence embedding. Take the 0th
+        // token along the sequence axis.
+        //
+        // Mean-pooling, which the previous implementation used, is both
+        // incorrect for BGE and ~10x slower: each of the 11 tensor ops
+        // involved incurs a kernel-launch/sync cost, and candle evaluates
+        // eagerly with implicit syncs. CLS is 2 ops (narrow + squeeze)
+        // plus the normalize ops that follow.
+        let pooled = output
+            .narrow(1, 0, 1)
+            .and_then(|t| t.squeeze(1))
+            .map_err(|e| CawError::Embedding(format!("CLS pooling failed: {e}")))?;
 
-        let masked = output
-            .broadcast_mul(&mask_expanded)
-            .map_err(|e| CawError::Embedding(format!("Broadcast mul failed: {e}")))?;
-
-        let summed = masked
-            .sum(1)
-            .map_err(|e| CawError::Embedding(format!("Sum failed: {e}")))?;
-
-        let mask_sum = mask_expanded
-            .sum(1)
-            .map_err(|e| CawError::Embedding(format!("Mask sum failed: {e}")))?;
-
-        // Clamp to avoid division by zero for fully-padded sequences
-        let mask_sum_clamped = mask_sum
-            .clamp(1e-9, f64::MAX)
-            .map_err(|e| CawError::Embedding(format!("Clamp failed: {e}")))?;
-
-        let pooled = summed
-            .broadcast_div(&mask_sum_clamped)
-            .map_err(|e| CawError::Embedding(format!("Broadcast div failed: {e}")))?;
-
-        // L2 normalize each embedding
+        // L2 normalize each embedding. BGE was trained with normalized
+        // CLS vectors, so matching semantics at inference matters.
         let norms = pooled
             .sqr()
-            .and_then(|s| s.sum(1))
+            .and_then(|s| s.sum_keepdim(1))
             .and_then(|s| s.sqrt())
-            .and_then(|s| s.unsqueeze(1))
             .and_then(|s| s.clamp(1e-12, f64::MAX))
             .map_err(|e| CawError::Embedding(format!("Norm computation failed: {e}")))?;
 

@@ -281,7 +281,3 @@ fn outline_entries_for_chunk(chunk_text: &str, outline: &[String]) -> Vec<String
         .collect()
 }
 
-/// Rough conversion: assume ~8 tokens per line on average for code/prose.
-fn token_count_to_line_estimate(tokens: usize) -> usize {
-    (tokens / 8).max(1)
-}
