@@ -65,6 +65,13 @@ impl OnnxVariant {
     }
 }
 
+/// Bucket boundaries for per-batch padded-seq-length histogram. A batch is
+/// counted in the smallest bucket whose value is >= its padded_len. Chosen
+/// to roughly match the powers-of-two granularity that TensorRT optimization
+/// profiles care about — finer at the short end since BGE inputs concentrate
+/// there, coarse above 256 since anything that hits 512 is already maxed out.
+const SEQ_HIST_BUCKETS: [usize; 7] = [16, 32, 64, 128, 256, 384, 512];
+
 pub struct OnnxEmbeddingProvider {
     session: Session,
     tokenizer: Tokenizer,
@@ -75,6 +82,15 @@ pub struct OnnxEmbeddingProvider {
     /// Human-readable backend name ("onnx-cuda" or "onnx-cpu"), logged
     /// once at init and reported by `provider_name()`.
     backend_name: &'static str,
+    /// Per-batch padded_len histogram. Shows what TRT would actually see
+    /// since TRT runs the whole batch at `max(len)`. Counted by bucket index
+    /// in `SEQ_HIST_BUCKETS`. Not atomic — provider is single-threaded in
+    /// the benchmark consumer path.
+    seq_hist: [u64; SEQ_HIST_BUCKETS.len()],
+    /// Per-*item* token-length histogram. Shows actual content distribution
+    /// independent of batching — answers "if we had perfect bucketing, how
+    /// much compute would we save?" vs. what the batch-max forces us into.
+    item_seq_hist: [u64; SEQ_HIST_BUCKETS.len()],
 }
 
 impl OnnxEmbeddingProvider {
@@ -111,6 +127,8 @@ impl OnnxEmbeddingProvider {
             dimension,
             asymmetric,
             backend_name,
+            seq_hist: [0; SEQ_HIST_BUCKETS.len()],
+            item_seq_hist: [0; SEQ_HIST_BUCKETS.len()],
         })
     }
 
@@ -186,6 +204,25 @@ impl OnnxEmbeddingProvider {
             .unwrap_or(0);
         if padded_len == 0 {
             return Ok(vec![vec![0.0; self.dimension]; batch_size]);
+        }
+        // Histogram the shape TRT EP would see. Smallest bucket whose max
+        // covers this batch; anything above the last bucket bumps the last.
+        let hist_idx = SEQ_HIST_BUCKETS
+            .iter()
+            .position(|&b| padded_len <= b)
+            .unwrap_or(SEQ_HIST_BUCKETS.len() - 1);
+        self.seq_hist[hist_idx] += 1;
+        // Per-item length distribution, independent of batching. Shows how
+        // much the batch-max padding is wasting: if item distribution is
+        // skewed short but batch-max is always 512, the batching policy
+        // leaves throughput on the table.
+        for enc in &encodings {
+            let item_len = enc.get_ids().len().min(MAX_SEQ_LEN);
+            let idx = SEQ_HIST_BUCKETS
+                .iter()
+                .position(|&b| item_len <= b)
+                .unwrap_or(SEQ_HIST_BUCKETS.len() - 1);
+            self.item_seq_hist[idx] += 1;
         }
 
         let mut all_ids: Vec<i64> = Vec::with_capacity(batch_size * padded_len);
@@ -626,5 +663,25 @@ impl EmbeddingProvider for OnnxEmbeddingProvider {
 
     fn provider_name(&self) -> &str {
         self.backend_name
+    }
+
+    fn seq_len_histogram(&self) -> Option<Vec<(usize, u64)>> {
+        Some(
+            SEQ_HIST_BUCKETS
+                .iter()
+                .zip(self.seq_hist.iter())
+                .map(|(b, c)| (*b, *c))
+                .collect(),
+        )
+    }
+
+    fn item_seq_len_histogram(&self) -> Option<Vec<(usize, u64)>> {
+        Some(
+            SEQ_HIST_BUCKETS
+                .iter()
+                .zip(self.item_seq_hist.iter())
+                .map(|(b, c)| (*b, *c))
+                .collect(),
+        )
     }
 }

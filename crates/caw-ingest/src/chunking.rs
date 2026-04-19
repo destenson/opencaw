@@ -27,20 +27,33 @@ pub struct ChunkingConfig {
 impl Default for ChunkingConfig {
     fn default() -> Self {
         Self {
-            token_threshold: 2000,
-            target_chunk_tokens: 800,
-            overlap_tokens: 100,
-            // Greedy-chunking lives in char space. Defaults derived from the
-            // token defaults via a ~3 chars/token rule of thumb. Precision
-            // is not the goal; staying inside the model's 512-token window
-            // is, and max_chunk_chars keeps us well under that even on
-            // token-dense inputs.
-            target_chunk_chars: 2_400,
-            max_chunk_chars: 6_000,
-            overlap_chars: 300,
+            // Anything that cheap-estimates above this gets chunked. Leave
+            // some headroom over target so tiny-over-target files aren't
+            // needlessly split.
+            token_threshold: 500,
+            // Target body size leaves ~100 token slack for the header prefix
+            // (path + summary) prepended at embed time and for the char→token
+            // estimator's error margin. Max BGE context is 512.
+            target_chunk_tokens: 400,
+            overlap_tokens: 80,
+            // Char-space targets derived from the token targets via a
+            // conservative ~3.5 chars/token average. Dense content (code,
+            // URLs, minified JSON) can run 2–3 chars/token, so the
+            // post-chunking token-count safety pass in `chunk_document`
+            // re-splits anything that still exceeds MAX_SAFE_BODY_TOKENS.
+            target_chunk_chars: 1_400,
+            max_chunk_chars: 1_800,
+            overlap_chars: 280,
         }
     }
 }
+
+/// Hard ceiling on body token count after all splits. Leaves a small margin
+/// below `MAX_SEQ_LEN` (512) for the special tokens the tokenizer adds
+/// ([CLS], [SEP]) and for the query prefix prepended at retrieval time on
+/// asymmetric models. 500 keeps ~12 tokens of headroom before truncation
+/// starts silently dropping content.
+pub const MAX_SAFE_BODY_TOKENS: usize = 500;
 
 /// A chunk of a larger document, with its position and the outline entries it contains.
 #[derive(Debug, Clone)]
@@ -115,15 +128,41 @@ pub fn chunk_document(
     let _ = kind;
     let raw_chunks = chunk_by_lines(content, config);
 
-    let total = raw_chunks.len();
-    raw_chunks
+    // Safety pass: char-based chunking under-counts tokens on dense inputs
+    // (code, URLs, minified data) where chars/token drops below the 3.5 avg
+    // the defaults assume. Any chunk whose actual token_count exceeds
+    // `MAX_SAFE_BODY_TOKENS` gets split further with tightened bounds.
+    // Without this, dense chunks get silently truncated by the embedder's
+    // `.min(MAX_SEQ_LEN)` and the tail is lost from the index entirely.
+    let mut safe_chunks: Vec<(u64, u64, String, usize)> = Vec::with_capacity(raw_chunks.len());
+    for (body_start, body_end, text) in raw_chunks {
+        let token_count = tokenizer.count_tokens(&text);
+        if token_count <= MAX_SAFE_BODY_TOKENS {
+            safe_chunks.push((body_start, body_end, text, token_count));
+            continue;
+        }
+        // Oversized: recurse with tightened char bounds. Halve the char
+        // budget each time — dense inputs where the heuristic fails tend
+        // to be uniformly dense, so one halving usually suffices. Bottom
+        // out at a minimum sane size to avoid infinite recursion on
+        // pathological no-break content.
+        let sub_chunks = split_oversized(
+            content,
+            body_start as usize,
+            body_end as usize,
+            config,
+            tokenizer,
+            0,
+        );
+        safe_chunks.extend(sub_chunks);
+    }
+
+    let total = safe_chunks.len();
+    safe_chunks
         .into_iter()
         .enumerate()
-        .map(|(i, (body_start, body_end, text))| {
+        .map(|(i, (body_start, body_end, text, token_count))| {
             let entries = outline_entries_for_chunk(&text, outline);
-            // Per-chunk token_count is still a real tokenize, but each chunk
-            // is bounded by `max_chunk_chars` so this is O(cap) not O(file).
-            let token_count = tokenizer.count_tokens(&text);
             Chunk {
                 content: text,
                 index: i,
@@ -135,6 +174,47 @@ pub fn chunk_document(
             }
         })
         .collect()
+}
+
+/// Recursively split a body range that tokenized over `MAX_SAFE_BODY_TOKENS`.
+/// Uses the same line-aware algorithm with halved char bounds. Bottoms out
+/// at `depth >= 3` by emitting whatever it has — after 8x tightening a chunk
+/// that still over-runs is pathological (base64-encoded binary blobs etc.)
+/// and the embedder's truncation becomes the least-bad option.
+fn split_oversized(
+    content: &str,
+    body_start: usize,
+    body_end: usize,
+    config: &ChunkingConfig,
+    tokenizer: &Arc<dyn Tokenizer>,
+    depth: u32,
+) -> Vec<(u64, u64, String, usize)> {
+    let slice = &content[body_start..body_end];
+    if depth >= 3 || slice.is_empty() {
+        let count = tokenizer.count_tokens(slice);
+        return vec![(body_start as u64, body_end as u64, slice.to_string(), count)];
+    }
+    let tightened = ChunkingConfig {
+        target_chunk_chars: (config.target_chunk_chars / 2).max(200),
+        max_chunk_chars: (config.max_chunk_chars / 2).max(300),
+        // Overlap stays a minor fraction; shrinking it proportionally keeps
+        // ratio reasonable without turning into a scanline.
+        overlap_chars: (config.overlap_chars / 2).max(80),
+        ..config.clone()
+    };
+    let sub = chunk_by_lines(slice, &tightened);
+    let mut out = Vec::with_capacity(sub.len());
+    for (rel_start, rel_end, text) in sub {
+        let abs_start = body_start + rel_start as usize;
+        let abs_end = body_start + rel_end as usize;
+        let count = tokenizer.count_tokens(&text);
+        if count <= MAX_SAFE_BODY_TOKENS {
+            out.push((abs_start as u64, abs_end as u64, text, count));
+        } else {
+            out.extend(split_oversized(content, abs_start, abs_end, &tightened, tokenizer, depth + 1));
+        }
+    }
+    out
 }
 
 /// Build a positional summary like "Chunk 2/5 of path: contains `fn foo` and `struct Bar`"

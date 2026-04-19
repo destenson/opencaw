@@ -64,12 +64,18 @@ run() {
     } | tee -a "${OUTDIR}/summary.txt"
 }
 
-# ONNX precision variants to sweep. Override with VARIANTS="fp32 fp16" to
-# restrict. Each variant is a separate HF download on first run.
-VARIANTS="${VARIANTS:-fp32 fp16 int8 quantized}"
+# ONNX precision variants to sweep. Default excludes int8 and quantized
+# because Xenova's exports are QDQ-format and CUDA EP has incomplete int8
+# kernel coverage — ops without GPU implementations fall back to CPU,
+# saturating PCIe and tanking throughput (int8 ran ~30x slower than fp16
+# in measurement). These variants need TensorRT EP to be viable on GPU;
+# opt in explicitly via VARIANTS="int8 quantized" once TRT EP is wired up.
+VARIANTS="${VARIANTS:-fp32 fp16}"
 
 if [[ -z "${NO_CANDLE:-}" ]]; then
     run candle-512-256 candle 512 256
+    run candle-256-128 candle 256 128
+    run candle-256-64  candle 256 64
     run candle-128-64  candle 128 64
 fi
 if [[ -z "${NO_ONNX:-}" ]]; then

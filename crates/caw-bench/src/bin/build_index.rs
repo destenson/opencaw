@@ -141,6 +141,14 @@ impl AnyEmbedder {
     fn dimension(&self) -> usize {
         self.0.dimension()
     }
+
+    fn seq_len_histogram(&self) -> Option<Vec<(usize, u64)>> {
+        self.0.seq_len_histogram()
+    }
+
+    fn item_seq_len_histogram(&self) -> Option<Vec<(usize, u64)>> {
+        self.0.item_seq_len_histogram()
+    }
 }
 
 fn build_embedder(kind: BackendArg, onnx_variant: OnnxVariantArg) -> Result<AnyEmbedder> {
@@ -533,6 +541,31 @@ fn main() -> Result<()> {
         emitted.load(Ordering::Relaxed),
     );
 
+    // seq_len histograms (when the backend instruments them). Batch-max
+    // tells us what shape TRT would see; per-item tells us how much the
+    // batching policy is wasting on padding.
+    let fmt_hist = |hist: &[(usize, u64)], total: u64| -> String {
+        hist.iter()
+            .map(|(bucket, count)| {
+                let pct = 100.0 * *count as f64 / total.max(1) as f64;
+                format!("<={}:{} ({:.1}%)", bucket, count, pct)
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if let Some(hist) = embedder.seq_len_histogram() {
+        let total: u64 = hist.iter().map(|(_, c)| *c).sum();
+        if total > 0 {
+            vlog!("  seq_len histogram (per batch, {} batches): {}", total, fmt_hist(&hist, total));
+        }
+    }
+    if let Some(hist) = embedder.item_seq_len_histogram() {
+        let total: u64 = hist.iter().map(|(_, c)| *c).sum();
+        if total > 0 {
+            vlog!("  seq_len histogram (per item, {} items):    {}", total, fmt_hist(&hist, total));
+        }
+    }
+
     Ok(())
 }
 
@@ -559,22 +592,10 @@ fn flush_batch(
     }
 
     let n = buf.len();
-    // Embedding text per stub: a short header (path + summary) followed by
-    // the chunk's embed text (body + overlap prefix from the producer).
-    // BGE truncates at 512 tokens so only ~1.5 KB actually reaches the
-    // model; the header is first so path/summary signal survive truncation.
-    // The embed text is consumed here and dropped — never stored.
     let mut indexed: Vec<(usize, String)> = buf
         .iter()
         .enumerate()
-        .map(|(i, (stub, embed_text))| {
-            let text = if stub.summary.is_empty() {
-                format!("{}\n\n{}", stub.path, embed_text)
-            } else {
-                format!("{}: {}\n\n{}", stub.path, stub.summary, embed_text)
-            };
-            (i, text)
-        })
+        .map(|(i, (_stub, embed_text))| (i, embed_text.clone()))
         .collect();
     indexed.sort_by_key(|(_, t)| t.len());
 

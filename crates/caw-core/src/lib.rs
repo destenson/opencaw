@@ -499,6 +499,23 @@ pub trait EmbeddingProvider {
 
     fn dimension(&self) -> usize;
     fn provider_name(&self) -> &str;
+
+    /// Optional per-run histogram of padded sequence lengths observed during
+    /// embedding. Each entry is `(bucket_max_len, count_of_batches_in_bucket)`
+    /// with buckets sorted ascending; a batch with padded_len L is counted in
+    /// the smallest bucket whose max >= L. Returns `None` for backends that
+    /// don't instrument this (default). Shows what shape TensorRT would see.
+    fn seq_len_histogram(&self) -> Option<Vec<(usize, u64)>> {
+        None
+    }
+
+    /// Optional per-run histogram of individual item (pre-padding) token
+    /// lengths. Complements `seq_len_histogram`: batch-max shows what TRT
+    /// sees, per-item shows the actual content distribution and therefore
+    /// how much compute batch-max padding is wasting.
+    fn item_seq_len_histogram(&self) -> Option<Vec<(usize, u64)>> {
+        None
+    }
 }
 
 /// A probe marker emitted by the model to request recall
