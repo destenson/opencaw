@@ -27,8 +27,9 @@ use std::sync::mpsc::sync_channel;
 use std::time::Instant;
 
 use caw_core::{EmbeddingProvider, Stub, StubStore};
-use caw_index::{CandleEmbeddingProvider, SqliteStubStore};
+use caw_index::{CandleEmbeddingProvider, OnnxEmbeddingProvider, SqliteStubStore};
 use caw_ingest::{IngestionPipeline, SourceDocument};
+use clap::ValueEnum;
 use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
@@ -48,8 +49,9 @@ struct Cli {
     rebuild: bool,
 
     /// Embedding batch size. Larger = better GPU utilization up to VRAM
-    /// limits; smaller = lower latency to first durable progress.
-    #[arg(long, default_value_t = 64)]
+    /// limits; smaller = lower latency to first durable progress. Must be
+    /// >= `sub_batch_size` or the consumer will never emit a full sub-batch.
+    #[arg(long, default_value_t = 512)]
     batch_size: usize,
 
     /// Bounded channel capacity between ingestion producers and the
@@ -63,8 +65,55 @@ struct Cli {
     /// chunks of `sub_batch_size`. Bucketing by length cuts padding waste:
     /// short texts pad to a short max, long texts to a longer max, instead
     /// of everything padding to the batch-wide max token count.
-    #[arg(long, default_value_t = 64)]
+    ///
+    /// Default is deliberately large: candle's per-op sync overhead means
+    /// the total embed time is dominated by launching ops, not by their
+    /// actual work. A sub-batch of 256 takes roughly the same wall time as
+    /// a sub-batch of 64, so 4x more stubs per call ≈ 4x throughput.
+    #[arg(long, default_value_t = 256)]
     sub_batch_size: usize,
+
+    /// Embedding backend. `candle` runs BGE-small via candle-transformers
+    /// with CUDA (falls back to CPU). `onnx` runs the BGE-small ONNX export
+    /// via ONNX Runtime, trying the CUDA execution provider first and
+    /// falling back to CPU. ONNX Runtime's single-graph execution is
+    /// typically much faster than candle's eager op-by-op eval.
+    #[arg(long, value_enum, default_value_t = BackendArg::Candle)]
+    backend: BackendArg,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum BackendArg {
+    Candle,
+    Onnx,
+}
+
+/// Dynamic-dispatch wrapper so `flush_batch` can call the same embed path
+/// regardless of which backend was chosen. The per-call vtable cost is
+/// negligible next to the embedding work itself.
+struct AnyEmbedder(Box<dyn EmbeddingProvider + Send>);
+
+impl AnyEmbedder {
+    fn embed_document(&mut self, texts: Vec<&str>) -> caw_core::CawResult<Vec<Vec<f32>>> {
+        self.0.embed_document(texts)
+    }
+
+    fn dimension(&self) -> usize {
+        self.0.dimension()
+    }
+}
+
+fn build_embedder(kind: BackendArg) -> Result<AnyEmbedder> {
+    match kind {
+        BackendArg::Candle => {
+            let e = CandleEmbeddingProvider::bge_small().context("init bge-small (candle)")?;
+            Ok(AnyEmbedder(Box::new(e)))
+        }
+        BackendArg::Onnx => {
+            let e = OnnxEmbeddingProvider::bge_small().context("init bge-small (onnx)")?;
+            Ok(AnyEmbedder(Box::new(e)))
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -82,7 +131,7 @@ fn main() -> Result<()> {
         eprintln!("--rebuild: cleared existing index");
     }
 
-    let mut embedder = CandleEmbeddingProvider::bge_small().context("init bge-small (candle)")?;
+    let mut embedder = build_embedder(cli.backend)?;
     let dim = embedder.dimension();
     let out_str = cli.out.to_string_lossy().into_owned();
     let mut store = SqliteStubStore::new(&out_str, dim)
@@ -144,7 +193,8 @@ fn main() -> Result<()> {
         eprintln!("nothing to do: all files already indexed");
         return Ok(());
     }
-    eprintln!("{} files to ingest", todo.len());
+    let todo_total = todo.len();
+    eprintln!("{} files to ingest", todo_total);
 
     // Pipeline: rayon producers → bounded channel → single GPU consumer.
     // The channel's capacity is the bound on in-flight stubs, which caps
@@ -254,14 +304,29 @@ fn main() -> Result<()> {
                 eprintln!("  first batch flushed in {}ms", batch_ms);
             }
             if last_log.elapsed().as_secs() >= 2 {
+                let done_f = done_files.len();
+                let remaining = todo_total.saturating_sub(done_f);
+                let rate = done_stubs as f64 / t_start.elapsed().as_secs_f64();
+                // Rough ETA based on file rate (stubs-per-file varies, but
+                // files are the user-visible unit of "how much is left").
+                let file_rate = done_f as f64 / t_start.elapsed().as_secs_f64().max(0.001);
+                let eta_s = if file_rate > 0.0 {
+                    remaining as f64 / file_rate
+                } else {
+                    0.0
+                };
                 eprintln!(
-                    "  {} stubs / {} files in {:.1}s (recv'd {}, last batch {}ms, {:.1} stubs/s)",
+                    "  {} stubs / {} files ({}/{}, {} left) in {:.1}s \
+                     (last batch {}ms, {:.1} stubs/s, eta ~{:.0}s)",
                     done_stubs,
-                    done_files.len(),
+                    done_f,
+                    done_f,
+                    todo_total,
+                    remaining,
                     t_start.elapsed().as_secs_f64(),
-                    received,
                     batch_ms,
-                    done_stubs as f64 / t_start.elapsed().as_secs_f64(),
+                    rate,
+                    eta_s,
                 );
                 last_log = Instant::now();
             }
@@ -300,7 +365,7 @@ fn main() -> Result<()> {
 /// lengths vary by an order of magnitude.
 fn flush_batch(
     buf: &mut Vec<(Stub, String)>,
-    embedder: &mut CandleEmbeddingProvider,
+    embedder: &mut AnyEmbedder,
     store: &mut SqliteStubStore,
     done_files: &mut HashSet<String>,
     sub_batch_size: usize,

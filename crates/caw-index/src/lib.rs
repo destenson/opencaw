@@ -35,6 +35,9 @@ pub use embeddings::fastembed_provider::FastEmbedProvider;
 #[cfg(feature = "candle")]
 pub use embeddings::candle_provider::CandleEmbeddingProvider;
 
+#[cfg(feature = "onnx")]
+pub use embeddings::onnx_provider::OnnxEmbeddingProvider;
+
 pub use bm25::BM25Index;
 pub use embeddings::api_provider::ApiEmbeddingProvider;
 
