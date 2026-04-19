@@ -179,16 +179,23 @@ fn main() -> Result<()> {
     );
 
     let producer_pipeline = pipeline.clone();
+    // Rewrite stored paths to be relative to the corpus root so the index
+    // is portable (not tied to where the snapshot happens to sit in the
+    // filesystem) and matches how downstream QA files reference documents.
+    let corpus_root = cli.corpus.clone();
     let producer = std::thread::spawn(move || {
         producer_pool.install(|| {
             todo.par_iter().for_each(|path| {
                 if should_skip(path) {
                     return;
                 }
-                let doc = match SourceDocument::from_path(path) {
+                let mut doc = match SourceDocument::from_path(path) {
                     Ok(d) => d,
                     Err(_) => return,
                 };
+                if let Ok(rel) = path.strip_prefix(&corpus_root) {
+                    doc.path = rel.to_string_lossy().into_owned();
+                }
                 let content = doc.content.clone();
                 for stub in producer_pipeline.ingest(doc) {
                     // Send error means the consumer exited — nothing else to

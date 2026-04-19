@@ -126,6 +126,15 @@ struct Cli {
     #[arg(long)]
     out: Option<PathBuf>,
 
+    /// Where to write a per-item JSONL trace. One line per (item, mode)
+    /// with the system prompt, question, reference answer, loaded
+    /// fragments (with content previews and source locators), the model's
+    /// answer, the judge's rationale, and the full metrics. Built for
+    /// `jq`-filtering failure cases (e.g. `jq 'select(.answer_score < 1)'`)
+    /// so you can see exactly what the model had and what it said.
+    #[arg(long)]
+    trace_out: Option<PathBuf>,
+
     /// Only run one mode (useful for debugging). Default: both.
     #[arg(long, value_enum)]
     only_mode: Option<ModeArg>,
@@ -214,6 +223,29 @@ fn main() -> Result<()> {
     let mut done = 0usize;
     let mut results: Vec<ItemResult> = Vec::with_capacity(total);
 
+    // Optional per-item JSONL trace. Opened once; lines append as each item
+    // completes so a kill mid-run still leaves a usable partial trace.
+    let mut trace_writer: Option<std::io::BufWriter<std::fs::File>> = match &cli.trace_out {
+        Some(path) => {
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+            }
+            match std::fs::File::create(path) {
+                Ok(f) => {
+                    eprintln!("trace output: {}", path.display());
+                    Some(std::io::BufWriter::new(f))
+                }
+                Err(e) => {
+                    eprintln!("  warning: could not open trace file {}: {}", path.display(), e);
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+
     for item in &items {
         for mode in &modes {
             done += 1;
@@ -252,6 +284,17 @@ fn main() -> Result<()> {
                         result.context_efficiency,
                         result.loaded_paths.len(),
                     );
+                    if let Some(writer) = trace_writer.as_mut() {
+                        use std::io::Write;
+                        let entry = serde_json::json!({
+                            "system_prompt": cfg.system_prompt,
+                            "result": &result,
+                        });
+                        if let Ok(line) = serde_json::to_string(&entry) {
+                            let _ = writeln!(writer, "{}", line);
+                            let _ = writer.flush();
+                        }
+                    }
                     results.push(result);
                 }
                 Err(e) => {

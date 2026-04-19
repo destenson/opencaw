@@ -70,7 +70,7 @@ pub struct PrebuiltIndex {
 
 /// Result of running a single item in a single mode. Aggregated by the
 /// reporter into per-workload and per-mode summaries.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ItemResult {
     pub item_id: String,
     pub mode: RecallMode,
@@ -111,6 +111,27 @@ pub struct ItemResult {
     pub judge_rationale: String,
     /// Wall time for this item (ms).
     pub latency_ms: u64,
+    /// Reference answer from the scoring config (JudgeAgainst only; empty
+    /// for ContainsNeedle). Carried through so the trace can show what the
+    /// judge was comparing against.
+    pub reference_answer: String,
+    /// Content of each loaded fragment, in load order, paired with its
+    /// source locator. Lets a failure trace show exactly what context the
+    /// model had. Truncated per-fragment to keep the JSONL manageable.
+    pub loaded_fragments: Vec<LoadedFragment>,
+}
+
+/// Compact per-fragment view for trace output. Content is truncated so
+/// JSONL lines stay readable; full content is always available via the
+/// sqlite store if deeper inspection is needed.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LoadedFragment {
+    pub source: String,
+    pub locator: String,
+    pub tokens: usize,
+    /// First ~1 KB of the fragment's content. Enough to see the head of
+    /// most changelog entries / doc paragraphs without blowing up the log.
+    pub content_preview: String,
 }
 
 pub fn run_item(
@@ -299,6 +320,25 @@ fn finalize_result(
 
     let (answer_score, judge_rationale) = score_answer(&item.scoring, &answer, judge_adapter)?;
 
+    let reference_answer = match &item.scoring {
+        Scoring::JudgeAgainst { reference_answer } => reference_answer.clone(),
+        _ => String::new(),
+    };
+
+    // Truncation keeps the per-item trace line manageable in a JSONL file.
+    // 2 KB / fragment captures the head of most relevant chunks; reach for
+    // the sqlite store if a reviewer needs the full thing.
+    const PREVIEW_CAP: usize = 2048;
+    let loaded_fragments: Vec<LoadedFragment> = loaded
+        .iter()
+        .map(|f| LoadedFragment {
+            source: f.locator.source.clone(),
+            locator: f.locator.locator.clone(),
+            tokens: f.tokens,
+            content_preview: truncate_preview(&f.content, PREVIEW_CAP),
+        })
+        .collect();
+
     Ok(ItemResult {
         item_id: item.id.clone(),
         mode,
@@ -317,7 +357,23 @@ fn finalize_result(
         answer_score,
         judge_rationale,
         latency_ms: started.elapsed().as_millis() as u64,
+        reference_answer,
+        loaded_fragments,
     })
+}
+
+fn truncate_preview(s: &str, cap: usize) -> String {
+    if s.len() <= cap {
+        return s.to_string();
+    }
+    let mut end = cap;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = String::with_capacity(end + 16);
+    out.push_str(&s[..end]);
+    out.push_str("\n…[truncated]");
+    out
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -357,23 +413,46 @@ fn orchestrator_config(mode: RecallMode, cfg: &RunnerConfig) -> DynamicRecallCon
     }
 }
 
+/// Expected paths are typically rooted at the corpus (e.g. `pkg/changelog`).
+/// Loaded paths come from stubs that may be rooted at the corpus (new
+/// indexes) or at the process CWD that built the index (legacy indexes,
+/// e.g. `opencaw-corpora/sysdoc/pkg/changelog`). Suffix-match handles both
+/// without forcing a rebuild: a loaded path counts as a match when the
+/// expected path is a path-component-aligned suffix of it.
+fn path_matches(loaded: &str, expected: &str) -> bool {
+    if loaded == expected {
+        return true;
+    }
+    // Align on a path separator so `foo/bar.md` doesn't spuriously match
+    // `xfoo/bar.md`. Also allow an exact `{expected}` at the end of
+    // `{anything/}{expected}`.
+    loaded.ends_with(expected)
+        && loaded.len() > expected.len()
+        && loaded.as_bytes()[loaded.len() - expected.len() - 1] == b'/'
+}
+
 fn retrieval_metrics(loaded: &[String], expected: &[String]) -> RetrievalMetrics {
-    let loaded_set: HashSet<&String> = loaded.iter().collect();
-    let expected_set: HashSet<&String> = expected.iter().collect();
-    let intersection = loaded_set.intersection(&expected_set).count();
+    let expected_match_count = expected
+        .iter()
+        .filter(|exp| loaded.iter().any(|l| path_matches(l, exp)))
+        .count();
+    let loaded_match_count = loaded
+        .iter()
+        .filter(|l| expected.iter().any(|exp| path_matches(l, exp)))
+        .count();
 
     let recall_at_k = if expected.is_empty() {
         1.0
     } else {
-        intersection as f32 / expected.len() as f32
+        expected_match_count as f32 / expected.len() as f32
     };
     let relevance_at_k = if loaded.is_empty() {
         0.0
     } else {
-        intersection as f32 / loaded.len() as f32
+        loaded_match_count as f32 / loaded.len() as f32
     };
     let precision_at_1 = match loaded.first() {
-        Some(top) if expected_set.contains(top) => 1.0,
+        Some(top) if expected.iter().any(|exp| path_matches(top, exp)) => 1.0,
         _ => 0.0,
     };
     let mrr = if expected.is_empty() {
@@ -381,9 +460,11 @@ fn retrieval_metrics(loaded: &[String], expected: &[String]) -> RetrievalMetrics
     } else {
         let total: f32 = expected
             .iter()
-            .map(|exp| match loaded.iter().position(|l| l == exp) {
-                Some(rank) => 1.0 / (rank as f32 + 1.0),
-                None => 0.0,
+            .map(|exp| {
+                match loaded.iter().position(|l| path_matches(l, exp)) {
+                    Some(rank) => 1.0 / (rank as f32 + 1.0),
+                    None => 0.0,
+                }
             })
             .sum();
         total / expected.len() as f32

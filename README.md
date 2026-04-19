@@ -34,8 +34,9 @@ container. It implements:
 - **caw-eval**: `SessionEvaluator` and metrics (recall@k, false-recall,
   hysteresis, cooperation)
 - **caw-cli**: Command-line interface tying it all together
-- **caw-bench**: Benchmark harness (NIAH + opencaw Q&A workloads, recall-on vs
-  recall-off)
+- **caw-bench**: Benchmark harness (NIAH, opencaw, and sysdoc Q&A workloads,
+  recall-on vs recall-off). Ships the `caw-bench-build-index` binary for
+  streaming, resumable, GPU-pipelined index construction over large corpora.
 - **caw-server**: HTTP/gRPC service (scaffold only)
 
 ## Embedding Providers
@@ -68,8 +69,15 @@ let embedder = ApiEmbeddingProvider::openai_small()?;
 
 ### Candle (feature-gated)
 
-- BERT-family models downloaded directly from HuggingFace Hub
-- Enable with `--features candle`. Mutually exclusive with `fastembed`.
+- BERT-family models downloaded directly from HuggingFace Hub (e.g.
+  `BAAI/bge-small-en-v1.5`), with asymmetric query/document prefix handling.
+- **CUDA accelerated** — automatically uses `Device::new_cuda(0)` when
+  available, falling back to CPU with a log line. Builds with `candle-core`
+  et al. compiled with the `cuda` feature.
+- Truncates to 512 tokens (BGE's max position) and clips input at 32 KB of
+  characters so pathological inputs can't stall the BPE tokenizer.
+- Enable with `--features candle`. Used by `caw-bench-build-index` for
+  bulk embedding on the GPU.
 
 ## Stub Storage
 
@@ -267,6 +275,72 @@ println!("{}", response.answer);
 A runnable end-to-end example using `MockAdapter` (no API keys needed) lives at
 `crates/caw-orchestrator/tests/end_to_end.rs`.
 
+## Benchmarking
+
+Workloads live in `caw-bench`:
+
+- **niah** — synthetic needle-in-a-haystack recall, per-item corpus.
+- **opencaw** — Q&A over this repo's own docs, per-item corpus.
+- **sysdoc** — Q&A against a pre-built index of a snapshotted documentation
+  corpus (e.g. `/usr/share/doc`). The QA file carries only the question,
+  reference answer, and expected paths; the corpus lives in a sqlite index
+  shared across all items in a run.
+
+### Pre-building an index
+
+`caw-bench-build-index` is a streaming, resumable indexer that runs
+ingestion on a dedicated rayon pool while a single GPU consumer embeds
+in sub-batches:
+
+```bash
+cargo run --release -p caw-bench --bin caw-bench-build-index -- \
+  --corpus opencaw-corpora/sysdoc \
+  --out opencaw-corpora/sysdoc.sqlite
+```
+
+Properties worth knowing:
+
+- **Pipelined**: rayon producers ingest files in parallel and push stubs
+  into a bounded channel; the main thread pulls batches, embeds on the
+  GPU (candle + CUDA), and inserts. CPU and GPU stay busy concurrently.
+- **Dedicated thread pool for ingestion** so the HuggingFace tokenizer's
+  own rayon use can't deadlock against the producer (they share the
+  global pool otherwise).
+- **Length-bucketed sub-batches**: each batch is sorted by text length
+  before being split into sub-batches, so padding cost tracks the local
+  max rather than the batch-wide max.
+- **Resumable**: skips `(path, mtime)` pairs already present in the
+  target sqlite. Kill it, restart it, pick up where it left off.
+- **WAL + prepared-statement batch inserts**: one transaction per batch,
+  prepared statements reused across rows. Collapses what was previously
+  N×3 fsyncs into a single commit.
+- **Greedy char-based chunking, line-aligned**: a single linear pass over
+  content, snapping cuts to the nearest `\n` within a target char budget
+  with a hard cap. No per-section tokenization; the BPE tokenizer is
+  only run once per final bounded chunk (for the stub's `token_estimate`).
+
+### Running a bench
+
+```bash
+cargo run --release -p caw-bench --bin caw-bench -- \
+  --workload sysdoc \
+  --qa-file opencaw-corpora/sysdoc_qa.json \
+  --index opencaw-corpora/sysdoc.sqlite \
+  --answer-adapter ollama --answer-model qwen3.5:9b \
+  --judge-adapter claude-code --judge-model haiku \
+  --out bench.json \
+  --trace-out bench.jsonl
+```
+
+`--trace-out` writes one JSONL line per (item, mode) with the system
+prompt, question, reference answer, loaded fragments (content previews
++ source locators), the model's answer, the judge's rationale, and the
+full metric vector. Filter failures with `jq`:
+
+```bash
+jq 'select(.result.answer_score < 1)' bench.jsonl
+```
+
 ## Design Principles
 
 1. **Context is a workspace**: Quality over quantity - manage what's active, not
@@ -284,14 +358,15 @@ See `TODO.md` for line-item status and `SCOPE.md` for v1 boundaries.
 ### Working today
 
 - Core types and trait contracts (`caw-core`)
-- Ingestion pipeline with adaptive chunking, tree-sitter outlines,
-  deterministic + LLM summaries, cl100k token estimation (`caw-ingest`)
+- Ingestion pipeline (`caw-ingest`): greedy char-based line-snapping chunker
+  (linear-time, no per-section tokenization), tree-sitter outlines for code,
+  deterministic + LLM summaries, cl100k token estimation
 - Hybrid retrieval: semantic (embeddings) + BM25, min-max normalized fusion
 - HNSW vector index via `instant-distance`
-- SQLite stub store with consolidation persistence; Qdrant as feature-gated
-  alternative
-- FastEmbed (BGE), API (OpenAI/Cohere/Voyage shape), Candle, ONNX embedding
-  providers
+- SQLite stub store with WAL + batch insert (transaction + prepared-statement
+  reuse) and consolidation persistence; Qdrant as a feature-gated alternative
+- FastEmbed (BGE), API (OpenAI/Cohere/Voyage shape), Candle with CUDA, ONNX
+  embedding providers
 - `DynamicRecallOrchestrator`: multi-pass recall with probes, thinking-trace
   extraction, relevance decay, budget-triggered eviction, and consolidation
   notes
@@ -304,6 +379,9 @@ See `TODO.md` for line-item status and `SCOPE.md` for v1 boundaries.
   / HF Inference / llama.cpp-server), ClaudeCode, Mock
 - Evaluation primitives: `SessionEvaluator` with recall metrics, false-recall
   heuristic, hysteresis analysis, context efficiency, cooperation metrics
+- `caw-bench` with NIAH, opencaw, and sysdoc workloads; `caw-bench-build-index`
+  for streaming, resumable, pipelined GPU index construction; per-item JSONL
+  trace output for failure analysis
 - End-to-end integration test in `crates/caw-orchestrator/tests/end_to_end.rs`
 
 ### Open
@@ -312,8 +390,11 @@ See `TODO.md` for line-item status and `SCOPE.md` for v1 boundaries.
   workloads to produce threshold-tuning recommendations and
   cooperation-calibration numbers
 - Richer consolidation notes as default (LLM-synthesized, not mechanical)
-- Background indexer with lazy fallback (ingestion is currently synchronous,
-  single-pass)
+- Postgres + pgvector as an alternative `StubStore`, with a docker-compose
+  bring-up for local dev (sqlite remains the default for single-process runs)
+- Re-embedding of *chunk content* in addition to stub metadata — today's
+  stub-level embeddings can't disambiguate questions whose answer lives
+  inside a specific paragraph of an otherwise-generic doc
 - Insertion-order experiments (relevance-ranked vs reverse-relevance vs
   stub-order)
 - Provenance conflict detection beyond Jaccard term overlap
