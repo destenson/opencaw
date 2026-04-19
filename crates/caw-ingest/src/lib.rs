@@ -99,6 +99,12 @@ impl IngestionPipeline {
         let outline = extract_outline(doc.kind, &doc.content, &doc.path);
         let content_hash = sha256_hash(&doc.content);
 
+        // Token estimate for the single-stub path. When chunking is enabled,
+        // chunk_document already computes this (via its cheap upper bound or
+        // a real tokenize), so we use its answer and avoid redundant work.
+        // When chunking is disabled we fall back to tokenizing directly.
+        let mut single_token_estimate: Option<usize> = None;
+
         if let Some(ref config) = self.chunking {
             let chunks = chunk_document(&doc.content, doc.kind, &outline, config, &self.tokenizer);
             if chunks.len() > 1 {
@@ -106,7 +112,10 @@ impl IngestionPipeline {
                     .iter()
                     .map(|chunk| {
                         let chunk_hash = sha256_hash(&chunk.content);
-                        let chunk_token_estimate = self.tokenizer.count_tokens(&chunk.content);
+                        // Reuse the token count chunk_document already computed.
+                        // Previously this re-ran the BPE tokenizer per chunk,
+                        // doubling tokenization cost on every chunked file.
+                        let chunk_token_estimate = chunk.token_count;
                         let position_summary = chunk_summary(&doc.path, chunk);
                         let base_summary = self
                             .summarizer
@@ -144,6 +153,9 @@ impl IngestionPipeline {
                     })
                     .collect();
             }
+            // Single chunk returned from chunk_document — grab its precomputed
+            // token count so the single-stub path below doesn't re-tokenize.
+            single_token_estimate = chunks.into_iter().next().map(|c| c.token_count);
         }
 
         // Single-stub path: file is small or chunking is disabled
@@ -155,7 +167,8 @@ impl IngestionPipeline {
                     .summarize(&doc.path, &doc.content, doc.kind, &outline)
                     .unwrap_or_default()
             });
-        let token_estimate = self.tokenizer.count_tokens(&doc.content);
+        let token_estimate = single_token_estimate
+            .unwrap_or_else(|| self.tokenizer.count_tokens(&doc.content));
 
         vec![Stub {
             id: StubId(doc.path.clone()),

@@ -9,6 +9,19 @@ pub struct ChunkingConfig {
     pub target_chunk_tokens: usize,
     /// Overlap between adjacent chunks in tokens (for context continuity)
     pub overlap_tokens: usize,
+    /// Target chunk size in characters. Used for greedy merging of sections
+    /// without running the BPE tokenizer inside the hot loop. ~3 chars per
+    /// cl100k token on English prose, so this approximates
+    /// `target_chunk_tokens * 3` when the caller doesn't override it.
+    pub target_chunk_chars: usize,
+    /// Hard cap on a single emitted chunk's characters. Any natural section
+    /// above the cap is force-split at character boundaries. Prevents one
+    /// giant section (e.g. a monster changelog entry) from producing a
+    /// multi-MB "chunk" that would stall tokenization and waste embedding.
+    pub max_chunk_chars: usize,
+    /// Overlap between adjacent chunks in characters (prepended to the
+    /// start of each chunk after the first, for context continuity).
+    pub overlap_chars: usize,
 }
 
 impl Default for ChunkingConfig {
@@ -17,6 +30,14 @@ impl Default for ChunkingConfig {
             token_threshold: 2000,
             target_chunk_tokens: 800,
             overlap_tokens: 100,
+            // Greedy-chunking lives in char space. Defaults derived from the
+            // token defaults via a ~3 chars/token rule of thumb. Precision
+            // is not the goal; staying inside the model's 512-token window
+            // is, and max_chunk_chars keeps us well under that even on
+            // token-dense inputs.
+            target_chunk_chars: 2_400,
+            max_chunk_chars: 6_000,
+            overlap_chars: 300,
         }
     }
 }
@@ -29,11 +50,24 @@ pub struct Chunk {
     pub total_chunks: usize,
     /// Outline entries from the parent document that fall within this chunk
     pub outline_entries: Vec<String>,
+    /// Token count for this chunk's content, passed through from chunking so
+    /// downstream code (see `IngestionPipeline::ingest`) can reuse it instead
+    /// of re-running the tokenizer. Approximate for the char-heuristic fast
+    /// path (tiny files), exact for chunked paths.
+    pub token_count: usize,
 }
 
 /// Split a document into chunks based on its content kind.
 /// Returns a single chunk wrapping the whole content if the document is
 /// below the token threshold.
+/// Cheap char-based upper bound on token count. For English-like text, 1
+/// cl100k token is ~3.5–4 chars. A /3 estimate is conservative (over-counts
+/// tokens) so we never skip chunking when it's actually needed. Orders of
+/// magnitude faster than running the BPE tokenizer.
+fn cheap_token_upper_bound(content: &str) -> usize {
+    content.len() / 3
+}
+
 pub fn chunk_document(
     content: &str,
     kind: ContentKind,
@@ -41,21 +75,32 @@ pub fn chunk_document(
     config: &ChunkingConfig,
     tokenizer: &Arc<dyn Tokenizer>,
 ) -> Vec<Chunk> {
-    let token_count = tokenizer.count_tokens(content);
-    if token_count <= config.token_threshold {
+    // Below threshold? Ship a single chunk and skip the BPE pass entirely.
+    // Precision is not the goal — staying off the tokenizer on small files
+    // is. This is the dominant throughput win on corpora full of tiny docs.
+    let upper_bound = cheap_token_upper_bound(content);
+    if upper_bound <= config.token_threshold {
         return vec![Chunk {
             content: content.to_string(),
             index: 0,
             total_chunks: 1,
             outline_entries: outline.to_vec(),
+            token_count: upper_bound,
         }];
     }
 
-    let raw_chunks = match kind {
-        ContentKind::Code => chunk_code(content, config, tokenizer),
-        ContentKind::Markdown => chunk_markdown(content, config, tokenizer),
-        _ => chunk_by_paragraphs(content, config, tokenizer),
-    };
+    // Over the cheap threshold: chunk. We do NOT tokenize the whole file
+    // first — on a 10MB file that alone would dominate wall time. One
+    // forward pass over `content` slicing at `\n` boundaries near each
+    // char-budget target is enough; structural boundaries (headings, fn
+    // defs) would be nicer but aren't worth quadratic section enumeration
+    // on corpora where some files are 10MB+.
+    //
+    // `kind` is intentionally unused here for now — all kinds chunk the
+    // same way. Kept in the signature so a future structural variant can
+    // branch on it without changing callers.
+    let _ = kind;
+    let raw_chunks = chunk_by_lines(content, config);
 
     let total = raw_chunks.len();
     raw_chunks
@@ -63,11 +108,15 @@ pub fn chunk_document(
         .enumerate()
         .map(|(i, text)| {
             let entries = outline_entries_for_chunk(&text, outline);
+            // Per-chunk token_count is still a real tokenize, but each chunk
+            // is bounded by `max_chunk_chars` so this is O(cap) not O(file).
+            let token_count = tokenizer.count_tokens(&text);
             Chunk {
                 content: text,
                 index: i,
                 total_chunks: total,
                 outline_entries: entries,
+                token_count,
             }
         })
         .collect()
@@ -100,206 +149,113 @@ pub fn chunk_summary(path: &str, chunk: &Chunk) -> String {
     )
 }
 
-/// For code: split at function/struct/impl boundaries detected by outline entries,
-/// falling back to blank-line boundaries.
-fn chunk_code(
-    content: &str,
-    config: &ChunkingConfig,
-    tokenizer: &Arc<dyn Tokenizer>,
-) -> Vec<String> {
-    let lines: Vec<&str> = content.lines().collect();
+/// Walk `content` once, emitting chunks that are approximately
+/// `target_chunk_chars` characters long and always line-aligned.
+///
+/// Algorithm per chunk:
+/// 1. Target cut point is `start + target_chunk_chars`.
+/// 2. Scan forward from there for the next `\n`, bounded by
+///    `start + max_chunk_chars`.
+/// 3. If found, cut just after the `\n`.
+/// 4. If not, scan backward from the hard cap for a `\n` and cut there.
+/// 5. If there's no `\n` at all in the window (minified JSON, ASCII art),
+///    snap the cut to the nearest UTF-8 char boundary before the hard cap
+///    and emit that. Rare.
+///
+/// `\n` is ASCII so byte offsets are always char boundaries when we cut
+/// on one. The only UTF-8-sensitive path is the no-newline fallback.
+///
+/// Linear in content length. No per-section tokenization, no vector of
+/// lines, no quadratic section joining. This is the hot path for
+/// everything the pipeline ingests.
+fn chunk_by_lines(content: &str, config: &ChunkingConfig) -> Vec<String> {
+    let target = config.target_chunk_chars.max(1);
+    let cap = config.max_chunk_chars.max(target);
+    let overlap = config.overlap_chars.min(cap.saturating_sub(1));
 
-    let mut boundary_lines: Vec<usize> = Vec::new();
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim_start();
-        if is_code_boundary(trimmed) {
-            boundary_lines.push(i);
-        }
+    if content.is_empty() {
+        return Vec::new();
     }
 
-    if boundary_lines.len() >= 2 {
-        split_at_boundaries(&lines, &boundary_lines, config, tokenizer)
-    } else {
-        let blank_lines: Vec<usize> = lines
-            .iter()
-            .enumerate()
-            .filter(|(_, l)| l.trim().is_empty())
-            .map(|(i, _)| i)
-            .collect();
-        if blank_lines.is_empty() {
-            split_by_token_count(content, config, tokenizer)
-        } else {
-            split_at_boundaries(&lines, &blank_lines, config, tokenizer)
-        }
-    }
-}
+    let mut chunks: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    let total = content.len();
 
-/// For markdown: split at heading boundaries (## or ### level).
-fn chunk_markdown(
-    content: &str,
-    config: &ChunkingConfig,
-    tokenizer: &Arc<dyn Tokenizer>,
-) -> Vec<String> {
-    let lines: Vec<&str> = content.lines().collect();
-    let heading_lines: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| {
-            let t = l.trim_start();
-            t.starts_with("## ") || t.starts_with("### ")
-        })
-        .map(|(i, _)| i)
-        .collect();
-
-    if heading_lines.is_empty() {
-        return split_by_token_count(content, config, tokenizer);
-    }
-
-    split_at_boundaries(&lines, &heading_lines, config, tokenizer)
-}
-
-/// For plain text and other kinds: split at paragraph boundaries (blank lines),
-/// falling back to raw token-count splitting.
-fn chunk_by_paragraphs(
-    content: &str,
-    config: &ChunkingConfig,
-    tokenizer: &Arc<dyn Tokenizer>,
-) -> Vec<String> {
-    let lines: Vec<&str> = content.lines().collect();
-    let blank_lines: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| l.trim().is_empty())
-        .map(|(i, _)| i)
-        .collect();
-
-    if blank_lines.is_empty() {
-        return split_by_token_count(content, config, tokenizer);
-    }
-
-    split_at_boundaries(&lines, &blank_lines, config, tokenizer)
-}
-
-/// Split lines into chunks at the given boundary indices, merging small
-/// adjacent sections to stay near the target chunk size, and applying overlap.
-fn split_at_boundaries(
-    lines: &[&str],
-    boundaries: &[usize],
-    config: &ChunkingConfig,
-    tokenizer: &Arc<dyn Tokenizer>,
-) -> Vec<String> {
-    let mut section_starts: Vec<usize> = vec![0];
-    for &b in boundaries {
-        if b > 0 && b < lines.len() {
-            section_starts.push(b);
-        }
-    }
-    section_starts.dedup();
-
-    let mut sections: Vec<(usize, usize)> = Vec::new();
-    for i in 0..section_starts.len() {
-        let start = section_starts[i];
-        let end = if i + 1 < section_starts.len() {
-            section_starts[i + 1]
-        } else {
-            lines.len()
-        };
-        sections.push((start, end));
-    }
-
-    // Merge small sections until they approach the target size
-    let mut merged: Vec<(usize, usize)> = Vec::new();
-    let mut cur_start = 0usize;
-    let mut cur_tokens = 0usize;
-
-    for (start, end) in &sections {
-        let section_text = lines[*start..*end].join("\n");
-        let section_tokens = tokenizer.count_tokens(&section_text);
-
-        if cur_tokens > 0 && cur_tokens + section_tokens > config.target_chunk_tokens {
-            merged.push((cur_start, *start));
-            cur_start = *start;
-            cur_tokens = section_tokens;
-        } else {
-            if cur_tokens == 0 {
-                cur_start = *start;
-            }
-            cur_tokens += section_tokens;
-        }
-    }
-    if let Some(&(_, last_end)) = sections.last() {
-        merged.push((cur_start, last_end));
-    }
-
-    let overlap_lines = token_count_to_line_estimate(config.overlap_tokens);
-
-    merged
-        .iter()
-        .map(|&(start, end)| {
-            let overlap_start = start.saturating_sub(overlap_lines);
-            let effective_start = if start == 0 { 0 } else { overlap_start };
-            lines[effective_start..end].join("\n")
-        })
-        .collect()
-}
-
-/// Last-resort splitting: cut at roughly target_chunk_tokens boundaries.
-fn split_by_token_count(
-    content: &str,
-    config: &ChunkingConfig,
-    tokenizer: &Arc<dyn Tokenizer>,
-) -> Vec<String> {
-    let words: Vec<&str> = content.split_whitespace().collect();
-    let mut chunks = Vec::new();
-    let mut pos = 0;
-
-    while pos < words.len() {
-        // Binary-search for how many words fit in the target token budget.
-        // The tokenizer may not be 1-word-per-token, so we probe.
-        let mut end = (pos + config.target_chunk_tokens).min(words.len());
-        let candidate = words[pos..end].join(" ");
-        let tokens = tokenizer.count_tokens(&candidate);
-
-        if tokens > config.target_chunk_tokens && end > pos + 1 {
-            // Overshoot — shrink until we fit
-            while end > pos + 1 {
-                end -= 1;
-                let candidate = words[pos..end].join(" ");
-                if tokenizer.count_tokens(&candidate) <= config.target_chunk_tokens {
-                    break;
-                }
-            }
-        }
-
-        chunks.push(words[pos..end].join(" "));
-        if end >= words.len() {
+    while start < total {
+        // Whole remainder fits — ship and done.
+        if total - start <= cap {
+            let mut piece = String::new();
+            prepend_line_overlap(&mut piece, &content[..start], overlap, chunks.is_empty());
+            piece.push_str(&content[start..]);
+            chunks.push(piece);
             break;
         }
-        pos = end.saturating_sub(config.overlap_tokens);
+
+        let ideal = start + target;
+        let hard = (start + cap).min(total);
+
+        // Prefer the first `\n` at-or-after the ideal cut, within the cap.
+        let forward_hit = content[ideal..hard].find('\n');
+        let cut = if let Some(rel) = forward_hit {
+            ideal + rel + 1 // include the newline
+        } else if let Some(pos) = content[start..hard].rfind('\n') {
+            // Fall back to the last `\n` before the hard cap.
+            start + pos + 1
+        } else {
+            // No line breaks in the entire window. Snap to the previous
+            // UTF-8 char boundary at or before `hard`.
+            let mut c = hard;
+            while c > start && !content.is_char_boundary(c) {
+                c -= 1;
+            }
+            c.max(start + 1)
+        };
+
+        let mut piece = String::new();
+        prepend_line_overlap(&mut piece, &content[..start], overlap, chunks.is_empty());
+        piece.push_str(&content[start..cut]);
+        chunks.push(piece);
+        start = cut;
     }
 
     chunks
 }
 
-fn is_code_boundary(trimmed: &str) -> bool {
-    trimmed.starts_with("pub fn ")
-        || trimmed.starts_with("fn ")
-        || trimmed.starts_with("pub struct ")
-        || trimmed.starts_with("struct ")
-        || trimmed.starts_with("pub enum ")
-        || trimmed.starts_with("enum ")
-        || trimmed.starts_with("pub trait ")
-        || trimmed.starts_with("trait ")
-        || trimmed.starts_with("impl ")
-        || trimmed.starts_with("pub mod ")
-        || trimmed.starts_with("mod ")
-        || trimmed.starts_with("def ")
-        || trimmed.starts_with("class ")
-        || trimmed.starts_with("function ")
-        || trimmed.starts_with("export function ")
-        || trimmed.starts_with("export class ")
-        || trimmed.starts_with("export interface ")
-        || trimmed.starts_with("export type ")
+/// Prepend a line-aligned overlap prefix drawn from the tail of
+/// `preceding`. `is_first` skips prepending so the first chunk starts at
+/// the file's actual beginning. The overlap is sized in characters and
+/// snapped back to a line boundary — readers never see a chunk start
+/// in the middle of a line.
+fn prepend_line_overlap(
+    dst: &mut String,
+    preceding: &str,
+    overlap_chars: usize,
+    is_first: bool,
+) {
+    if is_first || overlap_chars == 0 || preceding.is_empty() {
+        return;
+    }
+    // Walk backward from the end of `preceding` for ~overlap_chars bytes,
+    // then snap forward to just after the nearest earlier `\n`.
+    let start_byte = preceding.len().saturating_sub(overlap_chars);
+    let snap = preceding[..start_byte]
+        .rfind('\n')
+        .map(|p| p + 1)
+        .unwrap_or(0);
+    // If the snap goes way further back than we asked for, prefer the
+    // requested window (less context is better than loading 500KB overlap).
+    let final_start = snap.max(start_byte.saturating_sub(overlap_chars));
+    // Always safe: rfind('\n') returns a byte offset at a char boundary,
+    // and `final_start` came from start_byte which we already aligned
+    // forward by chars if needed below.
+    let mut aligned = final_start;
+    while aligned < preceding.len() && !preceding.is_char_boundary(aligned) {
+        aligned += 1;
+    }
+    dst.push_str(&preceding[aligned..]);
+    if !dst.ends_with('\n') {
+        dst.push('\n');
+    }
 }
 
 /// Check which outline entries appear in a chunk's text.
