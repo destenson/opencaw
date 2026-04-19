@@ -191,8 +191,13 @@ fn chunk_by_lines(content: &str, config: &ChunkingConfig) -> Vec<String> {
             break;
         }
 
-        let ideal = start + target;
-        let hard = (start + cap).min(total);
+        // `target`/`cap` are nominally char counts but we apply them as
+        // byte offsets for O(1) slicing. UTF-8 multi-byte chars mean those
+        // byte positions may land mid-codepoint, which panics on slice.
+        // Snap to the previous char boundary before slicing. Over-counts
+        // tokens slightly for multi-byte content; acceptable.
+        let ideal = floor_char_boundary(content, (start + target).min(total));
+        let hard = floor_char_boundary(content, (start + cap).min(total));
 
         // Prefer the first `\n` at-or-after the ideal cut, within the cap.
         let forward_hit = content[ideal..hard].find('\n');
@@ -202,13 +207,9 @@ fn chunk_by_lines(content: &str, config: &ChunkingConfig) -> Vec<String> {
             // Fall back to the last `\n` before the hard cap.
             start + pos + 1
         } else {
-            // No line breaks in the entire window. Snap to the previous
-            // UTF-8 char boundary at or before `hard`.
-            let mut c = hard;
-            while c > start && !content.is_char_boundary(c) {
-                c -= 1;
-            }
-            c.max(start + 1)
+            // No line breaks in the entire window. `hard` is already at a
+            // char boundary, so slicing is safe. Force forward progress.
+            hard.max(start + 1)
         };
 
         let mut piece = String::new();
@@ -235,27 +236,40 @@ fn prepend_line_overlap(
     if is_first || overlap_chars == 0 || preceding.is_empty() {
         return;
     }
-    // Walk backward from the end of `preceding` for ~overlap_chars bytes,
-    // then snap forward to just after the nearest earlier `\n`.
-    let start_byte = preceding.len().saturating_sub(overlap_chars);
+    // Snap the window start to a char boundary before slicing — the raw
+    // byte offset can land mid-codepoint on UTF-8 content. Then snap
+    // forward to just after the nearest earlier `\n` so the overlap
+    // starts at a line boundary.
+    let start_byte = floor_char_boundary(
+        preceding,
+        preceding.len().saturating_sub(overlap_chars),
+    );
     let snap = preceding[..start_byte]
         .rfind('\n')
         .map(|p| p + 1)
         .unwrap_or(0);
-    // If the snap goes way further back than we asked for, prefer the
-    // requested window (less context is better than loading 500KB overlap).
-    let final_start = snap.max(start_byte.saturating_sub(overlap_chars));
-    // Always safe: rfind('\n') returns a byte offset at a char boundary,
-    // and `final_start` came from start_byte which we already aligned
-    // forward by chars if needed below.
-    let mut aligned = final_start;
-    while aligned < preceding.len() && !preceding.is_char_boundary(aligned) {
-        aligned += 1;
-    }
-    dst.push_str(&preceding[aligned..]);
+    let final_start = snap.max(
+        floor_char_boundary(
+            preceding,
+            start_byte.saturating_sub(overlap_chars),
+        ),
+    );
+    dst.push_str(&preceding[final_start..]);
     if !dst.ends_with('\n') {
         dst.push('\n');
     }
+}
+
+/// Largest byte offset `<= idx` that falls on a UTF-8 char boundary. Used
+/// to make byte-offset arithmetic on char-count budgets safe to slice.
+fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
+    if idx >= s.len() {
+        return s.len();
+    }
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
 }
 
 /// Check which outline entries appear in a chunk's text.

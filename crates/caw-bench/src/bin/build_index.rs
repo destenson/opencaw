@@ -310,16 +310,23 @@ fn flush_batch(
     }
 
     let n = buf.len();
-    // Build (original_index, text) then sort by text length. We need to
-    // invert the sort later to line embeddings back up with buf entries.
+    // Embedding text per stub: a short header (path + summary) followed by
+    // the full chunk content. BGE truncates at 512 tokens so only ~1.5 KB
+    // of content actually reaches the model, but the header is first so
+    // path and summary signal survive truncation. Including content here
+    // is the key signal for content-specific queries (version numbers,
+    // CVEs, identifiers that appear inside documents but not in their
+    // path or summary).
     let mut indexed: Vec<(usize, String)> = buf
         .iter()
         .enumerate()
-        .map(|(i, (stub, _))| {
-            (
-                i,
-                format!("{} {} {}", stub.path, stub.summary, stub.outline.join(" ")),
-            )
+        .map(|(i, (stub, content))| {
+            let text = if stub.summary.is_empty() {
+                format!("{}\n\n{}", stub.path, content)
+            } else {
+                format!("{}: {}\n\n{}", stub.path, stub.summary, content)
+            };
+            (i, text)
         })
         .collect();
     indexed.sort_by_key(|(_, t)| t.len());
