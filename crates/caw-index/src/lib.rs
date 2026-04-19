@@ -75,7 +75,12 @@ where
         }
     }
 
-    pub fn insert(&mut self, stub: Stub, content: String) -> CawResult<()> {
+    /// Embed the stub (path + summary + outline only — content is not
+    /// included here because at this layer we don't have it, and the
+    /// bench-index path has its own content-aware embedding builder).
+    /// Persist the stub + embedding to the store and register with the
+    /// in-memory vector index.
+    pub fn insert(&mut self, stub: Stub) -> CawResult<()> {
         let text = format!("{} {} {}", stub.path, stub.summary, stub.outline.join(" "));
         let embeddings = self.embedder.embed_document(vec![text.as_str()])?;
         let embedding = embeddings
@@ -84,7 +89,7 @@ where
             .ok_or_else(|| CawError::Embedding("No embedding generated".to_string()))?;
 
         let id = stub.id.clone();
-        self.store.insert(stub, embedding.clone(), content)?;
+        self.store.insert(stub, embedding.clone())?;
         self.index.add(id, embedding);
         Ok(())
     }
@@ -182,10 +187,13 @@ where
         Self::new(semantic, 0.6, 0.4)
     }
 
+    /// `content` is used only transiently to build the BM25 posting list;
+    /// it is NOT persisted anywhere. The downstream store records only
+    /// `(path, byte_offset, byte_length)` and re-reads body text from disk.
     pub fn insert(&mut self, stub: Stub, content: String) -> CawResult<()> {
         let bm25_text = format!("{} {} {}", stub.path, stub.summary, content);
         self.bm25.add(stub.id.clone(), &bm25_text);
-        self.semantic.insert(stub, content)
+        self.semantic.insert(stub)
     }
 }
 

@@ -185,7 +185,7 @@ fn main() -> Result<()> {
         (Workload::Sysdoc, None) => anyhow::bail!(
             "--index is required for the sysdoc workload; build one with caw-bench-build-index"
         ),
-        (_, Some(path)) => Some(load_prebuilt_index(path)?),
+        (_, Some(path)) => Some(load_prebuilt_index(path, cli.repo_root.clone())?),
         (_, None) => None,
     };
 
@@ -349,15 +349,23 @@ fn build_workload(cli: &Cli) -> Result<Vec<WorkloadItem>> {
 
 /// Open a prebuilt retrieval index and wrap it for sharing across items.
 /// Called once per bench run when `--index` is supplied.
-fn load_prebuilt_index(path: &std::path::Path) -> Result<PrebuiltIndex> {
+fn load_prebuilt_index(
+    path: &std::path::Path,
+    corpus_root: PathBuf,
+) -> Result<PrebuiltIndex> {
     let started = std::time::Instant::now();
     let path_str = path.to_string_lossy().into_owned();
 
     let embedder = CandleEmbeddingProvider::bge_small().context("init bge-small (candle)")?;
     let dim = embedder.dimension();
 
+    // corpus_root is required for `get_content` to resolve the relative
+    // paths stored on each stub and slice the body back out of the source
+    // file. Without this the retrieval path errors the moment any loaded
+    // fragment needs its body expanded.
     let store = SqliteStubStore::new(&path_str, dim)
-        .with_context(|| format!("open prebuilt index at {}", path.display()))?;
+        .with_context(|| format!("open prebuilt index at {}", path.display()))?
+        .with_corpus_root(corpus_root);
 
     let all = store.all_embeddings().context("read all embeddings")?;
     if all.is_empty() {

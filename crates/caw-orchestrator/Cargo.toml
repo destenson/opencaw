@@ -13,3 +13,4 @@ regex = "1"
 caw-adapters = { path = "../caw-adapters" }
 caw-index = { path = "../caw-index" }
 caw-ingest = { path = "../caw-ingest" }
+tempfile = "3"

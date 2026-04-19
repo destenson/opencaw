@@ -126,9 +126,23 @@ fn fixture_docs() -> Vec<SourceDocument> {
 
 #[test]
 fn recall_loop_admits_fragment_and_tags_provenance() {
+    // The store now reads body text back from disk using (path, byte_offset,
+    // byte_length) recorded on each stub, so the fixture docs need to exist
+    // as real files under a corpus root for the recall path to resolve them.
+    let corpus_root = tempfile::tempdir().expect("tempdir");
+    for doc in fixture_docs() {
+        let full = corpus_root.path().join(&doc.path);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).expect("create fixture parent dir");
+        }
+        std::fs::write(&full, &doc.content).expect("write fixture doc");
+    }
+
     let dim = 64;
     let embedder = HashEmbedder::new(dim);
-    let store = SqliteStubStore::in_memory(dim).expect("sqlite in-memory store");
+    let store = SqliteStubStore::in_memory(dim)
+        .expect("sqlite in-memory store")
+        .with_corpus_root(corpus_root.path().to_path_buf());
     let index = HnswVectorIndex::new();
     let mut retriever = SemanticRetriever::new(embedder, store, index);
 
@@ -137,11 +151,8 @@ fn recall_loop_admits_fragment_and_tags_provenance() {
     // estimates reflect a real BPE — exercising the wired-up default.
     let pipeline = IngestionPipeline::new();
     for doc in fixture_docs() {
-        let content = doc.content.clone();
-        for stub in pipeline.ingest(doc) {
-            retriever
-                .insert(stub, content.clone())
-                .expect("insert into retriever");
+        for (stub, _embed_text) in pipeline.ingest(doc) {
+            retriever.insert(stub).expect("insert into retriever");
         }
     }
 

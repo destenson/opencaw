@@ -300,14 +300,21 @@ fn main() -> Result<()> {
                 if let Ok(rel) = path.strip_prefix(&corpus_root) {
                     doc.path = rel.to_string_lossy().into_owned();
                 }
-                let content = doc.content.clone();
-                let stubs = producer_pipeline.ingest(doc);
+                // `ingest` now pairs each stub with its own chunk's embed
+                // text (body + overlap prefix), not the full document. The
+                // prior code cloned `doc.content` once per stub and shipped
+                // it through the channel, which (a) embedded every chunk of
+                // a multi-chunk file against the same doc-level text,
+                // collapsing chunk-level retrieval, and (b) persisted N
+                // copies of the whole file in the `contents` table — the
+                // cause of the 80 GB index on a 516 MB corpus.
+                let stubs_and_text = producer_pipeline.ingest(doc);
                 ingest_p.fetch_add(t_ing.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                for stub in stubs {
+                for (stub, embed_text) in stubs_and_text {
                     let t_send = Instant::now();
                     // Send error means the consumer exited — nothing else to
                     // do but stop producing.
-                    if tx.send((stub, content.clone())).is_err() {
+                    if tx.send((stub, embed_text)).is_err() {
                         return;
                     }
                     send_block_p.fetch_add(t_send.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -526,20 +533,18 @@ fn flush_batch(
 
     let n = buf.len();
     // Embedding text per stub: a short header (path + summary) followed by
-    // the full chunk content. BGE truncates at 512 tokens so only ~1.5 KB
-    // of content actually reaches the model, but the header is first so
-    // path and summary signal survive truncation. Including content here
-    // is the key signal for content-specific queries (version numbers,
-    // CVEs, identifiers that appear inside documents but not in their
-    // path or summary).
+    // the chunk's embed text (body + overlap prefix from the producer).
+    // BGE truncates at 512 tokens so only ~1.5 KB actually reaches the
+    // model; the header is first so path/summary signal survive truncation.
+    // The embed text is consumed here and dropped — never stored.
     let mut indexed: Vec<(usize, String)> = buf
         .iter()
         .enumerate()
-        .map(|(i, (stub, content))| {
+        .map(|(i, (stub, embed_text))| {
             let text = if stub.summary.is_empty() {
-                format!("{}\n\n{}", stub.path, content)
+                format!("{}\n\n{}", stub.path, embed_text)
             } else {
-                format!("{}: {}\n\n{}", stub.path, stub.summary, content)
+                format!("{}: {}\n\n{}", stub.path, stub.summary, embed_text)
             };
             (i, text)
         })
@@ -568,13 +573,13 @@ fn flush_batch(
         }
     }
 
-    let items: Vec<(Stub, Vec<f32>, String)> = buf
+    let items: Vec<(Stub, Vec<f32>)> = buf
         .drain(..)
         .zip(embeddings_by_idx.into_iter())
-        .map(|((stub, content), emb_opt)| {
+        .map(|((stub, _embed_text), emb_opt)| {
             let emb = emb_opt.expect("every index should have an embedding");
             done_files.insert(stub.path.clone());
-            (stub, emb, content)
+            (stub, emb)
         })
         .collect();
     let t_sql = Instant::now();

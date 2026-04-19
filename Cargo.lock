@@ -647,6 +647,7 @@ dependencies = [
  "caw-ingest",
  "caw-transform",
  "regex",
+ "tempfile",
 ]
 
 [[package]]

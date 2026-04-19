@@ -16,7 +16,12 @@ fn main() -> Result<()> {
     println!("Initializing semantic index...");
     let embedder = FastEmbedProvider::bge_small()?;
     let dimension = embedder.dimension();
-    let store = SqliteStubStore::in_memory(dimension)?;
+    // Write fixture docs to a tempdir so the store's on-disk content path
+    // resolves; the store reads body text back from disk via
+    // (path, byte_offset, byte_length) rather than persisting the content.
+    let corpus_root = tempfile::tempdir()?;
+    let store =
+        SqliteStubStore::in_memory(dimension)?.with_corpus_root(corpus_root.path().to_path_buf());
     let index = HnswVectorIndex::new();
     let mut retriever = SemanticRetriever::new(embedder, store, index);
 
@@ -58,10 +63,14 @@ fn main() -> Result<()> {
     ];
 
     for doc in docs {
-        let content = doc.content.clone();
+        let full = corpus_root.path().join(&doc.path);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&full, &doc.content)?;
         let stubs = pipeline.ingest(doc);
-        for stub in stubs {
-            retriever.insert(stub, content.clone())?;
+        for (stub, _embed_text) in stubs {
+            retriever.insert(stub)?;
         }
     }
 

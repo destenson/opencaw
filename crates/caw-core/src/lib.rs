@@ -220,6 +220,17 @@ pub struct Stub {
     pub outline: Vec<String>,
     pub content_hash: String,
     pub mtime_unix_secs: u64,
+    /// Byte offset of this stub's body in the source file at `path`. For
+    /// chunked files this is the chunk's body start (overlap is not counted);
+    /// for single-stub files this is 0.
+    #[serde(default)]
+    pub byte_offset: u64,
+    /// Length in bytes of this stub's body in the source file. With
+    /// `byte_offset` this defines a half-open range `[offset, offset+length)`
+    /// that can be sliced out of the file without reading the whole thing.
+    /// Chunks tile the file — offsets are contiguous, nothing is duplicated.
+    #[serde(default)]
+    pub byte_length: u64,
     #[serde(default)]
     pub consolidation_notes: Vec<ConsolidationNote>,
 }
@@ -504,11 +515,21 @@ pub struct ThinkingStep {
     pub step_number: usize,
 }
 
-/// Persistent storage for stubs and their content.
+/// Persistent storage for stubs and their embeddings.
+///
+/// Content is NOT stored here — stubs carry `(path, byte_offset, byte_length)`
+/// and `get_content` reads the body back from the source file on demand.
+/// Storing chunk text in the index duplicated the corpus by Nx (one copy per
+/// chunk); disk is the cheap source of truth.
+///
 /// Does NOT include similarity search — that belongs in a proper
 /// vector index (HNSW, IVF, etc.), not a row-scan over blobs.
 pub trait StubStore {
-    fn insert(&mut self, stub: Stub, embedding: Vec<f32>, content: String) -> CawResult<()>;
+    fn insert(&mut self, stub: Stub, embedding: Vec<f32>) -> CawResult<()>;
+    /// Read this stub's body from the source file by slicing
+    /// `[byte_offset, byte_offset + byte_length)` out of `path`. Returns an
+    /// error if the store has no corpus root configured or the file is
+    /// missing/shorter than expected.
     fn get_content(&self, id: &StubId) -> CawResult<String>;
     fn get_stub(&self, id: &StubId) -> CawResult<Stub>;
     /// Look up an existing stub by its content hash. Returns the stub and its

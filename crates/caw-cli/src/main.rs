@@ -88,8 +88,9 @@ fn main() -> Result<()> {
         .unwrap_or_else(|| ":memory:".to_string());
 
     eprintln!("Opening stub store at: {}", db_path);
-    let mut store =
-        SqliteStubStore::new(&db_path, dimension).context("Failed to open SQLite stub store")?;
+    let mut store = SqliteStubStore::new(&db_path, dimension)
+        .context("Failed to open SQLite stub store")?
+        .with_corpus_root(cli.dir.clone());
 
     let tokenizer: Arc<dyn Tokenizer> = match cli.tokenizer.as_str() {
         "cl100k" => {
@@ -131,7 +132,7 @@ fn main() -> Result<()> {
     let mut cached = 0usize;
     let mut ingested = 0usize;
 
-    for (stub, content) in &documents {
+    for (stub, _embed_text) in &documents {
         if let Ok(Some((existing_stub, existing_embedding))) =
             store.get_by_content_hash(&stub.content_hash)
         {
@@ -147,7 +148,7 @@ fn main() -> Result<()> {
 
         if let Some(embedding) = embeddings.into_iter().next() {
             store
-                .insert(stub.clone(), embedding.clone(), content.clone())
+                .insert(stub.clone(), embedding.clone())
                 .context("Failed to insert into stub store")?;
             vector_index.add(stub.id.clone(), embedding);
             ingested += 1;
@@ -175,8 +176,9 @@ fn main() -> Result<()> {
     let trace_embedder =
         FastEmbedProvider::bge_small().context("Failed to initialize trace embedder")?;
 
-    let trace_store =
-        SqliteStubStore::new(&db_path, dimension).context("Failed to open trace stub store")?;
+    let trace_store = SqliteStubStore::new(&db_path, dimension)
+        .context("Failed to open trace stub store")?
+        .with_corpus_root(cli.dir.clone());
     let mut trace_index = HnswVectorIndex::new();
     if let Ok(all_emb) = trace_store.all_embeddings() {
         for (id, emb) in all_emb {

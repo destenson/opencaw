@@ -45,14 +45,25 @@ impl Default for ChunkingConfig {
 /// A chunk of a larger document, with its position and the outline entries it contains.
 #[derive(Debug, Clone)]
 pub struct Chunk {
+    /// Text fed to the embedder. Includes the overlap prefix drawn from the
+    /// tail of the previous chunk (for embedding context continuity) followed
+    /// by this chunk's body. NOT stored verbatim — the index records only
+    /// `body_start`/`body_end` and re-reads the body from disk on demand.
     pub content: String,
     pub index: usize,
     pub total_chunks: usize,
+    /// Byte offset of this chunk's body in the source document. Excludes the
+    /// overlap prefix. Chunks tile the source file — adjacent chunks have
+    /// `prev.body_end == next.body_start`, with no duplication.
+    pub body_start: u64,
+    /// Byte offset of the end of this chunk's body in the source document
+    /// (exclusive). `body_end - body_start` is the body length in bytes.
+    pub body_end: u64,
     /// Outline entries from the parent document that fall within this chunk
     pub outline_entries: Vec<String>,
-    /// Token count for this chunk's content, passed through from chunking so
-    /// downstream code (see `IngestionPipeline::ingest`) can reuse it instead
-    /// of re-running the tokenizer. Approximate for the char-heuristic fast
+    /// Token count for `content` (overlap + body), not just the body. Passed
+    /// through from chunking so downstream code can reuse it instead of
+    /// re-running the tokenizer. Approximate for the char-heuristic fast
     /// path (tiny files), exact for chunked paths.
     pub token_count: usize,
 }
@@ -84,6 +95,8 @@ pub fn chunk_document(
             content: content.to_string(),
             index: 0,
             total_chunks: 1,
+            body_start: 0,
+            body_end: content.len() as u64,
             outline_entries: outline.to_vec(),
             token_count: upper_bound,
         }];
@@ -106,7 +119,7 @@ pub fn chunk_document(
     raw_chunks
         .into_iter()
         .enumerate()
-        .map(|(i, text)| {
+        .map(|(i, (body_start, body_end, text))| {
             let entries = outline_entries_for_chunk(&text, outline);
             // Per-chunk token_count is still a real tokenize, but each chunk
             // is bounded by `max_chunk_chars` so this is O(cap) not O(file).
@@ -115,6 +128,8 @@ pub fn chunk_document(
                 content: text,
                 index: i,
                 total_chunks: total,
+                body_start,
+                body_end,
                 outline_entries: entries,
                 token_count,
             }
@@ -168,7 +183,11 @@ pub fn chunk_summary(path: &str, chunk: &Chunk) -> String {
 /// Linear in content length. No per-section tokenization, no vector of
 /// lines, no quadratic section joining. This is the hot path for
 /// everything the pipeline ingests.
-fn chunk_by_lines(content: &str, config: &ChunkingConfig) -> Vec<String> {
+/// Returns `(body_start, body_end, embed_text)` per chunk. `body_start`/
+/// `body_end` are byte offsets into `content` (tile the file without gaps or
+/// overlap). `embed_text` is what gets fed to the embedder: the overlap
+/// prefix (from the tail of the previous chunk) concatenated with the body.
+fn chunk_by_lines(content: &str, config: &ChunkingConfig) -> Vec<(u64, u64, String)> {
     let target = config.target_chunk_chars.max(1);
     let cap = config.max_chunk_chars.max(target);
     let overlap = config.overlap_chars.min(cap.saturating_sub(1));
@@ -177,7 +196,7 @@ fn chunk_by_lines(content: &str, config: &ChunkingConfig) -> Vec<String> {
         return Vec::new();
     }
 
-    let mut chunks: Vec<String> = Vec::new();
+    let mut chunks: Vec<(u64, u64, String)> = Vec::new();
     let mut start = 0usize;
     let total = content.len();
 
@@ -187,7 +206,7 @@ fn chunk_by_lines(content: &str, config: &ChunkingConfig) -> Vec<String> {
             let mut piece = String::new();
             prepend_line_overlap(&mut piece, &content[..start], overlap, chunks.is_empty());
             piece.push_str(&content[start..]);
-            chunks.push(piece);
+            chunks.push((start as u64, total as u64, piece));
             break;
         }
 
@@ -215,7 +234,7 @@ fn chunk_by_lines(content: &str, config: &ChunkingConfig) -> Vec<String> {
         let mut piece = String::new();
         prepend_line_overlap(&mut piece, &content[..start], overlap, chunks.is_empty());
         piece.push_str(&content[start..cut]);
-        chunks.push(piece);
+        chunks.push((start as u64, cut as u64, piece));
         start = cut;
     }
 

@@ -92,10 +92,16 @@ impl IngestionPipeline {
         self
     }
 
-    /// Ingest a document, returning one or more stubs. Large files are split
-    /// into multiple chunks, each producing its own stub. Files below the
-    /// chunking threshold produce a single stub.
-    pub fn ingest(&self, doc: SourceDocument) -> Vec<Stub> {
+    /// Ingest a document, returning `(stub, embed_text)` pairs. Large files
+    /// are split into multiple chunks, each producing its own stub paired
+    /// with the chunk's embed text (body + overlap prefix — what gets fed
+    /// into the embedder, never persisted). Files below the chunking
+    /// threshold produce a single pair whose embed text is the whole doc.
+    ///
+    /// Callers must not substitute the full document text for a chunk's
+    /// embed text: chunk stubs embedded against the full doc all collapse
+    /// to one doc-level embedding, making chunk-level retrieval meaningless.
+    pub fn ingest(&self, doc: SourceDocument) -> Vec<(Stub, String)> {
         let outline = extract_outline(doc.kind, &doc.content, &doc.path);
         let content_hash = sha256_hash(&doc.content);
 
@@ -109,14 +115,14 @@ impl IngestionPipeline {
             let chunks = chunk_document(&doc.content, doc.kind, &outline, config, &self.tokenizer);
             if chunks.len() > 1 {
                 return chunks
-                    .iter()
+                    .into_iter()
                     .map(|chunk| {
                         let chunk_hash = sha256_hash(&chunk.content);
                         // Reuse the token count chunk_document already computed.
                         // Previously this re-ran the BPE tokenizer per chunk,
                         // doubling tokenization cost on every chunked file.
                         let chunk_token_estimate = chunk.token_count;
-                        let position_summary = chunk_summary(&doc.path, chunk);
+                        let position_summary = chunk_summary(&doc.path, &chunk);
                         let base_summary = self
                             .summarizer
                             .summarize(&doc.path, &chunk.content, doc.kind, &chunk.outline_entries)
@@ -139,7 +145,7 @@ impl IngestionPipeline {
                             format!("{} — {}", position_summary, base_summary)
                         };
 
-                        Stub {
+                        let stub = Stub {
                             id: StubId(format!("{}#chunk{}", doc.path, chunk.index)),
                             path: doc.path.clone(),
                             token_estimate: chunk_token_estimate,
@@ -148,8 +154,11 @@ impl IngestionPipeline {
                             outline: chunk.outline_entries.clone(),
                             content_hash: chunk_hash,
                             mtime_unix_secs: doc.mtime_unix_secs,
+                            byte_offset: chunk.body_start,
+                            byte_length: chunk.body_end.saturating_sub(chunk.body_start),
                             consolidation_notes: Vec::new(),
-                        }
+                        };
+                        (stub, chunk.content)
                     })
                     .collect();
             }
@@ -170,17 +179,25 @@ impl IngestionPipeline {
         let token_estimate = single_token_estimate
             .unwrap_or_else(|| self.tokenizer.count_tokens(&doc.content));
 
-        vec![Stub {
-            id: StubId(doc.path.clone()),
-            path: doc.path,
-            token_estimate,
-            kind: doc.kind,
-            summary,
-            outline,
-            content_hash,
-            mtime_unix_secs: doc.mtime_unix_secs,
-            consolidation_notes: Vec::new(),
-        }]
+        let body_length = doc.content.len() as u64;
+        let doc_path = doc.path.clone();
+        let doc_content = doc.content;
+        vec![(
+            Stub {
+                id: StubId(doc_path.clone()),
+                path: doc_path,
+                token_estimate,
+                kind: doc.kind,
+                summary,
+                outline,
+                content_hash,
+                mtime_unix_secs: doc.mtime_unix_secs,
+                byte_offset: 0,
+                byte_length: body_length,
+                consolidation_notes: Vec::new(),
+            },
+            doc_content,
+        )]
     }
 
     /// Ingest all supported files under a directory.
@@ -202,12 +219,7 @@ impl IngestionPipeline {
         let results: Vec<(Stub, String)> = paths
             .par_iter()
             .filter_map(|path| SourceDocument::from_path(path).ok())
-            .flat_map_iter(|doc| {
-                let content = doc.content.clone();
-                self.ingest(doc)
-                    .into_iter()
-                    .map(move |stub| (stub, content.clone()))
-            })
+            .flat_map_iter(|doc| self.ingest(doc).into_iter())
             .collect();
 
         Ok(results)

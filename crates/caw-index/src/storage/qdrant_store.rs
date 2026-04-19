@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use caw_core::{CawError, CawResult, ConsolidationNote, Stub, StubId, StubStore, VectorIndex};
@@ -18,6 +20,9 @@ pub struct QdrantStubStore {
     runtime: Arc<Runtime>,
     /// Tracks count locally to avoid a round-trip for every len() call.
     point_count: usize,
+    /// Source tree root. Required for `get_content` to resolve the relative
+    /// paths stored on each stub. Same semantics as the sqlite store.
+    corpus_root: Option<PathBuf>,
 }
 
 /// Deterministic mapping from arbitrary StubId strings to Qdrant's u64 point IDs.
@@ -120,7 +125,13 @@ impl QdrantStubStore {
             collection_name: coll,
             runtime,
             point_count,
+            corpus_root: None,
         })
+    }
+
+    pub fn with_corpus_root(mut self, root: PathBuf) -> Self {
+        self.corpus_root = Some(root);
+        self
     }
 
     fn block_on<F: std::future::Future>(&self, f: F) -> F::Output {
@@ -142,16 +153,18 @@ impl QdrantStubStore {
 }
 
 impl StubStore for QdrantStubStore {
-    fn insert(&mut self, stub: Stub, embedding: Vec<f32>, content: String) -> CawResult<()> {
+    fn insert(&mut self, stub: Stub, embedding: Vec<f32>) -> CawResult<()> {
         let stub_json = serde_json::to_string(&stub)
             .map_err(|e| qdrant_err(format!("failed to serialize stub: {e}")))?;
 
         let point_id = stub_id_to_point_id(&stub.id);
 
+        // Payload holds metadata for filtering (content_hash) and the full
+        // stub for reconstruction. Body text is NOT stored here; get_content
+        // reads it from disk via (path, byte_offset, byte_length) on the stub.
         let payload = Payload::try_from(json!({
             "stub_id": stub.id.0,
             "stub_json": stub_json,
-            "content": content,
             "content_hash": stub.content_hash,
             "consolidation_notes": "[]",
         }))
@@ -173,25 +186,42 @@ impl StubStore for QdrantStubStore {
     }
 
     fn get_content(&self, id: &StubId) -> CawResult<String> {
-        let point_id = stub_id_to_point_id(id);
-
-        let result = self.block_on(async {
-            self.client
-                .get_points(
-                    GetPointsBuilder::new(&self.collection_name, vec![point_id.into()])
-                        .with_payload(true)
-                        .with_vectors(false),
-                )
-                .await
-                .map_err(|e| qdrant_err(format!("failed to get point: {e}")))
+        let stub = self.get_stub(id)?;
+        let root = self.corpus_root.as_ref().ok_or_else(|| {
+            qdrant_err(
+                "get_content requires a corpus_root; call with_corpus_root(..) after connect",
+            )
         })?;
-
-        let point = result
-            .result
-            .first()
-            .ok_or_else(|| CawError::NotFound(id.0.clone()))?;
-
-        Self::payload_string(&point.payload, "content")
+        let full_path = root.join(&stub.path);
+        let mut file = std::fs::File::open(&full_path)
+            .map_err(|e| qdrant_err(format!("open {}: {}", full_path.display(), e)))?;
+        file.seek(SeekFrom::Start(stub.byte_offset)).map_err(|e| {
+            qdrant_err(format!(
+                "seek {} to {}: {}",
+                full_path.display(),
+                stub.byte_offset,
+                e
+            ))
+        })?;
+        let mut buf = vec![0u8; stub.byte_length as usize];
+        file.read_exact(&mut buf).map_err(|e| {
+            qdrant_err(format!(
+                "read {} bytes from {} at {}: {}",
+                stub.byte_length,
+                full_path.display(),
+                stub.byte_offset,
+                e
+            ))
+        })?;
+        String::from_utf8(buf).map_err(|e| {
+            qdrant_err(format!(
+                "body at {}:{}+{} is not valid UTF-8: {}",
+                full_path.display(),
+                stub.byte_offset,
+                stub.byte_length,
+                e
+            ))
+        })
     }
 
     fn get_stub(&self, id: &StubId) -> CawResult<Stub> {

@@ -93,11 +93,8 @@ impl<S: StubStore> Clone for SharedStore<S> {
 }
 
 impl<S: StubStore> StubStore for SharedStore<S> {
-    fn insert(&mut self, stub: Stub, embedding: Vec<f32>, content: String) -> CawResult<()> {
-        self.inner
-            .lock()
-            .map_err(poisoned)?
-            .insert(stub, embedding, content)
+    fn insert(&mut self, stub: Stub, embedding: Vec<f32>) -> CawResult<()> {
+        self.inner.lock().map_err(poisoned)?.insert(stub, embedding)
     }
 
     fn get_content(&self, id: &StubId) -> CawResult<String> {
@@ -156,7 +153,7 @@ impl<S: StubStore> Clone for ReadOnlyStore<S> {
 }
 
 impl<S: StubStore> StubStore for ReadOnlyStore<S> {
-    fn insert(&mut self, _stub: Stub, _embedding: Vec<f32>, _content: String) -> CawResult<()> {
+    fn insert(&mut self, _stub: Stub, _embedding: Vec<f32>) -> CawResult<()> {
         Ok(())
     }
 
