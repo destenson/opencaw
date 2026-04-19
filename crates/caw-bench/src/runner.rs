@@ -51,6 +51,111 @@ impl Default for RunnerConfig {
     }
 }
 
+/// Ingest `corpus` once into an in-memory sqlite store + HNSW index using
+/// the Candle GPU embedding provider. Returns a `PrebuiltIndex` that every
+/// item/mode in a bench invocation can share via `run_item_shared`, plus
+/// the tempdir backing `corpus_root` (caller must hold it alive for the
+/// duration of the run — dropping it deletes the files and invalidates
+/// `get_content`).
+///
+/// This is what the `opencaw` workload uses when no external `--index` is
+/// supplied: the repo corpus is identical across items, so re-embedding it
+/// per item (the old `run_item_fresh` path) burned the same CPU work N×
+/// for no benefit. One upfront build on GPU replaces 4× CPU fastembed runs
+/// for the default on/off × 2-item smoke.
+pub fn build_in_memory_prebuilt(
+    corpus: &[crate::workload::CorpusDoc],
+) -> Result<(PrebuiltIndex, tempfile::TempDir)> {
+    let started = std::time::Instant::now();
+
+    // Materialize corpus to a tempdir so `SqliteStubStore::get_content` has
+    // something to seek into.
+    let corpus_tmp = tempfile::tempdir().context("create shared corpus tempdir")?;
+    for doc in corpus {
+        let full = corpus_tmp.path().join(&doc.path);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("mkdir {}", parent.display()))?;
+        }
+        std::fs::write(&full, doc.content.as_bytes())
+            .with_context(|| format!("write {}", full.display()))?;
+    }
+
+    let mut embedder = CandleEmbeddingProvider::bge_small()
+        .context("initialize bge-small (candle) for shared in-memory index")?;
+    let dim = embedder.dimension();
+
+    let mut store = SqliteStubStore::in_memory(dim)
+        .context("open in-memory sqlite store")?
+        .with_corpus_root(corpus_tmp.path().to_path_buf());
+    let mut vector_index = HnswVectorIndex::new();
+    let mut stub_summaries: HashMap<StubId, String> = HashMap::new();
+
+    // Collect all (stub, embed_text) pairs first, then embed in one batch
+    // call so the GPU session gets a full kernel launch per batch instead
+    // of one per doc.
+    let pipeline = IngestionPipeline::new();
+    let mut all_stubs: Vec<caw_core::Stub> = Vec::new();
+    let mut all_texts: Vec<String> = Vec::new();
+    for doc in corpus {
+        let source_doc = SourceDocument {
+            path: doc.path.clone(),
+            content: doc.content.clone(),
+            kind: doc.kind,
+            mtime_unix_secs: 0,
+        };
+        for (stub, _embed_text) in pipeline.ingest(source_doc) {
+            let summary_text = format!(
+                "{} {} {}",
+                stub.path,
+                stub.summary,
+                stub.outline.join(" ")
+            );
+            all_texts.push(summary_text);
+            all_stubs.push(stub);
+        }
+    }
+
+    // Candle's BGE-small forward scales with batch × seq_len². Batch 256
+    // at seq 512 OOMed on a 3090 sharing ~7 GB with Ollama's resident
+    // model (only ~17 GB free); 128 is 4× the failing footprint, so it
+    // fits with margin while keeping throughput reasonable.
+    const EMBED_BATCH: usize = 128;
+    let total = all_stubs.len();
+    let mut offset = 0usize;
+    while offset < total {
+        let end = (offset + EMBED_BATCH).min(total);
+        let batch: Vec<&str> = all_texts[offset..end].iter().map(|s| s.as_str()).collect();
+        let embeddings = embedder
+            .embed_document(batch)
+            .context("batch embed shared corpus")?;
+        for (stub, embedding) in all_stubs[offset..end].iter().zip(embeddings.into_iter()) {
+            let stub_id = stub.id.clone();
+            stub_summaries.insert(stub_id.clone(), stub.summary.clone());
+            store
+                .insert(stub.clone(), embedding.clone())
+                .context("insert stub into shared store")?;
+            vector_index.add(stub_id, embedding);
+        }
+        offset = end;
+    }
+
+    eprintln!(
+        "built in-memory shared index: {} stubs from {} docs in {:.1}s",
+        total,
+        corpus.len(),
+        started.elapsed().as_secs_f64()
+    );
+
+    let prebuilt = PrebuiltIndex {
+        embedder: SharedEmbedder::new(embedder, "bge-small-en-v1.5"),
+        store: SharedStore::new(store),
+        index: SharedIndex::new(vector_index),
+        stub_summaries,
+    };
+    Ok((prebuilt, corpus_tmp))
+}
+
 /// A pre-ingested retrieval index, shared across all items in a bench run.
 ///
 /// Built once by `main` (loading a sqlite produced by

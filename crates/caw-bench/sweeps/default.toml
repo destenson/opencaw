@@ -45,7 +45,7 @@ answer_model = "huihui_ai/phi4-reasoning-abliterated:3.8b"
 
 [[axes.model]]
 answer_adapter = "ollama"
-answer_model = "qwen3:8b"
+answer_model = "qwen3.5:9b"
 
 [[axes.model]]
 answer_adapter = "claude-code"

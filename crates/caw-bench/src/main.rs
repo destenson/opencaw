@@ -6,7 +6,9 @@ use caw_bench::adapter_factory::{self, AdapterKind, AdapterSpec};
 use caw_bench::niah::{self, NiahConfig};
 use caw_bench::opencaw;
 use caw_bench::report::{build_report, format_summary};
-use caw_bench::runner::{ItemResult, PrebuiltIndex, RunnerConfig, run_item};
+use caw_bench::runner::{
+    ItemResult, PrebuiltIndex, RunnerConfig, build_in_memory_prebuilt, run_item,
+};
 use caw_bench::shared::{SharedEmbedder, SharedIndex, SharedStore};
 use caw_bench::sysdoc;
 use caw_bench::workload::{RecallMode, WorkloadItem};
@@ -181,11 +183,23 @@ fn main() -> Result<()> {
         );
     }
 
+    // Keep the shared-corpus tempdir alive for the whole bench run. When
+    // the opencaw workload runs without an external `--index`, we ingest
+    // items[0].corpus once here instead of re-embedding per item. The
+    // tempdir backs SqliteStubStore::get_content; dropping it would
+    // invalidate recall mid-run.
+    let mut _shared_corpus_tmp: Option<tempfile::TempDir> = None;
     let prebuilt = match (cli.workload, cli.index.as_deref()) {
         (Workload::Sysdoc, None) => anyhow::bail!(
             "--index is required for the sysdoc workload; build one with caw-bench-build-index"
         ),
         (_, Some(path)) => Some(load_prebuilt_index(path, cli.repo_root.clone())?),
+        (Workload::Opencaw, None) => {
+            let (idx, tmp) = build_in_memory_prebuilt(&items[0].corpus)
+                .context("build shared in-memory index for opencaw workload")?;
+            _shared_corpus_tmp = Some(tmp);
+            Some(idx)
+        }
         (_, None) => None,
     };
 

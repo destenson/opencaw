@@ -109,8 +109,21 @@ fn walk_source_files(root: &Path) -> Vec<std::path::PathBuf> {
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            // Skip build outputs, VCS, editor state, and nested workspaces.
-            if matches!(name, "target" | ".git" | "node_modules" | ".claude") {
+            // Skip build outputs, VCS, editor state, nested workspaces,
+            // bench artifacts, and the sysdoc test corpora (not opencaw
+            // project source — ingesting 1700+ synthetic markdown files
+            // blows up the shared-corpus build for no retrieval signal
+            // against the opencaw Q&A).
+            if matches!(
+                name,
+                "target"
+                    | ".git"
+                    | "node_modules"
+                    | ".claude"
+                    | "opencaw-corpora"
+                    | "bench-results"
+                    | "data"
+            ) {
                 continue;
             }
             if name.starts_with('.') {
