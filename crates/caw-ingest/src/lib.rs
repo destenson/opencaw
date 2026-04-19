@@ -92,15 +92,10 @@ impl IngestionPipeline {
         self
     }
 
-    /// Ingest a document, returning one or more (stub, content) pairs.
-    /// Large files are split into multiple chunks; each chunk produces its
-    /// own stub *paired with that chunk's own content* — so downstream
-    /// storage and recall get the specific slice the stub describes, not
-    /// the whole file duplicated N times.
-    ///
-    /// Files below the chunking threshold produce a single pair whose
-    /// content is the full file body.
-    pub fn ingest(&self, doc: SourceDocument) -> Vec<(Stub, String)> {
+    /// Ingest a document, returning one or more stubs. Large files are split
+    /// into multiple chunks, each producing its own stub. Files below the
+    /// chunking threshold produce a single stub.
+    pub fn ingest(&self, doc: SourceDocument) -> Vec<Stub> {
         let outline = extract_outline(doc.kind, &doc.content, &doc.path);
         let content_hash = sha256_hash(&doc.content);
 
@@ -108,11 +103,11 @@ impl IngestionPipeline {
             let chunks = chunk_document(&doc.content, doc.kind, &outline, config, &self.tokenizer);
             if chunks.len() > 1 {
                 return chunks
-                    .into_iter()
+                    .iter()
                     .map(|chunk| {
                         let chunk_hash = sha256_hash(&chunk.content);
                         let chunk_token_estimate = self.tokenizer.count_tokens(&chunk.content);
-                        let position_summary = chunk_summary(&doc.path, &chunk);
+                        let position_summary = chunk_summary(&doc.path, chunk);
                         let base_summary = self
                             .summarizer
                             .summarize(&doc.path, &chunk.content, doc.kind, &chunk.outline_entries)
@@ -135,25 +130,23 @@ impl IngestionPipeline {
                             format!("{} — {}", position_summary, base_summary)
                         };
 
-                        let stub = Stub {
+                        Stub {
                             id: StubId(format!("{}#chunk{}", doc.path, chunk.index)),
                             path: doc.path.clone(),
                             token_estimate: chunk_token_estimate,
                             kind: doc.kind,
                             summary,
-                            outline: chunk.outline_entries,
+                            outline: chunk.outline_entries.clone(),
                             content_hash: chunk_hash,
                             mtime_unix_secs: doc.mtime_unix_secs,
                             consolidation_notes: Vec::new(),
-                        };
-                        (stub, chunk.content)
+                        }
                     })
                     .collect();
             }
         }
 
-        // Single-stub path: file is small or chunking is disabled. The
-        // stub's content is the full file body.
+        // Single-stub path: file is small or chunking is disabled
         let summary = self
             .summarizer
             .summarize(&doc.path, &doc.content, doc.kind, &outline)
@@ -163,7 +156,8 @@ impl IngestionPipeline {
                     .unwrap_or_default()
             });
         let token_estimate = self.tokenizer.count_tokens(&doc.content);
-        let stub = Stub {
+
+        vec![Stub {
             id: StubId(doc.path.clone()),
             path: doc.path,
             token_estimate,
@@ -173,8 +167,7 @@ impl IngestionPipeline {
             content_hash,
             mtime_unix_secs: doc.mtime_unix_secs,
             consolidation_notes: Vec::new(),
-        };
-        vec![(stub, doc.content)]
+        }]
     }
 
     /// Ingest all supported files under a directory.
@@ -196,7 +189,12 @@ impl IngestionPipeline {
         let results: Vec<(Stub, String)> = paths
             .par_iter()
             .filter_map(|path| SourceDocument::from_path(path).ok())
-            .flat_map_iter(|doc| self.ingest(doc).into_iter())
+            .flat_map_iter(|doc| {
+                let content = doc.content.clone();
+                self.ingest(doc)
+                    .into_iter()
+                    .map(move |stub| (stub, content.clone()))
+            })
             .collect();
 
         Ok(results)

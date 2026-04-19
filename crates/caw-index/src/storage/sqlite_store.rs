@@ -13,15 +13,6 @@ impl SqliteStubStore {
         let conn = Connection::open(path)
             .map_err(|e| CawError::VectorStore(format!("Failed to open database: {}", e)))?;
 
-        // WAL + synchronous=NORMAL is ~10-20x faster for bulk inserts than
-        // the default rollback journal + synchronous=FULL, with minor
-        // durability trade-offs (last-second crashes can lose recent commits
-        // but the DB stays consistent). In-memory DBs ignore these PRAGMAs.
-        for pragma in ["journal_mode=WAL", "synchronous=NORMAL", "temp_store=MEMORY"] {
-            conn.execute_batch(&format!("PRAGMA {};", pragma))
-                .map_err(|e| CawError::VectorStore(format!("PRAGMA {}: {}", pragma, e)))?;
-        }
-
         conn.execute(
             "CREATE TABLE IF NOT EXISTS stubs (
                 id TEXT PRIMARY KEY,

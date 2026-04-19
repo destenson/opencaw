@@ -154,8 +154,8 @@ fn run_item_fresh(
             kind: doc.kind,
             mtime_unix_secs: 0,
         };
-        let pairs = pipeline.ingest(source_doc);
-        for (stub, chunk_content) in pairs {
+        let stubs = pipeline.ingest(source_doc);
+        for stub in stubs {
             let stub_summary_text = format!(
                 "{} {} {}",
                 stub.path,
@@ -171,7 +171,7 @@ fn run_item_fresh(
             let stub_id = stub.id.clone();
             stub_summaries.insert(stub_id.clone(), stub.summary.clone());
             store
-                .insert(stub.clone(), embedding.clone(), chunk_content)
+                .insert(stub.clone(), embedding.clone(), doc.content.clone())
                 .context("insert stub into store")?;
             vector_index.add(stub_id, embedding);
         }
