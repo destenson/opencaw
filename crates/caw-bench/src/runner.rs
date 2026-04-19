@@ -162,7 +162,27 @@ fn run_item_fresh(
     let mut embedder =
         FastEmbedProvider::bge_small().context("initialize bge-small for retriever")?;
     let dim = embedder.dimension();
-    let mut store = SqliteStubStore::in_memory(dim).context("open in-memory sqlite store")?;
+
+    // SqliteStubStore records `(path, byte_offset, byte_length)` and
+    // re-reads bodies from `corpus_root.join(path)` on `get_content`.
+    // In-memory workloads (niah, opencaw's per-item JSON questions) have
+    // no on-disk backing, so materialize the item's corpus into a tempdir
+    // and attach it as the store's corpus_root. Tempdir lives for the
+    // whole item; returned struct keeps it alive.
+    let corpus_tmp = tempfile::tempdir().context("create per-item corpus tempdir")?;
+    for doc in &item.corpus {
+        let full = corpus_tmp.path().join(&doc.path);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("mkdir {}", parent.display()))?;
+        }
+        std::fs::write(&full, doc.content.as_bytes())
+            .with_context(|| format!("write {}", full.display()))?;
+    }
+
+    let mut store = SqliteStubStore::in_memory(dim)
+        .context("open in-memory sqlite store")?
+        .with_corpus_root(corpus_tmp.path().to_path_buf());
     let mut vector_index = HnswVectorIndex::new();
 
     let mut stub_summaries: HashMap<StubId, String> = HashMap::new();

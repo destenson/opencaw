@@ -32,3 +32,4 @@ caw-orchestrator = { path = "../caw-orchestrator" }
 caw-eval = { path = "../caw-eval" }
 rayon.workspace = true
 walkdir = "2"
+tempfile = "3"
