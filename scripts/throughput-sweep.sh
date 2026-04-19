@@ -30,8 +30,6 @@ run() {
         --sub-batch-size "${sb}" \
         --log-interval 10 \
         2> "${log}"
-    # Extract the final summary block (last three "breakdown" lines + the
-    # "done:" line) into summary.txt for at-a-glance comparison.
     {
         echo "--- final ---"
         grep -E "^done:|breakdown:" "${log}" || tail -4 "${log}"
