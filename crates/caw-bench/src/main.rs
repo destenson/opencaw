@@ -6,8 +6,13 @@ use caw_bench::adapter_factory::{self, AdapterKind, AdapterSpec};
 use caw_bench::niah::{self, NiahConfig};
 use caw_bench::opencaw;
 use caw_bench::report::{build_report, format_summary};
-use caw_bench::runner::{ItemResult, RunnerConfig, run_item};
+use caw_bench::runner::{ItemResult, PrebuiltIndex, RunnerConfig, run_item};
+use caw_bench::shared::{SharedEmbedder, SharedIndex, SharedStore};
+use caw_bench::sysdoc;
 use caw_bench::workload::{RecallMode, WorkloadItem};
+use caw_core::{EmbeddingProvider, StubStore, VectorIndex};
+use caw_index::{FastEmbedProvider, HnswVectorIndex, SqliteStubStore};
+use std::collections::HashMap;
 
 #[derive(Parser, Debug)]
 #[command(name = "caw-bench", about = "Benchmark harness for OpenCAW recall")]
@@ -104,10 +109,18 @@ struct Cli {
     #[arg(long, default_value = "0.2")]
     unload_threshold: f32,
 
-    /// Path to a Q&A JSON file for the `opencaw` workload. When provided the
-    /// file is loaded at runtime; otherwise the binary's embedded copy is used.
+    /// Path to a Q&A JSON file. Required for `sysdoc`. For `opencaw`, when
+    /// provided the file is loaded at runtime; otherwise the binary's
+    /// embedded copy is used.
     #[arg(long)]
     qa_file: Option<PathBuf>,
+
+    /// Pre-built retrieval index (sqlite produced by
+    /// `caw-bench-build-index`). Required for the `sysdoc` workload; the
+    /// full corpus is ingested once ahead of time and shared across items
+    /// so the bench doesn't re-embed on every run.
+    #[arg(long)]
+    index: Option<PathBuf>,
 
     /// Where to write the JSON report (stdout if omitted).
     #[arg(long)]
@@ -122,6 +135,7 @@ struct Cli {
 enum Workload {
     Niah,
     Opencaw,
+    Sysdoc,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -157,6 +171,14 @@ fn main() -> Result<()> {
             cli.load_threshold,
         );
     }
+
+    let prebuilt = match (cli.workload, cli.index.as_deref()) {
+        (Workload::Sysdoc, None) => anyhow::bail!(
+            "--index is required for the sysdoc workload; build one with caw-bench-build-index"
+        ),
+        (_, Some(path)) => Some(load_prebuilt_index(path)?),
+        (_, None) => None,
+    };
 
     let cfg = RunnerConfig {
         top_k: cli.top_k,
@@ -221,7 +243,7 @@ fn main() -> Result<()> {
                 }
             };
 
-            match run_item(item, *mode, &cfg, answer_adapter, judge_adapter.as_ref()) {
+            match run_item(item, *mode, &cfg, answer_adapter, judge_adapter.as_ref(), prebuilt.as_ref()) {
                 Ok(result) => {
                     eprintln!(
                         "  score={:.2} recall@k={:.2} ctx_eff={:.2} loaded={}",
@@ -242,6 +264,7 @@ fn main() -> Result<()> {
     let workload_name = match cli.workload {
         Workload::Niah => "niah",
         Workload::Opencaw => "opencaw",
+        Workload::Sysdoc => "sysdoc",
     };
 
     let report = build_report(workload_name, &cli.answer_model, &cli.judge_model, &results);
@@ -270,7 +293,59 @@ fn build_workload(cli: &Cli) -> Result<Vec<WorkloadItem>> {
             Ok(niah::build(&config))
         }
         Workload::Opencaw => opencaw::build(&cli.repo_root, cli.qa_file.as_deref()).context("build opencaw workload"),
+        Workload::Sysdoc => {
+            let qa_file = cli.qa_file.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--qa-file is required for the sysdoc workload (e.g. opencaw-corpora/sysdoc_qa.json)"
+                )
+            })?;
+            sysdoc::build(qa_file).context("build sysdoc workload")
+        }
     }
+}
+
+/// Open a prebuilt retrieval index and wrap it for sharing across items.
+/// Called once per bench run when `--index` is supplied.
+fn load_prebuilt_index(path: &std::path::Path) -> Result<PrebuiltIndex> {
+    let started = std::time::Instant::now();
+    let path_str = path.to_string_lossy().into_owned();
+
+    let embedder = FastEmbedProvider::bge_small().context("init bge-small")?;
+    let dim = embedder.dimension();
+
+    let store = SqliteStubStore::new(&path_str, dim)
+        .with_context(|| format!("open prebuilt index at {}", path.display()))?;
+
+    let all = store.all_embeddings().context("read all embeddings")?;
+    if all.is_empty() {
+        anyhow::bail!(
+            "prebuilt index at {} is empty — rebuild with caw-bench-build-index",
+            path.display()
+        );
+    }
+
+    let mut vector_index = HnswVectorIndex::new();
+    let mut stub_summaries: HashMap<caw_core::StubId, String> = HashMap::with_capacity(all.len());
+    for (stub_id, embedding) in &all {
+        if let Ok(stub) = store.get_stub(stub_id) {
+            stub_summaries.insert(stub_id.clone(), stub.summary);
+        }
+        vector_index.add(stub_id.clone(), embedding.clone());
+    }
+
+    eprintln!(
+        "loaded prebuilt index: {} stubs from {} ({:.1}s)",
+        all.len(),
+        path.display(),
+        started.elapsed().as_secs_f64()
+    );
+
+    Ok(PrebuiltIndex {
+        embedder: SharedEmbedder::new(embedder, "bge-small-en-v1.5"),
+        store: SharedStore::new(store),
+        index: SharedIndex::new(vector_index),
+        stub_summaries,
+    })
 }
 
 fn truncate(s: &str, max: usize) -> String {

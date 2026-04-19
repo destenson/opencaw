@@ -5,4 +5,6 @@ pub mod niah_corpus;
 pub mod opencaw;
 pub mod report;
 pub mod runner;
+pub mod shared;
+pub mod sysdoc;
 pub mod workload;

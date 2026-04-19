@@ -1,13 +1,14 @@
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 
+use caw_core::provenance::InMemoryProvenanceStore;
 use caw_core::{EmbeddingProvider, ModelAdapter, RecallThresholds, StubId, StubStore, VectorIndex};
 use caw_index::{FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
 use caw_ingest::{IngestionPipeline, SourceDocument};
 use caw_orchestrator::dynamic::{DynamicRecallConfig, DynamicRecallOrchestrator};
-use caw_core::provenance::InMemoryProvenanceStore;
 
 use crate::judge::{JudgeVerdict, judge_answer};
+use crate::shared::{ReadOnlyStore, SharedEmbedder, SharedIndex, SharedStore};
 use crate::workload::{RecallMode, Scoring, WorkloadItem};
 
 pub struct RunnerConfig {
@@ -46,6 +47,23 @@ impl Default for RunnerConfig {
             limit: None,
         }
     }
+}
+
+/// A pre-ingested retrieval index, shared across all items in a bench run.
+///
+/// Built once by `main` (loading a sqlite produced by
+/// `caw-bench-build-index`) and passed to `run_item` for workloads whose
+/// corpus is known ahead of time. Items then skip ingestion entirely —
+/// each one clones the shared handles into a fresh `SemanticRetriever`
+/// over the same backing state.
+pub struct PrebuiltIndex {
+    pub embedder: SharedEmbedder<FastEmbedProvider>,
+    pub store: SharedStore<SqliteStubStore>,
+    pub index: SharedIndex<HnswVectorIndex>,
+    /// Stub summaries keyed by id — populated at load time so the false-recall
+    /// heuristic can compare recalled content against the summary that
+    /// triggered its load.
+    pub stub_summaries: HashMap<StubId, String>,
 }
 
 /// Result of running a single item in a single mode. Aggregated by the
@@ -99,21 +117,31 @@ pub fn run_item(
     cfg: &RunnerConfig,
     answer_adapter: Box<dyn ModelAdapter>,
     judge_adapter: &dyn ModelAdapter,
+    prebuilt: Option<&PrebuiltIndex>,
+) -> Result<ItemResult> {
+    match prebuilt {
+        Some(idx) => run_item_shared(item, mode, cfg, answer_adapter, judge_adapter, idx),
+        None => run_item_fresh(item, mode, cfg, answer_adapter, judge_adapter),
+    }
+}
+
+/// Run one item against a fresh per-item index built from `item.corpus`.
+/// Used by workloads whose corpus is small and per-item (opencaw, niah).
+fn run_item_fresh(
+    item: &WorkloadItem,
+    mode: RecallMode,
+    cfg: &RunnerConfig,
+    answer_adapter: Box<dyn ModelAdapter>,
+    judge_adapter: &dyn ModelAdapter,
 ) -> Result<ItemResult> {
     let started = std::time::Instant::now();
 
-    // Fresh embedder + store + orchestrator per item keeps runs independent.
-    // Cost is real (a few hundred ms per item) but predictable and eliminates
-    // state leakage between questions.
     let mut embedder =
         FastEmbedProvider::bge_small().context("initialize bge-small for retriever")?;
     let dim = embedder.dimension();
     let mut store = SqliteStubStore::in_memory(dim).context("open in-memory sqlite store")?;
     let mut vector_index = HnswVectorIndex::new();
 
-    // Capture stub summaries as we ingest; the false-recall heuristic needs
-    // them to compare against recalled content, but the Retriever trait
-    // doesn't expose summaries directly.
     let mut stub_summaries: HashMap<StubId, String> = HashMap::new();
 
     let pipeline = IngestionPipeline::new();
@@ -148,15 +176,12 @@ pub fn run_item(
     }
 
     let retriever = SemanticRetriever::new(embedder, store, vector_index);
-
-    // The orchestrator's trace embedder + index are only exercised when
-    // thinking-trace recall fires. In recall-off mode they stay idle.
-    let trace_embedder = FastEmbedProvider::bge_small().context("initialize bge-small for trace")?;
+    let trace_embedder =
+        FastEmbedProvider::bge_small().context("initialize bge-small for trace")?;
     let trace_index = HnswVectorIndex::new();
     let provenance = InMemoryProvenanceStore::default();
 
     let config = orchestrator_config(mode, cfg);
-
     let mut orchestrator: DynamicRecallOrchestrator<_, _, _, _, _, SqliteStubStore> =
         DynamicRecallOrchestrator::new(
             retriever,
@@ -171,43 +196,112 @@ pub fn run_item(
         .run_turn(&cfg.system_prompt, &item.question)
         .context("run_turn failed")?;
 
-    // Snapshot the final loaded set for metric computation.
     let loaded = orchestrator.loaded.clone();
-    let loaded_paths: Vec<String> = loaded.iter().map(|f| f.locator.source.clone()).collect();
+    Ok(finalize_result(
+        item,
+        mode,
+        cfg,
+        started,
+        &loaded,
+        response.answer,
+        &stub_summaries,
+        judge_adapter,
+    )?)
+}
 
+/// Run one item against a shared, prebuilt index. All heavy state
+/// (embeddings, store, HNSW) is reused across items.
+fn run_item_shared(
+    item: &WorkloadItem,
+    mode: RecallMode,
+    cfg: &RunnerConfig,
+    answer_adapter: Box<dyn ModelAdapter>,
+    judge_adapter: &dyn ModelAdapter,
+    prebuilt: &PrebuiltIndex,
+) -> Result<ItemResult> {
+    let started = std::time::Instant::now();
+
+    // Retriever store is the read-only view: even if the orchestrator were
+    // later wired with `.with_store(...)` or ingestion code crept into a
+    // shared-mode path, writes would be silently dropped so the prebuilt
+    // sqlite file stays byte-identical across items.
+    let retriever = SemanticRetriever::new(
+        prebuilt.embedder.clone(),
+        ReadOnlyStore::new(&prebuilt.store),
+        prebuilt.index.clone(),
+    );
+
+    // Trace recall uses a distinct embedder + index per turn; the index is
+    // always per-item (trace content is per-turn), but the embedder can be
+    // the same bge-small instance — the orchestrator serializes its calls.
+    let trace_embedder = prebuilt.embedder.clone();
+    let trace_index = HnswVectorIndex::new();
+    let provenance = InMemoryProvenanceStore::default();
+
+    let config = orchestrator_config(mode, cfg);
+    // The `S` (consolidation store) slot stays unset: the orchestrator's
+    // `store: Option<S>` defaults to None, so `persist_consolidation` is a
+    // no-op. The ReadOnlyStore in the retriever enforces the same invariant
+    // defensively — writes to the prebuilt sqlite are dropped in every path.
+    let mut orchestrator: DynamicRecallOrchestrator<_, _, _, _, _, ReadOnlyStore<SqliteStubStore>> =
+        DynamicRecallOrchestrator::new(
+            retriever,
+            trace_embedder,
+            trace_index,
+            provenance,
+            answer_adapter,
+            config,
+        );
+
+    let response = orchestrator
+        .run_turn(&cfg.system_prompt, &item.question)
+        .context("run_turn failed")?;
+
+    let loaded = orchestrator.loaded.clone();
+    finalize_result(
+        item,
+        mode,
+        cfg,
+        started,
+        &loaded,
+        response.answer,
+        &prebuilt.stub_summaries,
+        judge_adapter,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finalize_result(
+    item: &WorkloadItem,
+    mode: RecallMode,
+    cfg: &RunnerConfig,
+    started: std::time::Instant,
+    loaded: &[caw_core::RecallFragment],
+    answer: String,
+    stub_summaries: &HashMap<StubId, String>,
+    judge_adapter: &dyn ModelAdapter,
+) -> Result<ItemResult> {
+    let loaded_paths: Vec<String> = loaded.iter().map(|f| f.locator.source.clone()).collect();
     let metrics = retrieval_metrics(&loaded_paths, &item.expected_paths);
     let content_tokens: usize = loaded.iter().map(|f| f.tokens).sum();
-    // Provenance-tag overhead: each recalled fragment is wrapped in
-    // `<recalled from="..." locator="...">...</recalled>` or the bracketed
-    // equivalent. Rough constant per fragment; close enough for a ratio.
     let provenance_overhead = loaded.len() * 15;
-    let overhead_tokens = estimate_tokens(&cfg.system_prompt)
-        + estimate_tokens(&item.question)
-        + provenance_overhead;
-    // Context efficiency: of the tokens that actually enter the model's
-    // context window (recalled content + system/query/provenance), how much
-    // is useful content. Stubs never enter the context window — they live
-    // in the index — so they're not in this denominator.
+    let overhead_tokens =
+        estimate_tokens(&cfg.system_prompt) + estimate_tokens(&item.question) + provenance_overhead;
     let context_efficiency = if content_tokens + overhead_tokens == 0 {
         0.0
     } else {
         content_tokens as f32 / (content_tokens + overhead_tokens) as f32
     };
-    let index_pool_tokens: usize = stub_summaries
-        .values()
-        .map(|s| estimate_tokens(s))
-        .sum();
+    let index_pool_tokens: usize = stub_summaries.values().map(|s| estimate_tokens(s)).sum();
+    let false_recall_rate = false_recall_rate_heuristic(loaded, stub_summaries);
 
-    let false_recall_rate = false_recall_rate_heuristic(&loaded, &stub_summaries);
-
-    let (answer_score, judge_rationale) =
-        score_answer(&item.scoring, &response.answer, judge_adapter)?;
+    let (answer_score, judge_rationale) = score_answer(&item.scoring, &answer, judge_adapter)?;
 
     Ok(ItemResult {
         item_id: item.id.clone(),
         mode,
         question: item.question.clone(),
-        answer: response.answer,
+        answer,
         loaded_paths,
         expected_paths: item.expected_paths.clone(),
         recall_at_k: metrics.recall_at_k,
@@ -280,7 +374,6 @@ fn retrieval_metrics(loaded: &[String], expected: &[String]) -> RetrievalMetrics
         Some(top) if expected_set.contains(top) => 1.0,
         _ => 0.0,
     };
-    // Reciprocal rank of each expected path; missing paths contribute 0.
     let mrr = if expected.is_empty() {
         1.0
     } else {
