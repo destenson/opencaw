@@ -9,14 +9,14 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 /// How long to wait between streamed NDJSON events before declaring the
-/// claude CLI hung. The CLI with `--output-format stream-json` emits an
-/// event for session init, per-token generation, thinking blocks, and the
-/// final `result`. A silent gap longer than this almost always means the
-/// upstream API stopped responding and we're burning wallclock waiting
-/// for TCP keepalives to decide. 60s is comfortably above thinking-block
-/// pauses on hard prompts but aggressive enough that a single stuck call
-/// can't stall a batch run for minutes.
-const STREAM_EVENT_TIMEOUT: Duration = Duration::from_secs(60);
+/// claude CLI hung. With `--include-partial-messages` every generated
+/// token is an event, so inter-event gaps during normal generation are
+/// milliseconds — a 120s silence is unambiguous API hang territory. The
+/// earlier 60s default without partial messages killed legitimate sonnet
+/// thinking blocks mid-flight (thinking emitted as a single event after
+/// a long pause). Partial messages plus the longer ceiling gives both
+/// headroom for real workloads and fast recovery from upstream stalls.
+const STREAM_EVENT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Adapter that shells out to the Claude Code CLI in single-shot print mode.
 /// Intended for cheap auxiliary tasks (summarization, consolidation, outline
@@ -176,11 +176,29 @@ impl ModelAdapter for ClaudeCodeAdapter {
         // With stream-json each assistant event becomes a liveness tick.
         let mut cmd = Command::new("claude");
         cmd.arg("--print")
+            // --strict-mcp-config with no --mcp-config forces "no MCP
+            // servers, none." Observed symptom without this: the CLI
+            // would spawn, connect to every user-configured MCP server
+            // (including needs-auth ones like Gmail/Drive/Stripe) before
+            // emitting the first stream-json event. When any server
+            // hung on handshake the whole call sat in ep_poll until the
+            // 120s watchdog killed it. Skipping MCP entirely also cuts
+            // the init event to a handful of bytes, making tail-cell
+            // startup consistent. Unlike --bare, this keeps OAuth auth.
+            .arg("--strict-mcp-config")
             .arg("--output-format")
             .arg("stream-json")
             // `--output-format stream-json` requires `--verbose` when used
             // with `--print`; claude CLI hard-errors otherwise.
             .arg("--verbose")
+            // Per-token streaming events. Without this flag the CLI emits
+            // one event per assistant-message boundary, which for sonnet
+            // with a long thinking block means >60s of stream silence
+            // followed by a single fat event. The watchdog can't
+            // distinguish that from a real API stall. With this flag each
+            // token ticks the watchdog and a gap really does mean the
+            // upstream is stuck.
+            .arg("--include-partial-messages")
             .arg("--model")
             .arg(&self.model)
             .arg("--system-prompt")
