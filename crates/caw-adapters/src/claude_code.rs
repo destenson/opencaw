@@ -11,12 +11,12 @@ use std::time::Duration;
 /// How long to wait between streamed NDJSON events before declaring the
 /// claude CLI hung. With `--include-partial-messages` every generated
 /// token is an event, so inter-event gaps during normal generation are
-/// milliseconds — a 120s silence is unambiguous API hang territory. The
+/// milliseconds — a 30s silence is unambiguous API hang territory. The
 /// earlier 60s default without partial messages killed legitimate sonnet
 /// thinking blocks mid-flight (thinking emitted as a single event after
 /// a long pause). Partial messages plus the longer ceiling gives both
 /// headroom for real workloads and fast recovery from upstream stalls.
-const STREAM_EVENT_TIMEOUT: Duration = Duration::from_secs(120);
+const STREAM_EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Adapter that shells out to the Claude Code CLI in single-shot print mode.
 /// Intended for cheap auxiliary tasks (summarization, consolidation, outline
@@ -229,6 +229,16 @@ impl ModelAdapter for ClaudeCodeAdapter {
         for dir in &self.add_dirs {
             cmd.arg("--add-dir").arg(dir);
         }
+
+        // Run claude from a neutral cwd so the rust-analyzer-lsp plugin
+        // (always present in the user's claude install and visible to the
+        // model even when --tools is empty) doesn't try to index whatever
+        // workspace the bench happens to be running from. Observed
+        // symptom before this: sonnet would request the LSP tool on
+        // code-lookup questions and claude would sit waiting for
+        // rust-analyzer to finish indexing the opencaw workspace.
+        // With cwd=/tmp the LSP has nothing to scan and returns fast.
+        cmd.current_dir("/tmp");
 
         // Pass the prompt via stdin rather than as a positional argument.
         // `--tools <tools...>` is variadic and greedily swallows trailing
