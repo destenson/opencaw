@@ -35,56 +35,61 @@ pub fn build(config: &NiahConfig) -> Vec<WorkloadItem> {
     // project / operator / sector names (see niah_corpus::PROJECTS etc.).
     // Otherwise filler paragraphs mentioning the topic beat the needle
     // memo in cosine similarity and the test becomes unanswerable.
+    // Needles deliberately avoid credential-shaped framing (authorization
+    // codes, clearances, reagent IDs, restricted markings) so that
+    // safety-tuned hosted models don't refuse the retrieval task. All
+    // topics are benign project metadata: versions, dates, thresholds,
+    // frequencies, colors, plate sizes, build IDs.
     let needles: &[(&str, &str, &str)] = &[
         (
-            "authorization_code",
+            "release_version",
             "QUATRAFIN-7719",
-            "the authorization code for the Bluecapsule audit system",
+            "the internal release tag for the Bluecapsule documentation snapshot",
         ),
         (
-            "decommission_date",
+            "migration_date",
             "2028-11-04",
-            "the scheduled decommission date for the Zephyrglass archive",
+            "the scheduled migration date for the Zephyrglass document archive",
         ),
         (
-            "quorum_threshold",
+            "sample_ratio",
             "0.6183",
-            "the consensus quorum threshold used by the Starkwood protocol",
+            "the sampling ratio used by the Starkwood telemetry aggregator",
         ),
         (
-            "failover_peer",
+            "replica_label",
             "NODE-ALPHA-812",
-            "the designated failover peer for the Portmanteau primary",
+            "the replica label used by the Portmanteau read cache",
         ),
         (
-            "reconciliation_rate",
+            "ingest_rate",
             "11.42 units/hour",
-            "the steady-state reconciliation rate for the Quillmark ledger",
+            "the steady-state ingest rate for the Quillmark ledger",
         ),
         (
-            "regional_code",
+            "region_tag",
             "RX-44-EAST",
-            "the regional code assigned to the Nimbus telemetry channel",
+            "the region tag assigned to the Nimbus telemetry channel",
         ),
         (
             "checksum_prefix",
             "BLAKE3-8F02C1",
-            "the mandated checksum prefix for Silvermint payloads",
+            "the checksum prefix used in the Silvermint content hash field",
         ),
         (
-            "courier_route",
+            "delivery_window",
             "ROUTE-M7-SOUTHBOUND",
-            "the emergency courier route used by the Harrow program",
+            "the delivery window label used by the Harrow shipping program",
         ),
         (
-            "safety_clearance",
+            "paint_spec",
             "CLEARANCE-AURIC-3",
-            "the minimum safety clearance for the Westgarden enclosure",
+            "the paint spec used for the Westgarden enclosure housing",
         ),
         (
-            "reagent_id",
+            "part_number",
             "REAGENT-NX-47",
-            "the controlled reagent identifier for Sandpaperer operations",
+            "the part number for the Sandpaperer maintenance kit",
         ),
     ];
 
@@ -99,9 +104,9 @@ pub fn build(config: &NiahConfig) -> Vec<WorkloadItem> {
         // plain-text strategy, so it must be the sentence retrieval should
         // match on. Memo boilerplate comes after.
         let needle_memo = format!(
-            "This memo records {phrase}.\n\n\
-             RESTRICTED — authoritative reference copy.\n\n\
-             The value is: {needle}. Do not re-key; cite this memo verbatim if asked.\n",
+            "This note records {phrase}.\n\n\
+             Reference copy for internal documentation.\n\n\
+             The value is: {needle}.\n",
         );
 
         let corpus = generate(seed, config.filler_paragraphs, needle_position, &needle_memo);
