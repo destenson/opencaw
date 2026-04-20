@@ -119,6 +119,8 @@ mod tests {
             outline: vec!["Section 1".to_string()],
             content_hash: "abc123".to_string(),
             mtime_unix_secs: 0,
+            byte_offset: 0,
+            byte_length: 0,
             consolidation_notes: Vec::new(),
         });
 
@@ -143,6 +145,8 @@ mod tests {
             outline: vec![],
             content_hash: "def456".to_string(),
             mtime_unix_secs: 0,
+            byte_offset: 0,
+            byte_length: 0,
             consolidation_notes: Vec::new(),
         });
 

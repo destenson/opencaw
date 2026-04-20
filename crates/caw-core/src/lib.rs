@@ -1,7 +1,10 @@
 
 pub mod provenance;
+pub mod reindex;
 pub mod scheduler;
 pub mod tokenizer;
+
+pub use reindex::{ChannelReindexQueue, NoopReindexQueue, ReindexQueue, ReindexReceiver};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -22,6 +25,12 @@ pub enum CawError {
     VectorStore(String),
     #[error("io error: {0}")]
     Io(String),
+    /// The requested stub's source file has changed or been removed since
+    /// indexing. The stub has been marked stale in the store and (if a
+    /// reindex queue is attached) enqueued for reingestion. Callers should
+    /// treat this as a miss, not a hard failure.
+    #[error("stale stub at {path}")]
+    StaleStub { path: String },
 }
 
 impl From<std::io::Error> for CawError {
