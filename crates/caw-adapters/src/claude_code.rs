@@ -3,8 +3,20 @@ use caw_core::{
     ProvenanceFormat,
 };
 use serde::Deserialize;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
+
+/// How long to wait between streamed NDJSON events before declaring the
+/// claude CLI hung. The CLI with `--output-format stream-json` emits an
+/// event for session init, per-token generation, thinking blocks, and the
+/// final `result`. A silent gap longer than this almost always means the
+/// upstream API stopped responding and we're burning wallclock waiting
+/// for TCP keepalives to decide. 60s is comfortably above thinking-block
+/// pauses on hard prompts but aggressive enough that a single stuck call
+/// can't stall a batch run for minutes.
+const STREAM_EVENT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Adapter that shells out to the Claude Code CLI in single-shot print mode.
 /// Intended for cheap auxiliary tasks (summarization, consolidation, outline
@@ -112,8 +124,13 @@ impl ClaudeCodeAdapter {
     }
 }
 
+/// Deserialization of the `type: "result"` event emitted at the end of a
+/// `--output-format stream-json` session. The CLI emits many event types
+/// (system/init, rate_limit_event, assistant, result); we only parse the
+/// terminal `result` here, which carries the final string plus cost/latency
+/// telemetry. Intermediate events are used only as a liveness signal.
 #[derive(Deserialize)]
-struct ClaudeJsonResponse {
+struct ClaudeStreamResult {
     result: String,
     #[serde(default)]
     is_error: bool,
@@ -121,9 +138,12 @@ struct ClaudeJsonResponse {
     total_cost_usd: Option<f64>,
     #[serde(default)]
     duration_ms: Option<u64>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    stop_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct EventHeader {
+    #[serde(rename = "type")]
+    ty: String,
 }
 
 impl ModelAdapter for ClaudeCodeAdapter {
@@ -148,10 +168,19 @@ impl ModelAdapter for ClaudeCodeAdapter {
         let workspace_context = req.format_workspace(ProvenanceFormat::Xml);
         let full_user_message = format!("{}{}", req.user, workspace_context);
 
+        // Use stream-json so a reader-side watchdog can detect upstream
+        // hangs. Previously the CLI could sit in ep_poll indefinitely with
+        // `--output-format json` because that format only flushes on the
+        // terminal `result` event — so an inter-event gap was
+        // indistinguishable from slow generation to any outside observer.
+        // With stream-json each assistant event becomes a liveness tick.
         let mut cmd = Command::new("claude");
         cmd.arg("--print")
             .arg("--output-format")
-            .arg("json")
+            .arg("stream-json")
+            // `--output-format stream-json` requires `--verbose` when used
+            // with `--print`; claude CLI hard-errors otherwise.
+            .arg("--verbose")
             .arg("--model")
             .arg(&self.model)
             .arg("--system-prompt")
@@ -176,7 +205,6 @@ impl ModelAdapter for ClaudeCodeAdapter {
                 cmd.arg(tool);
             }
         } else {
-            // Disable all tools when none are configured
             cmd.arg("--tools").arg("");
         }
 
@@ -196,61 +224,143 @@ impl ModelAdapter for ClaudeCodeAdapter {
             .spawn()
             .map_err(|e| CawError::Adapter(format!("Failed to spawn claude CLI: {}", e)))?;
 
+        // Write the full prompt, then drop stdin so the CLI sees EOF and
+        // starts generating. If we held the handle open the CLI would wait
+        // for more input and the whole call would deadlock.
         {
-            let stdin = child
+            let mut stdin = child
                 .stdin
-                .as_mut()
+                .take()
                 .ok_or_else(|| CawError::Adapter("claude CLI stdin unavailable".to_string()))?;
             stdin
                 .write_all(full_user_message.as_bytes())
                 .map_err(|e| CawError::Adapter(format!("write prompt to claude stdin: {}", e)))?;
+            // dropped here
         }
 
-        let output = child
-            .wait_with_output()
-            .map_err(|e| CawError::Adapter(format!("wait on claude CLI: {}", e)))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        // With `--output-format json`, the CLI writes structured output on
-        // stdout even when it's reporting an error (auth failure, rate
-        // limit, etc.). Parse first so we surface the human-readable error
-        // text before falling back to raw diagnostics.
-        if let Ok(parsed) = serde_json::from_str::<ClaudeJsonResponse>(&stdout) {
-            if parsed.is_error {
-                return Err(CawError::Adapter(format!(
-                    "claude CLI returned error: {}",
-                    parsed.result
-                )));
+        // A background thread owns the stdout read — sync Rust has no
+        // read-with-timeout for pipes, so the channel is the escape hatch:
+        // the main loop does `recv_timeout(STREAM_EVENT_TIMEOUT)` and kills
+        // the child if no event arrives. Each NDJSON line is one event.
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| CawError::Adapter("claude CLI stdout unavailable".to_string()))?;
+        let (line_tx, line_rx) = mpsc::channel::<std::io::Result<String>>();
+        let reader_thread = std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                // An error here (EOF, broken pipe) is still a valid
+                // signal — surface it so the main loop can distinguish
+                // "clean EOF with no result event" from "timed out".
+                let is_err = line.is_err();
+                if line_tx.send(line).is_err() {
+                    break;
+                }
+                if is_err {
+                    break;
+                }
             }
+        });
 
-            if let (Some(cost), Some(ms)) = (parsed.total_cost_usd, parsed.duration_ms) {
-                eprintln!(
-                    "[claude-code] model={} cost=${:.4} duration={}ms",
-                    self.model, cost, ms
-                );
+        let mut final_result: Option<ClaudeStreamResult> = None;
+        let timeout_reason;
+        loop {
+            match line_rx.recv_timeout(STREAM_EVENT_TIMEOUT) {
+                Ok(Ok(line)) => {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    // Peek at the event type; only parse the full body
+                    // for the one we care about. Unknown event types are
+                    // just liveness ticks.
+                    let ty = match serde_json::from_str::<EventHeader>(trimmed) {
+                        Ok(h) => h.ty,
+                        Err(_) => continue,
+                    };
+                    if ty == "result" {
+                        match serde_json::from_str::<ClaudeStreamResult>(trimmed) {
+                            Ok(r) => {
+                                final_result = Some(r);
+                                break;
+                            }
+                            Err(e) => {
+                                let _ = child.kill();
+                                return Err(CawError::Adapter(format!(
+                                    "parse stream-json result event: {} (line: {})",
+                                    e, trimmed
+                                )));
+                            }
+                        }
+                    }
+                }
+                Ok(Err(io_err)) => {
+                    timeout_reason = format!("stdout read error: {}", io_err);
+                    return finalize_error(&mut child, timeout_reason);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    let _ = child.kill();
+                    let _ = reader_thread.join();
+                    return Err(CawError::Adapter(format!(
+                        "claude CLI stalled: no stream-json event for {}s — child killed",
+                        STREAM_EVENT_TIMEOUT.as_secs()
+                    )));
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    // Reader finished before we saw a result event. Fall
+                    // through to collect child status and stderr.
+                    timeout_reason =
+                        "stream ended without a result event".to_string();
+                    return finalize_error(&mut child, timeout_reason);
+                }
             }
-
-            return Ok(CompletionResponse {
-                answer: parsed.result,
-            });
         }
 
-        // No parseable JSON — either the CLI crashed before emitting its
-        // envelope or --output-format wasn't honored. Surface everything
-        // we have so the caller can see why.
-        if !output.status.success() {
+        // Reader may still be draining trailing bytes; join so we don't
+        // leak the thread and so any pending stderr has time to land.
+        let _ = reader_thread.join();
+        let _ = child.wait();
+
+        let parsed = final_result.expect("loop exits with final_result set on success path");
+        if parsed.is_error {
             return Err(CawError::Adapter(format!(
-                "claude CLI exited with {} (stdout: {}) (stderr: {})",
-                output.status,
-                stdout.trim(),
-                stderr.trim()
+                "claude CLI returned error: {}",
+                parsed.result
             )));
         }
 
+        if let (Some(cost), Some(ms)) = (parsed.total_cost_usd, parsed.duration_ms) {
+            eprintln!(
+                "[claude-code] model={} cost=${:.4} duration={}ms",
+                self.model, cost, ms
+            );
+        }
+
         Ok(CompletionResponse {
-            answer: stdout.trim().to_string(),
+            answer: parsed.result,
         })
     }
+}
+
+/// Shared error-path cleanup: kill the child if it's still alive, drain
+/// stderr for diagnostics, and format an adapter error. Used when the
+/// stream ends without a result event or stdout dies unexpectedly.
+fn finalize_error(
+    child: &mut std::process::Child,
+    context: String,
+) -> CawResult<CompletionResponse> {
+    let _ = child.kill();
+    let mut stderr_buf = String::new();
+    if let Some(mut stderr) = child.stderr.take() {
+        use std::io::Read;
+        let _ = stderr.read_to_string(&mut stderr_buf);
+    }
+    let status = child.wait().ok();
+    Err(CawError::Adapter(format!(
+        "claude CLI {} (status: {:?}, stderr: {})",
+        context,
+        status,
+        stderr_buf.trim()
+    )))
 }
