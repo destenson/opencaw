@@ -30,6 +30,7 @@ pub mod storage {
     pub mod qdrant_store;
 }
 
+pub mod flat_index;
 pub mod hnsw_index;
 
 #[cfg(feature = "fastembed")]
@@ -50,6 +51,7 @@ pub use storage::sqlite_store::SqliteStubStore;
 #[cfg(feature = "qdrant")]
 pub use storage::qdrant_store::QdrantStubStore;
 
+pub use flat_index::FlatVectorIndex;
 pub use hnsw_index::HnswVectorIndex;
 
 /// Semantic retriever combining embedding, storage, and vector index.
