@@ -145,7 +145,6 @@ fn walk_source_files(root: &Path) -> Vec<std::path::PathBuf> {
 }
 
 /// Kind detection fallback for paths we construct without extension info.
-#[allow(dead_code)]
 fn kind_for_path(p: &str) -> ContentKind {
     if p.ends_with(".md") {
         ContentKind::Markdown

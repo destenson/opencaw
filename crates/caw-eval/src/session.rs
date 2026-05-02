@@ -36,7 +36,6 @@ pub struct SessionEvaluator {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 // score and content_tokens are stored per-event for future per-recall analytics
 // (e.g., score distribution over a session). The running totals already consume
 // content_tokens at record time; keeping the per-event values lets downstream
