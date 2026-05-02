@@ -122,6 +122,6 @@ impl ModelAdapter for AnthropicAdapter {
             .map(|c| c.text.clone())
             .unwrap_or_default();
 
-        Ok(CompletionResponse { answer })
+        Ok(CompletionResponse { answer, thinking: None })
     }
 }

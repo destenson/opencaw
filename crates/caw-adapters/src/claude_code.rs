@@ -367,6 +367,7 @@ impl ModelAdapter for ClaudeCodeAdapter {
 
         Ok(CompletionResponse {
             answer: parsed.result,
+            thinking: None,
         })
     }
 }

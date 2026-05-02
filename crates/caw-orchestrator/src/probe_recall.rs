@@ -205,6 +205,7 @@ mod tests {
         fn complete(&self, _req: CompletionRequest) -> CawResult<CompletionResponse> {
             Ok(CompletionResponse {
                 answer: String::new(),
+                thinking: None,
             })
         }
     }

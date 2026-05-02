@@ -1,6 +1,6 @@
 use caw_core::{
-    CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities,
-    ProvenanceFormat,
+    split_thinking, CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
+    ModelCapabilities, ProvenanceFormat,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -173,9 +173,10 @@ impl ModelAdapter for OllamaAdapter {
         // to deserialize and the original error text gets lost. Surfacing
         // both candidate parses gives the caller something to act on.
         match serde_json::from_str::<OllamaChatResponse>(&body) {
-            Ok(parsed) => Ok(CompletionResponse {
-                answer: parsed.message.content,
-            }),
+            Ok(parsed) => {
+                let (thinking, answer) = split_thinking(&parsed.message.content);
+                Ok(CompletionResponse { answer, thinking })
+            }
             Err(parse_err) => {
                 #[derive(Deserialize)]
                 struct OllamaError {

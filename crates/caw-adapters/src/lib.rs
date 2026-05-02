@@ -61,6 +61,7 @@ impl ModelAdapter for MockAdapter {
                 "[{}] synthesized answer for: {}{}",
                 self.name, req.user, workspace_context,
             ),
+            thinking: None,
         })
     }
 }

@@ -304,6 +304,26 @@ pub struct CompletionRequest {
 #[derive(Debug, Clone)]
 pub struct CompletionResponse {
     pub answer: String,
+    /// Visible reasoning emitted by the model before the answer, if any.
+    /// Populated by adapters that detect `<think>...</think>` blocks.
+    /// Useful for thinking-trace recall without the orchestrator having to
+    /// re-parse the raw output.
+    pub thinking: Option<String>,
+}
+
+/// Split a raw model response into (thinking, answer) by extracting the first
+/// `<think>...</think>` block. Returns `(None, raw)` if no block is found.
+pub fn split_thinking(raw: &str) -> (Option<String>, String) {
+    let open = raw.find("<think>");
+    let close = raw.find("</think>");
+    match (open, close) {
+        (Some(o), Some(c)) if c > o => {
+            let thinking = raw[o + "<think>".len()..c].trim().to_string();
+            let answer = raw[c + "</think>".len()..].trim().to_string();
+            (Some(thinking), answer)
+        }
+        _ => (None, raw.to_string()),
+    }
 }
 
 /// Format for inline provenance tags on recalled content.
