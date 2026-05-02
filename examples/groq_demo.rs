@@ -1,6 +1,6 @@
 use anyhow::Result;
 use caw_adapters::GroqAdapter;
-use caw_core::{ContentKind, EmbeddingProvider, ModelAdapter, RecallThresholds, TokenBudget};
+use caw_core::{ContentKind, EmbeddingProvider, ModelAdapter, RecallThresholds, Retriever, TokenBudget};
 use caw_core::provenance::InMemoryProvenanceStore;
 use caw_core::scheduler::GreedyBudgetScheduler;
 use caw_index::{FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
@@ -97,9 +97,46 @@ fn main() -> Result<()> {
         orchestrator.loaded.clear();
         orchestrator.provenance = InMemoryProvenanceStore::default();
 
+        // Search before run_turn to capture candidate stubs and their full token estimates.
+        // run_turn does the same search internally; this doubles the embedding work but
+        // gives us visibility into what the orchestrator is considering.
+        let candidates = orchestrator.retriever.search(query, orchestrator.config.top_k)?;
+
         println!("Query: {}", query);
         println!("{}", "-".repeat(60));
+
         let response = orchestrator.run_turn(system, query)?;
+
+        // Show recall instrumentation after the turn so we can see what was admitted.
+        let total_recalled: usize = orchestrator.loaded.iter().map(|f| f.tokens).sum();
+        let full_doc_tokens: usize = candidates.iter().map(|h| h.stub.token_estimate).sum();
+
+        println!("\n[context]");
+        for hit in &candidates {
+            let admitted = orchestrator.loaded.iter().find(|f| f.stub_id.0 == hit.stub.id.0);
+            match admitted {
+                Some(frag) => println!(
+                    "  LOADED  {} (score {:.2})  chunk {} tok / full {} tok",
+                    hit.stub.path, hit.score, frag.tokens, hit.stub.token_estimate
+                ),
+                None => println!(
+                    "  skipped {} (score {:.2})  full {} tok",
+                    hit.stub.path, hit.score, hit.stub.token_estimate
+                ),
+            }
+        }
+        println!(
+            "  recalled {} tok — would have been {} tok for full chunks ({:.0}% saving)",
+            total_recalled,
+            full_doc_tokens,
+            if full_doc_tokens > 0 {
+                (1.0 - total_recalled as f64 / full_doc_tokens as f64) * 100.0
+            } else {
+                0.0
+            }
+        );
+        println!();
+
         println!("{}\n", response.answer);
     }
 
