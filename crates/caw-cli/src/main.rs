@@ -75,8 +75,8 @@ struct Cli {
     #[arg(short, long, default_value = "mock")]
     adapter: String,
 
-    #[arg(short, long, default_value = "qwen3.6:35b")]
-    model: String,
+    #[arg(short, long)]
+    model: Option<String>,
 
     /// SQLite database path for persistent index. Defaults to .caw/index.db in the current directory.
     #[arg(long)]
@@ -275,7 +275,7 @@ fn main() -> Result<()> {
         ..Default::default()
     };
 
-    let adapter: Box<dyn ModelAdapter> = build_completion_adapter(&cli.adapter, &cli.model)?;
+    let adapter: Box<dyn ModelAdapter> = build_completion_adapter(&cli.adapter, cli.model.as_deref())?;
 
     eprintln!("Using adapter: {}", adapter.model_name());
 
@@ -322,20 +322,19 @@ fn build_aux_adapter(model: &str) -> Box<dyn ModelAdapter + Send + Sync> {
     }
 }
 
-fn build_completion_adapter(adapter_name: &str, model: &str) -> Result<Box<dyn ModelAdapter>> {
+fn build_completion_adapter(adapter_name: &str, model: Option<&str>) -> Result<Box<dyn ModelAdapter>> {
     let adapter: Box<dyn ModelAdapter> = match adapter_name {
         "mock" => Box::new(MockAdapter::new("mock-local", true)),
         "anthropic" | "claude" => {
             let rt = caw_adapters::create_runtime()?;
-            match model {
-                "sonnet" => Box::new(caw_adapters::AnthropicAdapter::claude_sonnet(rt)?),
+            match model.unwrap_or("sonnet") {
                 "opus" => Box::new(caw_adapters::AnthropicAdapter::claude_opus(rt)?),
                 _ => Box::new(caw_adapters::AnthropicAdapter::claude_sonnet(rt)?),
             }
         }
         "groq" => {
             let rt = caw_adapters::create_runtime()?;
-            match model {
+            match model.unwrap_or("llama-70b") {
                 "llama-70b" => Box::new(caw_adapters::GroqAdapter::llama_70b(rt)?),
                 m => Box::new(caw_adapters::GroqAdapter::groq_model(m, rt)?),
             }
@@ -344,14 +343,14 @@ fn build_completion_adapter(adapter_name: &str, model: &str) -> Result<Box<dyn M
         "claude-code-haiku" => Box::new(caw_adapters::ClaudeCodeAdapter::haiku()),
         "ollama" => {
             let rt = caw_adapters::create_runtime()?;
-            match model {
+            match model.unwrap_or("qwen3.6:35b") {
                 "haiku" => Box::new(caw_adapters::OllamaAdapter::llama3_2(rt)),
                 m => Box::new(caw_adapters::OllamaAdapter::local(m, rt)),
             }
         }
         "perplexity" => {
             let rt = caw_adapters::create_runtime()?;
-            match model {
+            match model.unwrap_or("hermes") {
                 "hermes" => Box::new(
                     caw_adapters::OpenAiCompatibleAdapter::perplexity(rt)
                         .context("Failed to create Perplexity adapter")?,
@@ -407,7 +406,8 @@ fn build_completion_adapter(adapter_name: &str, model: &str) -> Result<Box<dyn M
         }
         other => {
             let rt = caw_adapters::create_runtime()?;
-            Box::new(caw_adapters::OllamaAdapter::local(other, rt))
+            let m = model.unwrap_or(other);
+            Box::new(caw_adapters::OllamaAdapter::local(m, rt))
         }
     };
     Ok(adapter)
