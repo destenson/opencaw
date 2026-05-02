@@ -65,6 +65,7 @@ impl ModelAdapter for MockAdapter {
                 self.name, req.user, workspace_context,
             ),
             thinking: None,
+            usage: None,
         })
     }
 }

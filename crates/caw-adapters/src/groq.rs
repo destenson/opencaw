@@ -1,6 +1,6 @@
 use caw_core::{
     CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities,
-    ProvenanceFormat, is_looping,
+    ProvenanceFormat, TokenUsage, is_looping,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -72,11 +72,18 @@ struct GroqMessage {
 #[derive(Deserialize)]
 struct GroqResponse {
     choices: Vec<GroqChoice>,
+    usage: Option<OpenAiUsage>,
 }
 
 #[derive(Deserialize)]
 struct GroqChoice {
     message: GroqMessage,
+}
+
+#[derive(Deserialize)]
+struct OpenAiUsage {
+    prompt_tokens: u32,
+    completion_tokens: u32,
 }
 
 impl ModelAdapter for GroqAdapter {
@@ -138,10 +145,15 @@ impl ModelAdapter for GroqAdapter {
                 sample: answer.chars().take(120).collect(),
             });
         }
+        let usage = response.usage.map(|u| TokenUsage {
+            input_tokens: u.prompt_tokens,
+            output_tokens: u.completion_tokens,
+        });
         trace!(model = %self.model, answer = %answer, "← llm");
         Ok(CompletionResponse {
             answer,
             thinking: None,
+            usage,
         })
     }
 }

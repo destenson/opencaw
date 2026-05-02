@@ -2,9 +2,9 @@ use crate::consolidation::{ConsolidationSynthesizer, MechanicalConsolidation};
 use crate::degradation::DegradationMonitor;
 use crate::session::{self, SessionFile};
 use caw_core::{
-    CawResult, CompletionRequest, CompletionResponse, ConsolidationNote, ConsolidationSource,
-    EmbeddingProvider, Locator, ModelAdapter, ProvenanceStore, Range, RecallFragment,
-    RecallThresholds, Retriever, StubId, StubStore, VectorIndex,
+    count_tokens_cl100k, CawResult, CompletionRequest, CompletionResponse, ConsolidationNote,
+    ConsolidationSource, EmbeddingProvider, Locator, ModelAdapter, ProvenanceStore, Range,
+    RecallFragment, RecallThresholds, Retriever, StubId, StubStore, VectorIndex,
     candidate_list_fragment, tokenize_terms,
 };
 use caw_ingest::IngestionPipeline;
@@ -559,7 +559,7 @@ where
 
             let fragment = match self.session_content.get(&stub_id) {
                 Some(content) => {
-                    let tokens = content.split_whitespace().count().max(1);
+                    let tokens = count_tokens_cl100k(content);
                     RecallFragment {
                         stub_id: stub_id.clone(),
                         content: content.clone(),
@@ -601,7 +601,7 @@ where
     pub fn read_range(&self, stub_id: &StubId, range: &Range) -> CawResult<RecallFragment> {
         let full_fragment = self.retriever.read_range(stub_id, "full")?;
         let range_content = range.apply(&full_fragment.content);
-        let token_estimate = range_content.split_whitespace().count().max(1);
+        let token_estimate = count_tokens_cl100k(&range_content);
 
         Ok(RecallFragment {
             stub_id: stub_id.clone(),

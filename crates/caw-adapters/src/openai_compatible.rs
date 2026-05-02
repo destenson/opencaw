@@ -1,6 +1,6 @@
 use caw_core::{
     is_looping, CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
-    ModelCapabilities, ProvenanceFormat,
+    ModelCapabilities, ProvenanceFormat, TokenUsage,
 };
 use tracing::trace;
 use reqwest::Client;
@@ -206,11 +206,18 @@ struct ChatMessage {
 #[derive(Deserialize)]
 struct ChatCompletionResponse {
     choices: Vec<ChatChoice>,
+    usage: Option<OpenAiUsage>,
 }
 
 #[derive(Deserialize)]
 struct ChatChoice {
     message: ChatMessage,
+}
+
+#[derive(Deserialize)]
+struct OpenAiUsage {
+    prompt_tokens: u32,
+    completion_tokens: u32,
 }
 
 #[derive(Deserialize)]
@@ -306,10 +313,15 @@ impl ModelAdapter for OpenAiCompatibleAdapter {
                 sample: answer.chars().take(120).collect(),
             });
         }
+        let usage = response.usage.map(|u| TokenUsage {
+            input_tokens: u.prompt_tokens,
+            output_tokens: u.completion_tokens,
+        });
         trace!(model = %self.model, answer = %answer, "← llm");
         Ok(CompletionResponse {
             answer,
             thinking: None,
+            usage,
         })
     }
 }

@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use caw_adapters::MockAdapter;
 use caw_core::{
-    CompletionRequest, EmbeddingProvider, Locator, ModelAdapter, RecallFragment, Retriever,
-    ScoredStub, StubId, StubStore, Tokenizer, VectorIndex, WhitespaceTokenizer,
-    candidate_list_fragment,
+    count_tokens_cl100k, CompletionRequest, EmbeddingProvider, Locator, ModelAdapter,
+    RecallFragment, Retriever, ScoredStub, StubId, StubStore, Tokenizer, VectorIndex,
+    WhitespaceTokenizer, candidate_list_fragment,
 };
 use caw_curation::{
     ConversationTurn, CurationPipelineBuilder, ExtractiveHistorySummarizer,
@@ -698,7 +698,7 @@ fn load_session_fragments(
             break;
         }
         if let Some(content) = session_content.get(&stub_id) {
-            let tokens = content.split_whitespace().count().max(1);
+            let tokens = count_tokens_cl100k(content);
             if current_tokens + tokens <= config.max_workspace_tokens {
                 loaded_ids.insert(stub_id.clone());
                 loaded.push(RecallFragment {

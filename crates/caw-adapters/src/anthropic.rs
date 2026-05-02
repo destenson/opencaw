@@ -1,6 +1,6 @@
 use caw_core::{
     is_looping, CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
-    ModelCapabilities, ProvenanceFormat,
+    ModelCapabilities, ProvenanceFormat, TokenUsage,
 };
 use tracing::trace;
 use reqwest::Client;
@@ -67,11 +67,18 @@ struct AnthropicMessage {
 #[derive(Deserialize)]
 struct AnthropicResponse {
     content: Vec<AnthropicContent>,
+    usage: Option<AnthropicUsage>,
 }
 
 #[derive(Deserialize)]
 struct AnthropicContent {
     text: String,
+}
+
+#[derive(Deserialize)]
+struct AnthropicUsage {
+    input_tokens: u32,
+    output_tokens: u32,
 }
 
 impl ModelAdapter for AnthropicAdapter {
@@ -130,10 +137,15 @@ impl ModelAdapter for AnthropicAdapter {
                 sample: answer.chars().take(120).collect(),
             });
         }
+        let usage = response.usage.map(|u| TokenUsage {
+            input_tokens: u.input_tokens,
+            output_tokens: u.output_tokens,
+        });
         trace!(model = %self.model, answer = %answer, "← llm");
         Ok(CompletionResponse {
             answer,
             thinking: None,
+            usage,
         })
     }
 }

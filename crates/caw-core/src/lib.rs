@@ -5,6 +5,7 @@ pub mod tokenizer;
 
 pub use provenance::tokenize_terms;
 pub use reindex::{ChannelReindexQueue, NoopReindexQueue, ReindexQueue, ReindexReceiver};
+pub use tokenizer::count_tokens_cl100k;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -328,7 +329,7 @@ pub fn candidate_list_fragment(hits: &[ScoredStub], threshold: f32) -> RecallFra
             source: "search-candidates".to_string(),
             locator: "file-list".to_string(),
         },
-        tokens: content.split_whitespace().count().max(1),
+        tokens: count_tokens_cl100k(&content),
     }
 }
 
@@ -383,6 +384,20 @@ pub struct CompletionRequest {
     pub workspace_fragments: Vec<RecallFragment>,
 }
 
+/// Actual token usage reported by the model API. Preferred over estimates
+/// whenever the adapter can provide it.
+#[derive(Debug, Clone, Copy)]
+pub struct TokenUsage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+}
+
+impl TokenUsage {
+    pub fn total(&self) -> u32 {
+        self.input_tokens + self.output_tokens
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CompletionResponse {
     pub answer: String,
@@ -391,6 +406,9 @@ pub struct CompletionResponse {
     /// Useful for thinking-trace recall without the orchestrator having to
     /// re-parse the raw output.
     pub thinking: Option<String>,
+    /// Actual token counts from the API response. `None` for adapters that
+    /// don't report usage (e.g. ClaudeCode, Mock).
+    pub usage: Option<TokenUsage>,
 }
 
 /// Split a raw model response into (thinking, answer) by extracting the first

@@ -18,8 +18,8 @@ use axum::{
     routing::post,
 };
 use caw_core::{
-    CompletionRequest, EmbeddingProvider, Locator, ProvenanceFormat, RecallFragment, StubStore,
-    VectorIndex,
+    count_tokens_cl100k, CompletionRequest, EmbeddingProvider, Locator, ProvenanceFormat,
+    RecallFragment, StubStore, VectorIndex,
 };
 use caw_index::{CandleEmbeddingProvider, FlatVectorIndex, HnswVectorIndex, SqliteStubStore};
 
@@ -247,7 +247,7 @@ fn retrieve_fragments(state: &AppState, query: &str) -> Result<Vec<RecallFragmen
                 continue;
             }
         };
-        let tokens = content.split_whitespace().count().max(1);
+        let tokens = count_tokens_cl100k(&content);
         if used_tokens + tokens > state.max_workspace_tokens && !fragments.is_empty() {
             // At least one fragment always gets through so a pathologically
             // large top-1 doesn't silently produce a zero-fragment response.

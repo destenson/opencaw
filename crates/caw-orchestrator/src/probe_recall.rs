@@ -208,6 +208,7 @@ mod tests {
             Ok(CompletionResponse {
                 answer: String::new(),
                 thinking: None,
+                usage: None,
             })
         }
     }

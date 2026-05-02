@@ -1,4 +1,17 @@
 use crate::{CawResult, Tokenizer};
+use std::sync::OnceLock;
+
+/// Count tokens using cl100k_base BPE. The tokenizer is initialized once
+/// and reused — callers don't need to manage a Tokenizer instance.
+/// Falls back to whitespace splitting only if BPE data fails to load (shouldn't happen).
+pub fn count_tokens_cl100k(text: &str) -> usize {
+    static TOKENIZER: OnceLock<Option<TiktokenTokenizer>> = OnceLock::new();
+    let tok = TOKENIZER.get_or_init(|| TiktokenTokenizer::cl100k().ok());
+    match tok {
+        Some(t) => t.count_tokens(text),
+        None => text.split_whitespace().count().max(1),
+    }
+}
 
 /// BPE tokenizer backed by tiktoken-rs. Gives accurate token counts
 /// for OpenAI-family models, and reasonable approximations for Claude

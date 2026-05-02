@@ -2,7 +2,10 @@ use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 
 use caw_core::provenance::InMemoryProvenanceStore;
-use caw_core::{EmbeddingProvider, ModelAdapter, RecallThresholds, StubId, StubStore, VectorIndex};
+use caw_core::{
+    count_tokens_cl100k, EmbeddingProvider, ModelAdapter, RecallThresholds, StubId, StubStore,
+    VectorIndex,
+};
 use caw_index::{
     CandleEmbeddingProvider, FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore,
 };
@@ -643,7 +646,7 @@ fn tokenize(text: &str) -> Vec<String> {
 }
 
 fn estimate_tokens(text: &str) -> usize {
-    text.split_whitespace().count().max(1)
+    count_tokens_cl100k(text)
 }
 
 fn score_answer(

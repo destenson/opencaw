@@ -1,6 +1,6 @@
 use caw_core::{
     is_looping, split_thinking, CawError, CawResult, CompletionRequest, CompletionResponse,
-    ModelAdapter, ModelCapabilities, ProvenanceFormat,
+    ModelAdapter, ModelCapabilities, ProvenanceFormat, TokenUsage,
 };
 use futures_util::StreamExt;
 use tracing::{debug, info, trace};
@@ -164,6 +164,8 @@ struct OllamaOptions {
 #[derive(Deserialize)]
 struct OllamaChatResponse {
     message: OllamaChatMessage,
+    prompt_eval_count: Option<u32>,
+    eval_count: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -246,8 +248,12 @@ impl ModelAdapter for OllamaAdapter {
                         sample: answer.chars().take(120).collect(),
                     });
                 }
+                let usage = match (parsed.prompt_eval_count, parsed.eval_count) {
+                    (Some(i), Some(o)) => Some(TokenUsage { input_tokens: i, output_tokens: o }),
+                    _ => None,
+                };
                 trace!(model = %self.model, answer = %answer, "← llm");
-                Ok(CompletionResponse { answer, thinking })
+                Ok(CompletionResponse { answer, thinking, usage })
             }
             Err(parse_err) => {
                 #[derive(Deserialize)]
