@@ -161,7 +161,9 @@ fn main() -> Result<()> {
         .with_line_number(true)
         .init();
 
-    let mut embedder = LazyFastEmbedProvider::new();
+    eprintln!("Loading embedding model...");
+    let mut embedder = FastEmbedProvider::bge_small()
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     let dimension = embedder.dimension();
 
     let db_path = cli
@@ -411,7 +413,7 @@ fn build_completion_adapter(adapter_name: &str, model: Option<&str>) -> Result<B
 
 #[allow(clippy::too_many_arguments)]
 fn run_interactive(
-    mut retriever: SemanticRetriever<LazyFastEmbedProvider, SqliteStubStore, HnswVectorIndex>,
+    mut retriever: SemanticRetriever<FastEmbedProvider, SqliteStubStore, HnswVectorIndex>,
     mut trace_embedder: LazyFastEmbedProvider,
     mut trace_index: HnswVectorIndex,
     adapter: Box<dyn ModelAdapter>,
@@ -800,7 +802,7 @@ fn load_session_fragments(
 }
 
 fn load_fragments(
-    retriever: &mut SemanticRetriever<LazyFastEmbedProvider, SqliteStubStore, HnswVectorIndex>,
+    retriever: &mut SemanticRetriever<FastEmbedProvider, SqliteStubStore, HnswVectorIndex>,
     hits: &[caw_core::ScoredStub],
     loaded: &mut Vec<caw_core::RecallFragment>,
     loaded_ids: &mut std::collections::HashSet<caw_core::StubId>,
