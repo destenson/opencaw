@@ -58,8 +58,8 @@ struct Cli {
     )]
     system: String,
 
-    /// Tokenizer for token counting: whitespace (default), cl100k, p50k
-    #[arg(long, default_value = "whitespace")]
+    /// Tokenizer for token counting: cl100k (default), whitespace, p50k
+    #[arg(long, default_value = "cl100k")]
     tokenizer: String,
 
     /// Use LLM to generate stub summaries during ingestion (uses aux-model)
@@ -133,13 +133,10 @@ fn main() -> Result<()> {
         .with_corpus_root(cli.dir.clone());
 
     let tokenizer: Arc<dyn Tokenizer> = match cli.tokenizer.as_str() {
-        "cl100k" => {
-            eprintln!("Using cl100k_base tokenizer");
-            Arc::new(
-                caw_core::tokenizer::TiktokenTokenizer::cl100k()
-                    .context("Failed to load cl100k_base tokenizer")?,
-            )
-        }
+        "cl100k" => Arc::new(
+            caw_core::tokenizer::TiktokenTokenizer::cl100k()
+                .context("Failed to load cl100k_base tokenizer")?,
+        ),
         "p50k" => {
             eprintln!("Using p50k_base tokenizer");
             Arc::new(
@@ -665,7 +662,7 @@ fn run_interactive(
 
         if !loaded.is_empty() {
             eprintln!(
-                "[workspace: {} fragments, ~{} tokens]",
+                "[workspace: {} fragments, ~{} words]",
                 loaded.len(),
                 loaded.iter().map(|f| f.tokens).sum::<usize>()
             );

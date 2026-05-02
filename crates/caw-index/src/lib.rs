@@ -140,7 +140,7 @@ where
 
         let parsed = Range::parse(range);
         let content = parsed.apply(&full_content);
-        let tokens = estimate_tokens(&content);
+        let tokens = estimate_tokens(&content, true);
 
         Ok(RecallFragment {
             stub_id: id.clone(),
@@ -331,7 +331,7 @@ impl Retriever for InMemoryIndex {
 
         let parsed = Range::parse(range);
         let content = parsed.apply(full_content);
-        let tokens = estimate_tokens(&content);
+        let tokens = estimate_tokens(&content, true);
 
         Ok(RecallFragment {
             stub_id: id.clone(),
@@ -374,6 +374,11 @@ fn score_query_against_stub(query: &str, stub: &Stub) -> f32 {
     score
 }
 
-fn estimate_tokens(content: &str) -> usize {
-    content.split_whitespace().count().max(1)
+fn estimate_tokens(content: &str, split_ws: bool) -> usize {
+    if split_ws {
+        content.split_whitespace().count().max(1)
+    } else {
+        // Rough heuristic: 4 characters per token on average
+        (content.len() as f32 / 4.0).ceil() as usize
+    }
 }
