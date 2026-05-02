@@ -12,12 +12,14 @@ A **Rust library** for context-as-workspace management in LLM applications. Embe
 - [x] Curation hooks: history summarization, tool output compression, system prompt budgeting — see `caw-curation`.
 - [x] LLM-generated stub summaries for prose: `LlmSummarizer` in `caw-ingest`.
 - [x] Summary caching: `StubStore::get_by_content_hash()` lets the CLI skip re-embedding unchanged files.
+- [ ] Serious thought into user interface: ergonomics of user interface, ergonomics of the API, documentation, actionable error handling.
 
 ### Should have (significant quality improvement)
 - [ ] Richer consolidation notes: `MechanicalConsolidation` is the default; `LlmConsolidation` exists but the default still emits mechanical strings. Open question whether the LLM variant should be on by default under `--llm-consolidation`.
 - [x] Adaptive chunking for large files: `caw-ingest/src/chunking.rs`. Token-threshold splitting with structural boundaries for code and markdown.
 - [x] Degradation monitoring and tiered fallback: `caw-orchestrator/src/degradation.rs`. Opt-in via `with_degradation_monitor()`.
 - [ ] Provenance conflict detection beyond topic overlap: still only Jaccard. Contradicting assertions and inconsistent numbers are undetected.
+- [ ] Serious thought into how to use as middleware/proxy that can support any compatible 3rd-party client. This is a separate engineering problem from the core library, but it should influence design decisions in v1 to avoid painting ourselves into a corner.
 
 ### Nice to have (polish)
 - [x] Probe rate limiting for models that thrash: `ProbeRateLimiter` in the degradation module.
