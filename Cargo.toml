@@ -11,7 +11,7 @@ members = [
   "crates/caw-transform",
   "crates/caw-curation",
   "crates/caw-bench",
-  "."
+  ".",
 ]
 resolver = "2"
 
@@ -28,3 +28,29 @@ serde_json = "1"
 tracing = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 rayon = "1"
+caw-adapters = { path = "crates/caw-adapters" }
+caw-bench = { path = "crates/caw-bench" }
+caw-cli = { path = "crates/caw-cli" }
+caw-core = { path = "crates/caw-core" }
+caw-curation = { path = "crates/caw-curation" }
+caw-eval = { path = "crates/caw-eval" }
+caw-index = { path = "crates/caw-index" }
+caw-ingest = { path = "crates/caw-ingest" }
+caw-orchestrator = { path = "crates/caw-orchestrator" }
+caw-server = { path = "crates/caw-server" }
+caw-transform = { path = "crates/caw-transform" }
+
+[package]
+name = "opencaw"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+caw-adapters = { workspace = true }
+caw-core = { workspace = true }
+caw-index = { workspace = true }
+caw-ingest = { workspace = true }
+caw-orchestrator = { workspace = true }
+tempfile = "3"

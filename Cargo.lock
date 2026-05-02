@@ -2944,6 +2944,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "opencaw"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "caw-adapters",
+ "caw-core",
+ "caw-index",
+ "caw-ingest",
+ "caw-orchestrator",
+ "tempfile",
+]
+
+[[package]]
 name = "openssl"
 version = "0.10.77"
 source = "registry+https://github.com/rust-lang/crates.io-index"

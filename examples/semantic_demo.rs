@@ -1,11 +1,11 @@
 use anyhow::Result;
 use caw_adapters::MockAdapter;
-use caw_core::{ContentKind, RecallThresholds, TokenBudget};
+use caw_core::{ContentKind, EmbeddingProvider, RecallThresholds, TokenBudget};
 use caw_index::{FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
 use caw_ingest::{IngestionPipeline, SourceDocument};
 use caw_orchestrator::{OrchestratorConfig, RecallOrchestrator};
 use caw_core::provenance::InMemoryProvenanceStore;
-use caw_scheduler::GreedyBudgetScheduler;
+use caw_core::scheduler::GreedyBudgetScheduler;
 
 // TODO: allow the user to supply a document or path to query about, instead of hardcoding demo documents and queries.
 
@@ -27,6 +27,9 @@ fn main() -> Result<()> {
 
     println!("Ingesting documents...");
     let pipeline = IngestionPipeline::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
 
     let docs = vec![
         SourceDocument {
@@ -38,7 +41,7 @@ fn main() -> Result<()> {
                      stubs containing metadata for triage without reading the full content."
                 .to_string(),
             kind: ContentKind::Markdown,
-            mtime_unix_secs: 0,
+            mtime_unix_secs: now,
         },
         SourceDocument {
             path: "rust-embedding-guide.md".to_string(),
@@ -48,7 +51,7 @@ fn main() -> Result<()> {
                      fast approximate nearest neighbor search."
                 .to_string(),
             kind: ContentKind::Markdown,
-            mtime_unix_secs: 0,
+            mtime_unix_secs: now,
         },
         SourceDocument {
             path: "model-adapters.md".to_string(),
@@ -58,7 +61,7 @@ fn main() -> Result<()> {
                      Ollama for local deployment with DeepSeek R1 and other open models."
                 .to_string(),
             kind: ContentKind::Markdown,
-            mtime_unix_secs: 0,
+            mtime_unix_secs: now,
         },
     ];
 
