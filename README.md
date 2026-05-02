@@ -265,7 +265,7 @@ let mut orchestrator: DynamicRecallOrchestrator<_, _, _, _, _, SqliteStubStore> 
     );
 
 let response = orchestrator.run_turn(
-    "You are a helpful assistant.",
+    "",
     "How should I optimize context for local models?",
 )?;
 

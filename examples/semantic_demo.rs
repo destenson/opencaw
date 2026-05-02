@@ -109,7 +109,7 @@ fn main() -> Result<()> {
         println!("Query: {}", query);
         println!("{}", "=".repeat(60));
 
-        let response = orchestrator.run_turn("You are a helpful assistant.", query)?;
+        let response = orchestrator.run_turn("", query)?;
 
         println!("{}\n", response.answer);
     }

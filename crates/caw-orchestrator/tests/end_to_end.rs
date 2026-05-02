@@ -196,7 +196,7 @@ fn recall_loop_admits_fragment_and_tags_provenance() {
     // and bucket hashing, the cosine match should prefer auth over others.
     let user_query = "how does session token validation work in the authentication middleware";
     let response = orchestrator
-        .run_turn("You are a helpful assistant.", user_query)
+        .run_turn("", user_query)
         .expect("run_turn");
 
     // MockAdapter echoes the workspace via format_workspace — so if any

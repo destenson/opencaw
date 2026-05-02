@@ -37,7 +37,7 @@ impl Default for RunnerConfig {
         // ceiling never bit and recall-on collapsed to recall-off.
         Self {
             system_prompt:
-                "You are a helpful assistant. Use the recalled workspace context to answer \
+                "Use the recalled workspace context to answer \
                  the question accurately and concisely. Cite source locators from the recalled \
                  context when they support your answer."
                     .to_string(),

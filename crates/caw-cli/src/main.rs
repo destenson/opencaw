@@ -48,7 +48,7 @@ struct Cli {
     /// System prompt
     #[arg(
         long,
-        default_value = "You are a helpful assistant with access to recalled documents. Use the recalled context to answer questions accurately."
+        default_value = "With access to recalled documents, use the recalled context to answer questions accurately."
     )]
     system: String,
 
