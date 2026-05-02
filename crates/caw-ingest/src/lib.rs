@@ -411,6 +411,11 @@ fn should_skip(path: &Path) -> bool {
                 | "pyc"
                 | "pyo"
                 | "class"
+                | "sqlite"
+                | "sqlite3"
+                | "db"
+                | "sqlite-shm"
+                | "sqlite-wal"
         )
     )
 }
