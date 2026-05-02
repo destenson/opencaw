@@ -24,7 +24,7 @@ where
 
 #[derive(Debug, Clone)]
 pub struct ThinkingTraceConfig {
-    pub top_k: usize,
+    pub max_candidates: usize,
     pub thresholds: RecallThresholds,
     pub default_range: String,
     pub budget: TokenBudget,
@@ -34,7 +34,7 @@ pub struct ThinkingTraceConfig {
 impl Default for ThinkingTraceConfig {
     fn default() -> Self {
         Self {
-            top_k: 4,
+            max_candidates: 20,
             thresholds: RecallThresholds::default_hysteresis(),
             default_range: "full".to_string(),
             budget: TokenBudget {
@@ -94,7 +94,7 @@ where
     }
 
     fn recall_for_query(&mut self, query: &str) -> CawResult<Vec<RecallFragment>> {
-        let hits = self.retriever.search(query, self.config.top_k)?;
+        let hits = self.retriever.search(query, self.config.max_candidates)?;
         let mut candidates = Vec::new();
         let mut candidate_scores = Vec::new();
 

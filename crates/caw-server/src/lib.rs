@@ -64,8 +64,8 @@ pub struct AppState {
     /// `http://localhost:11434/v1` for Ollama. The `/chat/completions`
     /// suffix is appended by the handler.
     pub upstream_base: String,
-    /// How many stubs to pull from the index for each incoming request.
-    pub top_k: usize,
+    /// Candidate pool size for ANN search; the load threshold controls actual admissions.
+    pub max_candidates: usize,
     /// Hard cap on total tokens of recalled content injected into the
     /// user message (rough token ≈ whitespace-split count).
     pub max_workspace_tokens: usize,
@@ -88,7 +88,7 @@ pub fn build_state(
     index_path: &str,
     corpus_root: std::path::PathBuf,
     upstream_base: String,
-    top_k: usize,
+    max_candidates: usize,
     max_workspace_tokens: usize,
     retriever: RetrieverKind,
 ) -> Result<AppState> {
@@ -126,11 +126,11 @@ pub fn build_state(
     };
 
     info!(
-        "caw-server ready: {} stubs, retriever={:?}, upstream={}, top_k={}, max_workspace_tokens={}",
+        "caw-server ready: {} stubs, retriever={:?}, upstream={}, max_candidates={}, max_workspace_tokens={}",
         all.len(),
         retriever,
         upstream_base,
-        top_k,
+        max_candidates,
         max_workspace_tokens,
     );
 
@@ -139,7 +139,7 @@ pub fn build_state(
         store: Mutex::new(store),
         index: Mutex::new(index),
         upstream_base,
-        top_k,
+        max_candidates,
         max_workspace_tokens,
         http: reqwest::Client::builder()
             .build()
@@ -225,7 +225,7 @@ fn retrieve_fragments(state: &AppState, query: &str) -> Result<Vec<RecallFragmen
             .index
             .lock()
             .map_err(|_| anyhow::anyhow!("index mutex poisoned"))?;
-        index.search(&query_embedding, state.top_k)
+        index.search(&query_embedding, state.max_candidates)
     };
 
     let store = state

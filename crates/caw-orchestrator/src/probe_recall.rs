@@ -27,7 +27,7 @@ where
 
 #[derive(Debug, Clone)]
 pub struct ProbeRecallConfig {
-    pub top_k: usize,
+    pub max_candidates: usize,
     pub thresholds: RecallThresholds,
     pub default_range: String,
     pub budget: TokenBudget,
@@ -37,7 +37,7 @@ pub struct ProbeRecallConfig {
 impl Default for ProbeRecallConfig {
     fn default() -> Self {
         Self {
-            top_k: 3,
+            max_candidates: 20,
             thresholds: RecallThresholds::default_hysteresis(),
             default_range: "full".to_string(),
             budget: TokenBudget {
@@ -124,7 +124,7 @@ where
     }
 
     fn recall_for_probe(&mut self, probe_query: &str) -> CawResult<Vec<RecallFragment>> {
-        let hits = self.retriever.search(probe_query, self.config.top_k)?;
+        let hits = self.retriever.search(probe_query, self.config.max_candidates)?;
         let mut candidates = Vec::new();
         let mut candidate_scores = Vec::new();
 

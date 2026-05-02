@@ -33,9 +33,9 @@ struct Cli {
     #[arg(long, default_value = "8080")]
     port: u16,
 
-    /// How many stubs to fetch per request.
-    #[arg(long, default_value = "5")]
-    top_k: usize,
+    /// Candidate pool size for ANN search; the load threshold controls actual admissions.
+    #[arg(long, default_value = "20")]
+    max_candidates: usize,
 
     /// Hard cap on injected recall content (whitespace-split token count).
     #[arg(long, default_value = "2000")]
@@ -67,7 +67,7 @@ async fn main() -> Result<()> {
         &index_path,
         cli.corpus_root,
         cli.upstream,
-        cli.top_k,
+        cli.max_candidates,
         cli.max_workspace_tokens,
         cli.retriever,
     )?;

@@ -47,7 +47,9 @@ pub struct DynamicRecallOrchestrator<R, E, V, P, M, S = ()> {
 
 #[derive(Debug, Clone)]
 pub struct DynamicRecallConfig {
-    pub top_k: usize,
+    /// Candidate pool size passed to ANN search. The load threshold — not
+    /// this value — controls how many candidates are actually admitted.
+    pub max_candidates: usize,
     pub thresholds: RecallThresholds,
     pub max_workspace_tokens: usize,
     pub max_recall_iterations: usize,
@@ -62,7 +64,7 @@ pub struct DynamicRecallConfig {
 impl Default for DynamicRecallConfig {
     fn default() -> Self {
         Self {
-            top_k: 4,
+            max_candidates: 20,
             thresholds: RecallThresholds::default_hysteresis(),
             max_workspace_tokens: 12_000,
             max_recall_iterations: 3,
@@ -220,7 +222,7 @@ where
         let system_prompt = self.build_system_prompt(system);
 
         // Phase 1: Initial retrieval on the user query
-        let initial_hits = self.retriever.search(user, self.config.top_k)?;
+        let initial_hits = self.retriever.search(user, self.config.max_candidates)?;
         debug!(hits = initial_hits.len(), "initial retrieval complete");
         self.load_fragments(
             initial_hits
@@ -335,7 +337,7 @@ where
 
             let embeddings = embed_result?;
             if let Some(embedding) = embeddings.first() {
-                let hits = self.vector_index.search(embedding, self.config.top_k);
+                let hits = self.vector_index.search(embedding, self.config.max_candidates);
                 self.load_fragments(hits)?;
             }
         }
@@ -356,7 +358,7 @@ where
                 }
             }
 
-            let hits = self.retriever.search(&probe.content, self.config.top_k)?;
+            let hits = self.retriever.search(&probe.content, self.config.max_candidates)?;
             self.load_fragments(
                 hits.into_iter()
                     .map(|hit| (hit.stub.id, hit.score))

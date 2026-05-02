@@ -93,7 +93,7 @@ fn main() -> Result<()> {
         let trace_embedder = FastEmbedProvider::bge_small()?;
         let trace_index = HnswVectorIndex::new();
         let config = DynamicRecallConfig {
-            top_k: 3,
+            max_candidates: 20,
             thresholds: RecallThresholds::default_hysteresis(),
             max_workspace_tokens: 16_000,
             ..Default::default()
@@ -129,7 +129,7 @@ fn main() -> Result<()> {
         }
     } else {
         let config = OrchestratorConfig {
-            top_k: 3,
+            max_candidates: 20,
             thresholds: RecallThresholds::default_hysteresis(),
             budget: TokenBudget {
                 max_total: 16_000,
@@ -153,7 +153,7 @@ fn main() -> Result<()> {
 
             let candidates = orchestrator
                 .retriever
-                .search(query, orchestrator.config.top_k)?;
+                .search(query, orchestrator.config.max_candidates)?;
 
             println!("Query: {}", query);
             println!("{}", "-".repeat(60));

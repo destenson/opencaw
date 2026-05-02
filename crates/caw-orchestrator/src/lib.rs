@@ -15,7 +15,7 @@ use tracing::{debug, info, trace};
 
 #[derive(Debug, Clone)]
 pub struct OrchestratorConfig {
-    pub top_k: usize,
+    pub max_candidates: usize,
     pub thresholds: RecallThresholds,
     pub default_range: String,
     pub budget: TokenBudget,
@@ -29,7 +29,7 @@ pub struct OrchestratorConfig {
 impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
-            top_k: 4,
+            max_candidates: 20,
             thresholds: RecallThresholds::default_hysteresis(),
             default_range: "full".to_string(),
             budget: TokenBudget {
@@ -172,7 +172,7 @@ where
     S: BudgetScheduler,
     P: ProvenanceStore,
 {
-    let hits = retriever.search(query, config.top_k)?;
+    let hits = retriever.search(query, config.max_candidates)?;
     let total_hits = hits.len();
 
     let mut candidates = Vec::new();

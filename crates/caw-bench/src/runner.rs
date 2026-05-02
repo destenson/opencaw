@@ -15,7 +15,7 @@ use crate::workload::{RecallMode, Scoring, WorkloadItem};
 
 pub struct RunnerConfig {
     pub system_prompt: String,
-    pub top_k: usize,
+    pub max_candidates: usize,
     pub max_workspace_tokens: usize,
     pub max_recall_iterations: usize,
     /// Load threshold passed into the orchestrator's hysteresis config.
@@ -40,7 +40,7 @@ impl Default for RunnerConfig {
                  the question accurately and concisely. Cite source locators from the recalled \
                  context when they support your answer."
                 .to_string(),
-            top_k: 5,
+            max_candidates: 20,
             max_workspace_tokens: 2_000,
             max_recall_iterations: 3,
             load_threshold: 0.3,
@@ -506,7 +506,7 @@ fn orchestrator_config(mode: RecallMode, cfg: &RunnerConfig) -> DynamicRecallCon
     };
     match mode {
         RecallMode::On => DynamicRecallConfig {
-            top_k: cfg.top_k,
+            max_candidates: cfg.max_candidates,
             thresholds,
             max_workspace_tokens: cfg.max_workspace_tokens,
             max_recall_iterations: cfg.max_recall_iterations,
@@ -515,7 +515,7 @@ fn orchestrator_config(mode: RecallMode, cfg: &RunnerConfig) -> DynamicRecallCon
             enable_probe_recall: true,
         },
         RecallMode::Off => DynamicRecallConfig {
-            top_k: cfg.top_k,
+            max_candidates: cfg.max_candidates,
             thresholds,
             max_workspace_tokens: cfg.max_workspace_tokens,
             // No multi-pass, no probes, no trace recall: this is the

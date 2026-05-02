@@ -95,9 +95,9 @@ struct Cli {
     #[arg(long, default_value = "2000")]
     max_workspace_tokens: usize,
 
-    /// top-k for retrieval.
-    #[arg(long, default_value = "5")]
-    top_k: usize,
+    /// Candidate pool size for ANN search; the load threshold controls actual admissions.
+    #[arg(long, default_value = "20")]
+    max_candidates: usize,
 
     /// Hysteresis load threshold (score above which a candidate is loaded
     /// into the workspace). The library default is 0.7, tuned for real
@@ -204,7 +204,7 @@ fn main() -> Result<()> {
     };
 
     let cfg = RunnerConfig {
-        top_k: cli.top_k,
+        max_candidates: cli.max_candidates,
         max_workspace_tokens: cli.max_workspace_tokens,
         load_threshold: cli.load_threshold,
         unload_threshold: cli.unload_threshold,

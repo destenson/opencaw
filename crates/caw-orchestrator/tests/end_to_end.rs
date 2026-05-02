@@ -169,7 +169,7 @@ fn recall_loop_admits_fragment_and_tags_provenance() {
     // the admission machinery, not threshold calibration — the default
     // hysteresis (load=0.7) is tuned for real embedding models.
     let config = DynamicRecallConfig {
-        top_k: 2,
+        max_candidates: 4,
         thresholds: RecallThresholds {
             load: 0.05,
             unload: 0.02,

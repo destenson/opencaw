@@ -38,9 +38,9 @@ struct Cli {
     #[arg(long)]
     db: Option<PathBuf>,
 
-    /// Top-k results for recall
-    #[arg(long, default_value = "4")]
-    top_k: usize,
+    /// Candidate pool size for ANN search; the load threshold controls actual admissions.
+    #[arg(long, default_value = "20")]
+    max_candidates: usize,
 
     /// Max workspace tokens
     #[arg(long, default_value = "12000")]
@@ -218,7 +218,7 @@ fn main() -> Result<()> {
     }
 
     let config = DynamicRecallConfig {
-        top_k: cli.top_k,
+        max_candidates: cli.max_candidates,
         max_workspace_tokens: cli.max_tokens,
         ..Default::default()
     };
@@ -497,14 +497,14 @@ fn run_interactive(
             system.to_string()
         };
 
-        let hits = retriever.search(query, config.top_k)?;
+        let hits = retriever.search(query, config.max_candidates)?;
         load_fragments(&mut retriever, &hits, &mut loaded, &mut loaded_ids, &config)?;
 
         // Session history search runs alongside workspace search.
         if !session_content.is_empty() {
             if let Ok(embeddings) = trace_embedder.embed_query(vec![query]) {
                 if let Some(emb) = embeddings.first() {
-                    let session_hits = session_index.search(emb, config.top_k);
+                    let session_hits = session_index.search(emb, config.max_candidates);
                     load_session_fragments(
                         session_hits,
                         &session_content,
@@ -525,7 +525,7 @@ fn run_interactive(
         if config.enable_probe_recall {
             let probes = extract_probes(&response.answer);
             for probe in probes {
-                let probe_hits = retriever.search(&probe.content, config.top_k)?;
+                let probe_hits = retriever.search(&probe.content, config.max_candidates)?;
                 load_fragments(
                     &mut retriever,
                     &probe_hits,
@@ -546,7 +546,7 @@ fn run_interactive(
                 if let Ok(embeddings) = trace_embedder.embed_query(vec![&step.content])
                     && let Some(emb) = embeddings.first()
                 {
-                    let index_hits = trace_index.search(emb, config.top_k);
+                    let index_hits = trace_index.search(emb, config.max_candidates);
                     for (stub_id, score) in index_hits {
                         if loaded_ids.contains(&stub_id) || score < config.thresholds.load {
                             continue;

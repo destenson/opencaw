@@ -79,7 +79,7 @@ fn main() -> Result<()> {
     println!("Indexed 3 documents\n");
 
     let config = OrchestratorConfig {
-        top_k: 2,
+        max_candidates: 4,
         thresholds: RecallThresholds::permissive(),
         budget: TokenBudget {
             max_total: 16_000,

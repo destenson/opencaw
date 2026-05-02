@@ -73,7 +73,7 @@ fn main() -> Result<()> {
     println!();
 
     let config = OrchestratorConfig {
-        top_k: 3,
+        max_candidates: 20,
         thresholds: RecallThresholds::default_hysteresis(),
         budget: TokenBudget {
             max_total: 16_000,
@@ -110,7 +110,7 @@ fn main() -> Result<()> {
         // gives us visibility into what the orchestrator is considering.
         let candidates = orchestrator
             .retriever
-            .search(query, orchestrator.config.top_k)?;
+            .search(query, orchestrator.config.max_candidates)?;
 
         println!("Query: {}", query);
         println!("{}", "-".repeat(60));
