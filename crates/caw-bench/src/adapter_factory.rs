@@ -57,8 +57,7 @@ fn build_inner(
 ) -> Result<Box<dyn ModelAdapter>> {
     let adapter: Box<dyn ModelAdapter> = match spec.kind {
         AdapterKind::Ollama => {
-            let mut a =
-                OllamaAdapter::new_with(spec.ollama_url, spec.model, runtime.clone());
+            let mut a = OllamaAdapter::new_with(spec.ollama_url, spec.model, runtime.clone());
             if let Some(t) = spec.temperature {
                 a = a.with_temperature(t);
             }
@@ -89,9 +88,7 @@ fn build_inner(
             }
             Box::new(a)
         }
-        AdapterKind::ClaudeCode => {
-            Box::new(ClaudeCodeAdapter::builder().model(spec.model).build())
-        }
+        AdapterKind::ClaudeCode => Box::new(ClaudeCodeAdapter::builder().model(spec.model).build()),
     };
     Ok(adapter)
 }

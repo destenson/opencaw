@@ -32,8 +32,7 @@ const MAX_SEQ_LEN: usize = 512;
 const MAX_TEXT_CHARS: usize = 2_500;
 
 /// BGE query prefix for asymmetric retrieval. Matches the model card.
-const BGE_QUERY_PREFIX: &str =
-    "Represent this sentence for searching relevant passages: ";
+const BGE_QUERY_PREFIX: &str = "Represent this sentence for searching relevant passages: ";
 
 /// Precision variant for `bge_small_variant`. Maps to a specific ONNX file
 /// in `Xenova/bge-small-en-v1.5`. Naming follows the transformers.js export
@@ -109,7 +108,12 @@ impl OnnxEmbeddingProvider {
                 model_dir.display()
             )));
         }
-        Self::from_paths(model_path, tokenizer_path.to_str().unwrap(), dimension, true)
+        Self::from_paths(
+            model_path,
+            tokenizer_path.to_str().unwrap(),
+            dimension,
+            true,
+        )
     }
 
     /// Load with explicit paths and a flag for asymmetric prefix handling.
@@ -336,9 +340,7 @@ fn build_session(model_path: &str) -> CawResult<(Session, &'static str)> {
             Ok((session, "onnx-cuda"))
         }
         Err(err) => {
-            eprintln!(
-                "onnx: CUDA EP unavailable ({err}); falling back to CPU execution provider"
-            );
+            eprintln!("onnx: CUDA EP unavailable ({err}); falling back to CPU execution provider");
             let session = Session::builder()
                 .map_err(|e| CawError::Embedding(format!("session builder: {e}")))?
                 .commit_from_file(model_path)

@@ -241,8 +241,9 @@ fn main() -> Result<()> {
     // completes so a kill mid-run still leaves a usable partial trace.
     let mut trace_writer: Option<std::io::BufWriter<std::fs::File>> = match &cli.trace_out {
         Some(path) => {
-            if let Some(parent) = path.parent() 
-                && !parent.as_os_str().is_empty() {
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+            {
                 std::fs::create_dir_all(parent).ok();
             }
             match std::fs::File::create(path) {
@@ -251,7 +252,11 @@ fn main() -> Result<()> {
                     Some(std::io::BufWriter::new(f))
                 }
                 Err(e) => {
-                    eprintln!("  warning: could not open trace file {}: {}", path.display(), e);
+                    eprintln!(
+                        "  warning: could not open trace file {}: {}",
+                        path.display(),
+                        e
+                    );
                     None
                 }
             }
@@ -288,7 +293,14 @@ fn main() -> Result<()> {
                 }
             };
 
-            match run_item(item, *mode, &cfg, answer_adapter, judge_adapter.as_ref(), prebuilt.as_ref()) {
+            match run_item(
+                item,
+                *mode,
+                &cfg,
+                answer_adapter,
+                judge_adapter.as_ref(),
+                prebuilt.as_ref(),
+            ) {
                 Ok(result) => {
                     eprintln!(
                         "  score={:.2} recall@k={:.2} ctx_eff={:.2} loaded={}",
@@ -348,7 +360,9 @@ fn build_workload(cli: &Cli) -> Result<Vec<WorkloadItem>> {
             };
             Ok(niah::build(&config))
         }
-        Workload::Opencaw => opencaw::build(&cli.repo_root, cli.qa_file.as_deref()).context("build opencaw workload"),
+        Workload::Opencaw => {
+            opencaw::build(&cli.repo_root, cli.qa_file.as_deref()).context("build opencaw workload")
+        }
         Workload::Sysdoc => {
             let qa_file = cli.qa_file.as_deref().ok_or_else(|| {
                 anyhow::anyhow!(
@@ -362,10 +376,7 @@ fn build_workload(cli: &Cli) -> Result<Vec<WorkloadItem>> {
 
 /// Open a prebuilt retrieval index and wrap it for sharing across items.
 /// Called once per bench run when `--index` is supplied.
-fn load_prebuilt_index(
-    path: &std::path::Path,
-    corpus_root: PathBuf,
-) -> Result<PrebuiltIndex> {
+fn load_prebuilt_index(path: &std::path::Path, corpus_root: PathBuf) -> Result<PrebuiltIndex> {
     let started = std::time::Instant::now();
     let path_str = path.to_string_lossy().into_owned();
 

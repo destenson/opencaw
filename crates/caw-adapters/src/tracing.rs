@@ -130,10 +130,7 @@ impl<A: ModelAdapter> ModelAdapter for TracingAdapter<A> {
 
         let started = SystemTime::now();
         let result = self.inner.complete(req);
-        let latency_ms = started
-            .elapsed()
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let latency_ms = started.elapsed().map(|d| d.as_millis() as u64).unwrap_or(0);
 
         match &result {
             Ok(resp) => self.sink.log(serde_json::json!({
@@ -235,7 +232,10 @@ mod tests {
         let resp_line: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(req_line["event"], "llm_request");
         assert_eq!(req_line["request"]["user"], "hello");
-        assert_eq!(req_line["request"]["workspace_fragments"][0]["stub_id"], "s_1");
+        assert_eq!(
+            req_line["request"]["workspace_fragments"][0]["stub_id"],
+            "s_1"
+        );
         assert_eq!(resp_line["event"], "llm_response");
     }
 }

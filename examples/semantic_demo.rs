@@ -1,16 +1,15 @@
 use anyhow::Result;
 use caw_adapters::MockAdapter;
+use caw_core::provenance::InMemoryProvenanceStore;
+use caw_core::scheduler::GreedyBudgetScheduler;
 use caw_core::{ContentKind, EmbeddingProvider, RecallThresholds, TokenBudget};
 use caw_index::{FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
 use caw_ingest::{IngestionPipeline, SourceDocument};
 use caw_orchestrator::{OrchestratorConfig, RecallOrchestrator};
-use caw_core::provenance::InMemoryProvenanceStore;
-use caw_core::scheduler::GreedyBudgetScheduler;
 
 // TODO: allow the user to supply a document or path to query about, instead of hardcoding demo documents and queries.
 
 fn main() -> Result<()> {
-
     println!("OpenCAW Semantic Retrieval Demo\n");
 
     println!("Initializing semantic index...");

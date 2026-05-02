@@ -36,11 +36,10 @@ impl Default for RunnerConfig {
         // bring in additional fragments. With a 12k budget the budget
         // ceiling never bit and recall-on collapsed to recall-off.
         Self {
-            system_prompt:
-                "Use the recalled workspace context to answer \
+            system_prompt: "Use the recalled workspace context to answer \
                  the question accurately and concisely. Cite source locators from the recalled \
                  context when they support your answer."
-                    .to_string(),
+                .to_string(),
             top_k: 5,
             max_workspace_tokens: 2_000,
             max_recall_iterations: 3,
@@ -105,12 +104,7 @@ pub fn build_in_memory_prebuilt(
             mtime_unix_secs: 0,
         };
         for (stub, _embed_text) in pipeline.ingest(source_doc) {
-            let summary_text = format!(
-                "{} {} {}",
-                stub.path,
-                stub.summary,
-                stub.outline.join(" ")
-            );
+            let summary_text = format!("{} {} {}", stub.path, stub.summary, stub.outline.join(" "));
             all_texts.push(summary_text);
             all_stubs.push(stub);
         }
@@ -302,12 +296,8 @@ fn run_item_fresh(
         };
         let stubs = pipeline.ingest(source_doc);
         for (stub, _embed_text) in stubs {
-            let stub_summary_text = format!(
-                "{} {} {}",
-                stub.path,
-                stub.summary,
-                stub.outline.join(" ")
-            );
+            let stub_summary_text =
+                format!("{} {} {}", stub.path, stub.summary, stub.outline.join(" "));
             let embedding = embedder
                 .embed_document(vec![stub_summary_text.as_str()])
                 .context("embed stub summary")?
@@ -585,12 +575,12 @@ fn retrieval_metrics(loaded: &[String], expected: &[String]) -> RetrievalMetrics
     } else {
         let total: f32 = expected
             .iter()
-            .map(|exp| {
-                match loaded.iter().position(|l| path_matches(l, exp)) {
+            .map(
+                |exp| match loaded.iter().position(|l| path_matches(l, exp)) {
                     Some(rank) => 1.0 / (rank as f32 + 1.0),
                     None => 0.0,
-                }
-            })
+                },
+            )
             .sum();
         total / expected.len() as f32
     };

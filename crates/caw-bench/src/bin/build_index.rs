@@ -34,7 +34,10 @@ use clap::ValueEnum;
 use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
-#[command(name = "caw-bench-build-index", about = "Pre-build a retrieval index for caw-bench")]
+#[command(
+    name = "caw-bench-build-index",
+    about = "Pre-build a retrieval index for caw-bench"
+)]
 struct Cli {
     /// Directory whose files form the corpus.
     #[arg(long)]
@@ -169,8 +172,9 @@ fn build_embedder(kind: BackendArg, onnx_variant: OnnxVariantArg) -> Result<AnyE
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    if let Some(parent) = cli.out.parent() 
-        && !parent.as_os_str().is_empty() {
+    if let Some(parent) = cli.out.parent()
+        && !parent.as_os_str().is_empty()
+    {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create parent dir {}", parent.display()))?;
     }
@@ -189,7 +193,11 @@ fn main() -> Result<()> {
             eprintln!(
                 "diagnostics: periodic progress logging disabled ({}). \
                  Pass --log-interval N (seconds) to enable.",
-                if cli.quiet { "--quiet" } else { "--log-interval 0" },
+                if cli.quiet {
+                    "--quiet"
+                } else {
+                    "--log-interval 0"
+                },
             );
         } else {
             eprintln!(
@@ -218,7 +226,10 @@ fn main() -> Result<()> {
         .into_iter()
         .collect();
     if !already.is_empty() {
-        vlog!("resume: {} (path, mtime) pairs already indexed; skipping", already.len());
+        vlog!(
+            "resume: {} (path, mtime) pairs already indexed; skipping",
+            already.len()
+        );
     }
 
     vlog!("walking {}", cli.corpus.display());
@@ -300,7 +311,8 @@ fn main() -> Result<()> {
         .context("build producer rayon pool")?;
     vlog!(
         "producer pool: {} threads (tokenizer keeps global pool of {})",
-        producer_threads, total_cpus
+        producer_threads,
+        total_cpus
     );
 
     let producer_pipeline = pipeline.clone();
@@ -555,13 +567,21 @@ fn main() -> Result<()> {
     if let Some(hist) = embedder.seq_len_histogram() {
         let total: u64 = hist.iter().map(|(_, c)| *c).sum();
         if total > 0 {
-            vlog!("  seq_len histogram (per batch, {} batches): {}", total, fmt_hist(&hist, total));
+            vlog!(
+                "  seq_len histogram (per batch, {} batches): {}",
+                total,
+                fmt_hist(&hist, total)
+            );
         }
     }
     if let Some(hist) = embedder.item_seq_len_histogram() {
         let total: u64 = hist.iter().map(|(_, c)| *c).sum();
         if total > 0 {
-            vlog!("  seq_len histogram (per item, {} items):    {}", total, fmt_hist(&hist, total));
+            vlog!(
+                "  seq_len histogram (per item, {} items):    {}",
+                total,
+                fmt_hist(&hist, total)
+            );
         }
     }
 
@@ -647,9 +667,28 @@ fn should_skip(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
         Some(
-            "lock" | "png" | "jpg" | "jpeg" | "gif" | "ico" | "svg" | "woff" | "woff2" | "ttf"
-                | "eot" | "otf" | "exe" | "dll" | "so" | "dylib" | "o" | "a" | "wasm" | "pyc"
-                | "pyo" | "class"
+            "lock"
+                | "png"
+                | "jpg"
+                | "jpeg"
+                | "gif"
+                | "ico"
+                | "svg"
+                | "woff"
+                | "woff2"
+                | "ttf"
+                | "eot"
+                | "otf"
+                | "exe"
+                | "dll"
+                | "so"
+                | "dylib"
+                | "o"
+                | "a"
+                | "wasm"
+                | "pyc"
+                | "pyo"
+                | "class"
         )
     )
 }

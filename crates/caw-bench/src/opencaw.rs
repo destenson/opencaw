@@ -18,8 +18,7 @@ const QA_JSON_EMBEDDED: &str = include_str!("qa/opencaw_qa.json");
 
 fn load_qa_json(path: Option<&std::path::Path>) -> Result<String> {
     if let Some(p) = path {
-        std::fs::read_to_string(p)
-            .with_context(|| format!("read qa-file {}", p.display()))
+        std::fs::read_to_string(p).with_context(|| format!("read qa-file {}", p.display()))
     } else {
         Ok(QA_JSON_EMBEDDED.to_owned())
     }
@@ -41,8 +40,7 @@ struct RawQa {
 /// is used, keeping the binary self-contained.
 pub fn build(repo_root: &Path, qa_file: Option<&Path>) -> Result<Vec<WorkloadItem>> {
     let json = load_qa_json(qa_file)?;
-    let raw: Vec<RawQa> =
-        serde_json::from_str(&json).context("parse opencaw_qa.json")?;
+    let raw: Vec<RawQa> = serde_json::from_str(&json).context("parse opencaw_qa.json")?;
 
     let corpus = load_corpus(repo_root)?;
     if corpus.is_empty() {

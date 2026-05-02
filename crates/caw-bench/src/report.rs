@@ -160,7 +160,10 @@ pub fn format_summary(report: &BenchReport) -> String {
             "  precision@1:          {:.3}\n",
             summary.mean_precision_at_1
         ));
-        out.push_str(&format!("  mrr:                  {:.3}\n", summary.mean_mrr));
+        out.push_str(&format!(
+            "  mrr:                  {:.3}\n",
+            summary.mean_mrr
+        ));
         out.push_str(&format!(
             "  relevance@k:          {:.3}  (capped at min(|expected|,k)/k)\n",
             summary.mean_relevance_at_k

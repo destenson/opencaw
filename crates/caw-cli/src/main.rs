@@ -468,8 +468,9 @@ fn run_interactive(
                 if step.content.len() < 20 {
                     continue;
                 }
-                if let Ok(embeddings) = trace_embedder.embed_query(vec![&step.content]) 
-                    && let Some(emb) = embeddings.first() {
+                if let Ok(embeddings) = trace_embedder.embed_query(vec![&step.content])
+                    && let Some(emb) = embeddings.first()
+                {
                     let index_hits = trace_index.search(emb, config.top_k);
                     for (stub_id, score) in index_hits {
                         if loaded_ids.contains(&stub_id) || score < config.thresholds.load {

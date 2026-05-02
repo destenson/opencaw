@@ -143,10 +143,11 @@ impl CurationPipeline<'_> {
             if turn.is_tool_output()
                 && !turn.metadata.inline_required
                 && let Some(compressed) = self.tool_compressor.compress(
-                turn.metadata.tool_name.as_deref().unwrap_or("unknown"),
-                &turn.content,
-                turn.token_estimate,
-            )? {
+                    turn.metadata.tool_name.as_deref().unwrap_or("unknown"),
+                    &turn.content,
+                    turn.token_estimate,
+                )?
+            {
                 tokens_saved += compressed
                     .original_tokens
                     .saturating_sub(compressed.summary_tokens);

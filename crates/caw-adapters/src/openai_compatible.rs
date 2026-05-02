@@ -298,6 +298,9 @@ impl ModelAdapter for OpenAiCompatibleAdapter {
             .map(|c| c.message.content.clone())
             .unwrap_or_default();
 
-        Ok(CompletionResponse { answer, thinking: None })
+        Ok(CompletionResponse {
+            answer,
+            thinking: None,
+        })
     }
 }

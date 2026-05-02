@@ -4,11 +4,11 @@ pub mod dynamic;
 pub mod probe_recall;
 pub mod thinking_trace;
 
+use caw_core::RecallThresholds;
 use caw_core::{
     BudgetScheduler, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
     ProvenanceStore, RecallFragment, Retriever, SchedulerInput, TokenBudget,
 };
-use caw_core::RecallThresholds;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone)]

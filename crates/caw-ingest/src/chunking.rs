@@ -211,7 +211,14 @@ fn split_oversized(
         if count <= MAX_SAFE_BODY_TOKENS {
             out.push((abs_start as u64, abs_end as u64, text, count));
         } else {
-            out.extend(split_oversized(content, abs_start, abs_end, &tightened, tokenizer, depth + 1));
+            out.extend(split_oversized(
+                content,
+                abs_start,
+                abs_end,
+                &tightened,
+                tokenizer,
+                depth + 1,
+            ));
         }
     }
     out
@@ -326,12 +333,7 @@ fn chunk_by_lines(content: &str, config: &ChunkingConfig) -> Vec<(u64, u64, Stri
 /// the file's actual beginning. The overlap is sized in characters and
 /// snapped back to a line boundary — readers never see a chunk start
 /// in the middle of a line.
-fn prepend_line_overlap(
-    dst: &mut String,
-    preceding: &str,
-    overlap_chars: usize,
-    is_first: bool,
-) {
+fn prepend_line_overlap(dst: &mut String, preceding: &str, overlap_chars: usize, is_first: bool) {
     if is_first || overlap_chars == 0 || preceding.is_empty() {
         return;
     }
@@ -339,20 +341,15 @@ fn prepend_line_overlap(
     // byte offset can land mid-codepoint on UTF-8 content. Then snap
     // forward to just after the nearest earlier `\n` so the overlap
     // starts at a line boundary.
-    let start_byte = floor_char_boundary(
-        preceding,
-        preceding.len().saturating_sub(overlap_chars),
-    );
+    let start_byte = floor_char_boundary(preceding, preceding.len().saturating_sub(overlap_chars));
     let snap = preceding[..start_byte]
         .rfind('\n')
         .map(|p| p + 1)
         .unwrap_or(0);
-    let final_start = snap.max(
-        floor_char_boundary(
-            preceding,
-            start_byte.saturating_sub(overlap_chars),
-        ),
-    );
+    let final_start = snap.max(floor_char_boundary(
+        preceding,
+        start_byte.saturating_sub(overlap_chars),
+    ));
     dst.push_str(&preceding[final_start..]);
     if !dst.ends_with('\n') {
         dst.push('\n');
@@ -379,4 +376,3 @@ fn outline_entries_for_chunk(chunk_text: &str, outline: &[String]) -> Vec<String
         .cloned()
         .collect()
 }
-

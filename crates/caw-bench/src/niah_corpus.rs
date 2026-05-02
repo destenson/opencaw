@@ -142,18 +142,8 @@ const PROJECTS: &[&str] = &[
 ];
 
 const OPERATORS: &[&str] = &[
-    "Krill",
-    "Marsh",
-    "Odrin",
-    "Petal",
-    "Quilt",
-    "Ramsey",
-    "Sable",
-    "Tiln",
-    "Vorn",
-    "Wheel",
-    "Ystra",
-    "Zant",
+    "Krill", "Marsh", "Odrin", "Petal", "Quilt", "Ramsey", "Sable", "Tiln", "Vorn", "Wheel",
+    "Ystra", "Zant",
 ];
 
 const SECTORS: &[&str] = &[

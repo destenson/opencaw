@@ -338,8 +338,7 @@ impl ModelAdapter for ClaudeCodeAdapter {
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     // Reader finished before we saw a result event. Fall
                     // through to collect child status and stderr.
-                    timeout_reason =
-                        "stream ended without a result event".to_string();
+                    timeout_reason = "stream ended without a result event".to_string();
                     return finalize_error(&mut child, timeout_reason);
                 }
             }

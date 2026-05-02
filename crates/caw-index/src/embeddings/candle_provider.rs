@@ -125,7 +125,10 @@ impl CandleEmbeddingProvider {
                 }
             })
             .collect();
-        let clipped = texts_owned.iter().filter(|s| s.len() < raw_max_chars).count();
+        let clipped = texts_owned
+            .iter()
+            .filter(|s| s.len() < raw_max_chars)
+            .count();
 
         eprintln!(
             "    candle: about to tokenize batch={} raw_max_chars={} raw_total_chars={} clipped={}",
@@ -141,7 +144,11 @@ impl CandleEmbeddingProvider {
             .encode_batch(texts_owned, true)
             .map_err(|e| CawError::Embedding(format!("Tokenization failed: {e}")))?;
         let tok_ms = t_tok.elapsed().as_millis();
-        let max_tokens = encodings.iter().map(|e| e.get_ids().len()).max().unwrap_or(0);
+        let max_tokens = encodings
+            .iter()
+            .map(|e| e.get_ids().len())
+            .max()
+            .unwrap_or(0);
         let total_tokens: usize = encodings.iter().map(|e| e.get_ids().len()).sum();
         eprintln!(
             "    candle: tokenize done max_tok={} total_tok={} in {}ms",

@@ -1,4 +1,3 @@
-
 pub mod provenance;
 pub mod reindex;
 pub mod scheduler;
@@ -107,24 +106,27 @@ impl Range {
         }
 
         // Token range: T100:500
-        if let Some(rest) = s.strip_prefix('T') 
-            && let Some((start, count)) = rest.split_once(':') 
-            && let (Ok(s), Ok(c)) = (start.parse(), count.parse()) {
+        if let Some(rest) = s.strip_prefix('T')
+            && let Some((start, count)) = rest.split_once(':')
+            && let (Ok(s), Ok(c)) = (start.parse(), count.parse())
+        {
             return Self::Tokens { start: s, count: c };
         }
 
         // Line range with L prefix: L5-L15
         if s.starts_with('L') {
             let stripped = s.replace('L', "");
-            if let Some((start, end)) = stripped.split_once('-') 
-                && let (Ok(s), Ok(e)) = (start.parse(), end.parse()) {
+            if let Some((start, end)) = stripped.split_once('-')
+                && let (Ok(s), Ok(e)) = (start.parse(), end.parse())
+            {
                 return Self::Lines { start: s, end: e };
             }
         }
 
         // Plain line range: 10-20
         if let Some((start, end)) = s.split_once('-')
-            && let (Ok(s), Ok(e)) = (start.parse(), end.parse()) {
+            && let (Ok(s), Ok(e)) = (start.parse(), end.parse())
+        {
             return Self::Lines { start: s, end: e };
         }
 
@@ -497,7 +499,11 @@ pub trait ModelAdapter {
     ) -> CawResult<()> {
         let response = self.complete(req)?;
         let thinking = response.thinking.unwrap_or_default();
-        for step in thinking.split("\n\n").map(str::trim).filter(|s| !s.is_empty()) {
+        for step in thinking
+            .split("\n\n")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             if !on_step(step)? {
                 break;
             }

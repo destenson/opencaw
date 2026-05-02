@@ -1,6 +1,6 @@
 use caw_core::{
-    split_thinking, CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
-    ModelCapabilities, ProvenanceFormat,
+    CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities,
+    ProvenanceFormat, split_thinking,
 };
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -210,7 +210,11 @@ impl ModelAdapter for OllamaAdapter {
             // Non-reasoning model: full completion, split on \n\n, replay.
             let response = self.complete(req)?;
             let thinking = response.thinking.unwrap_or_default();
-            for step in thinking.split("\n\n").map(str::trim).filter(|s| !s.is_empty()) {
+            for step in thinking
+                .split("\n\n")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
                 if !on_step(step)? {
                     return Ok(());
                 }
@@ -224,11 +228,20 @@ impl ModelAdapter for OllamaAdapter {
         let ollama_req = OllamaChatRequest {
             model: self.model.clone(),
             messages: vec![
-                OllamaChatMessage { role: "system".to_string(), content: req.system },
-                OllamaChatMessage { role: "user".to_string(), content: full_user },
+                OllamaChatMessage {
+                    role: "system".to_string(),
+                    content: req.system,
+                },
+                OllamaChatMessage {
+                    role: "user".to_string(),
+                    content: full_user,
+                },
             ],
             stream: true,
-            options: OllamaOptions { temperature: self.temperature, num_predict: 4096 },
+            options: OllamaOptions {
+                temperature: self.temperature,
+                num_predict: 4096,
+            },
         };
 
         // Stream the thinking trace and collect completed steps. Steps are
@@ -237,7 +250,12 @@ impl ModelAdapter for OllamaAdapter {
         // complete() call with the enriched workspace for that.
         let steps: Vec<String> = self.runtime.block_on(async {
             let url = format!("{}/api/chat", self.base_url);
-            let resp = self.client.post(&url).json(&ollama_req).send().await
+            let resp = self
+                .client
+                .post(&url)
+                .json(&ollama_req)
+                .send()
+                .await
                 .map_err(|e| CawError::Adapter(format!("Request failed: {e}")))?;
             if !resp.status().is_success() {
                 let status = resp.status();
@@ -252,8 +270,7 @@ impl ModelAdapter for OllamaAdapter {
             let mut in_think = false;
 
             'outer: while let Some(chunk) = stream.next().await {
-                let bytes = chunk
-                    .map_err(|e| CawError::Adapter(format!("Stream error: {e}")))?;
+                let bytes = chunk.map_err(|e| CawError::Adapter(format!("Stream error: {e}")))?;
                 for ch in String::from_utf8_lossy(&bytes).chars() {
                     if ch == '\n' {
                         if let Ok(token) = serde_json::from_str::<OllamaStreamToken>(&line_buf) {

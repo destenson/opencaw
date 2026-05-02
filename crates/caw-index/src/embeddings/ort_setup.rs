@@ -60,7 +60,8 @@ pub fn ensure_ort_dylib_path() {
                 if let Some(rest) = fname
                     .strip_prefix("libonnxruntime.so.")
                     .or_else(|| fname.strip_prefix("libonnxruntime.dylib."))
-                    && let Some(v) = Version::parse(rest) {
+                    && let Some(v) = Version::parse(rest)
+                {
                     if has_cuda {
                         cuda_candidates.push((path, v));
                     } else {
@@ -165,11 +166,7 @@ fn locate_cuda_sidecars(home: &str) -> Option<Vec<PathBuf>> {
                 .into_iter()
                 .flatten()
                 .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with("libcudnn")
-                })
+                .filter(|e| e.file_name().to_string_lossy().starts_with("libcudnn"))
                 .count();
             if best.as_ref().map(|(_, n)| siblings > *n).unwrap_or(true) {
                 best = Some((cudnn_lib, siblings));

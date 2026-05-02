@@ -110,9 +110,7 @@ pub fn truncate_to_budget(prompt: &str, budget: &SystemPromptBudget) -> (String,
     }
 
     // Binary-search-ish: try progressively shorter prefixes at sentence boundaries
-    let sentences: Vec<&str> = prompt
-        .split_inclusive([ '.', '\n' ])
-        .collect();
+    let sentences: Vec<&str> = prompt.split_inclusive(['.', '\n']).collect();
 
     let mut result = String::new();
     let mut result_tokens = 0;

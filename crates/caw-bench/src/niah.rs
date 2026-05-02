@@ -109,7 +109,12 @@ pub fn build(config: &NiahConfig) -> Vec<WorkloadItem> {
              The value is: {needle}.\n",
         );
 
-        let corpus = generate(seed, config.filler_paragraphs, needle_position, &needle_memo);
+        let corpus = generate(
+            seed,
+            config.filler_paragraphs,
+            needle_position,
+            &needle_memo,
+        );
 
         items.push(WorkloadItem {
             id: format!("niah_{:03}_{}", i, label),

@@ -182,8 +182,8 @@ impl IngestionPipeline {
                     .summarize(&doc.path, &doc.content, doc.kind, &outline)
                     .unwrap_or_default()
             });
-        let token_estimate = single_token_estimate
-            .unwrap_or_else(|| self.tokenizer.count_tokens(&doc.content));
+        let token_estimate =
+            single_token_estimate.unwrap_or_else(|| self.tokenizer.count_tokens(&doc.content));
 
         let body_length = doc.content.len() as u64;
         let doc_path = doc.path.clone();

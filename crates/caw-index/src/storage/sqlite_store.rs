@@ -46,7 +46,11 @@ impl SqliteStubStore {
         // transactions but the DB itself stays consistent. Acceptable for a
         // cache of embeddings that can always be re-derived from source.
         // In-memory DBs ignore these PRAGMAs harmlessly.
-        for pragma in ["journal_mode=WAL", "synchronous=NORMAL", "temp_store=MEMORY"] {
+        for pragma in [
+            "journal_mode=WAL",
+            "synchronous=NORMAL",
+            "temp_store=MEMORY",
+        ] {
             conn.execute_batch(&format!("PRAGMA {};", pragma))
                 .map_err(|e| CawError::VectorStore(format!("PRAGMA {}: {}", pragma, e)))?;
         }
@@ -182,10 +186,7 @@ impl SqliteStubStore {
     /// going through a recall.
     pub fn mark_stale(&self, id: &StubId) -> CawResult<()> {
         self.conn
-            .execute(
-                "UPDATE stubs SET stale = 1 WHERE id = ?1",
-                params![id.0],
-            )
+            .execute("UPDATE stubs SET stale = 1 WHERE id = ?1", params![id.0])
             .map_err(|e| CawError::VectorStore(format!("mark_stale({}): {}", id.0, e)))?;
         Ok(())
     }
@@ -243,11 +244,7 @@ impl SqliteStubStore {
     /// leave orphans behind — their ids won't collide with new ones), then
     /// insert the new ones. New rows get `stale = 0` from the column
     /// default, so this clears the stale flag in one shot.
-    pub fn replace_path(
-        &mut self,
-        path: &str,
-        items: Vec<(Stub, Vec<f32>)>,
-    ) -> CawResult<()> {
+    pub fn replace_path(&mut self, path: &str, items: Vec<(Stub, Vec<f32>)>) -> CawResult<()> {
         for (_, embedding) in &items {
             if embedding.len() != self.dimension {
                 return Err(CawError::VectorStore(format!(
@@ -288,13 +285,11 @@ impl SqliteStubStore {
                 .map_err(|e| CawError::VectorStore(format!("prepare embeddings: {}", e)))?;
 
             for (stub, embedding) in items {
-                let stub_json = serde_json::to_string(&stub).map_err(|e| {
-                    CawError::VectorStore(format!("serialize stub: {}", e))
-                })?;
+                let stub_json = serde_json::to_string(&stub)
+                    .map_err(|e| CawError::VectorStore(format!("serialize stub: {}", e)))?;
                 let kind_str = format!("{:?}", stub.kind);
-                let outline_json = serde_json::to_string(&stub.outline).map_err(|e| {
-                    CawError::VectorStore(format!("serialize outline: {}", e))
-                })?;
+                let outline_json = serde_json::to_string(&stub.outline)
+                    .map_err(|e| CawError::VectorStore(format!("serialize outline: {}", e)))?;
 
                 stub_stmt
                     .execute(params![
@@ -310,10 +305,14 @@ impl SqliteStubStore {
                         stub.byte_length as i64,
                         stub_json,
                     ])
-                    .map_err(|e| CawError::VectorStore(format!("insert stub {}: {}", stub.id.0, e)))?;
+                    .map_err(|e| {
+                        CawError::VectorStore(format!("insert stub {}: {}", stub.id.0, e))
+                    })?;
                 embed_stmt
                     .execute(params![stub.id.0, Self::embedding_to_blob(&embedding)])
-                    .map_err(|e| CawError::VectorStore(format!("insert embedding {}: {}", stub.id.0, e)))?;
+                    .map_err(|e| {
+                        CawError::VectorStore(format!("insert embedding {}: {}", stub.id.0, e))
+                    })?;
             }
         }
         tx.commit()
@@ -408,13 +407,11 @@ impl SqliteStubStore {
                 .map_err(|e| CawError::VectorStore(format!("prepare embeddings: {}", e)))?;
 
             for (stub, embedding) in items {
-                let stub_json = serde_json::to_string(&stub).map_err(|e| {
-                    CawError::VectorStore(format!("serialize stub: {}", e))
-                })?;
+                let stub_json = serde_json::to_string(&stub)
+                    .map_err(|e| CawError::VectorStore(format!("serialize stub: {}", e)))?;
                 let kind_str = format!("{:?}", stub.kind);
-                let outline_json = serde_json::to_string(&stub.outline).map_err(|e| {
-                    CawError::VectorStore(format!("serialize outline: {}", e))
-                })?;
+                let outline_json = serde_json::to_string(&stub.outline)
+                    .map_err(|e| CawError::VectorStore(format!("serialize outline: {}", e)))?;
 
                 stub_stmt
                     .execute(params![
@@ -430,10 +427,14 @@ impl SqliteStubStore {
                         stub.byte_length as i64,
                         stub_json,
                     ])
-                    .map_err(|e| CawError::VectorStore(format!("insert stub {}: {}", stub.id.0, e)))?;
+                    .map_err(|e| {
+                        CawError::VectorStore(format!("insert stub {}: {}", stub.id.0, e))
+                    })?;
                 embed_stmt
                     .execute(params![stub.id.0, Self::embedding_to_blob(&embedding)])
-                    .map_err(|e| CawError::VectorStore(format!("insert embedding {}: {}", stub.id.0, e)))?;
+                    .map_err(|e| {
+                        CawError::VectorStore(format!("insert embedding {}: {}", stub.id.0, e))
+                    })?;
             }
         }
         tx.commit()
@@ -526,9 +527,8 @@ impl StubStore for SqliteStubStore {
             return Err(CawError::StaleStub { path });
         }
 
-        let mut file = std::fs::File::open(&full_path).map_err(|e| {
-            CawError::VectorStore(format!("open {}: {}", full_path.display(), e))
-        })?;
+        let mut file = std::fs::File::open(&full_path)
+            .map_err(|e| CawError::VectorStore(format!("open {}: {}", full_path.display(), e)))?;
         file.seek(SeekFrom::Start(offset as u64)).map_err(|e| {
             CawError::VectorStore(format!("seek {} to {}: {}", full_path.display(), offset, e))
         })?;

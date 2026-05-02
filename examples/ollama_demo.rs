@@ -1,8 +1,10 @@
 use anyhow::Result;
 use caw_adapters::OllamaAdapter;
-use caw_core::{ContentKind, EmbeddingProvider, ModelAdapter, RecallThresholds, Retriever, TokenBudget};
 use caw_core::provenance::InMemoryProvenanceStore;
 use caw_core::scheduler::GreedyBudgetScheduler;
+use caw_core::{
+    ContentKind, EmbeddingProvider, ModelAdapter, RecallThresholds, Retriever, TokenBudget,
+};
 use caw_index::{FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
 use caw_ingest::{IngestionPipeline, SourceDocument};
 use caw_orchestrator::{OrchestratorConfig, RecallOrchestrator};
@@ -36,7 +38,9 @@ fn ingest_file(
 }
 
 fn main() -> Result<()> {
-    let model = std::env::args().nth(1).unwrap_or_else(|| "qwen3.5:9b".to_string());
+    let model = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "qwen3.5:9b".to_string());
 
     let runtime = Arc::new(Runtime::new()?);
     let adapter = OllamaAdapter::local(&model, runtime);
@@ -49,8 +53,7 @@ fn main() -> Result<()> {
     println!("Initializing semantic index...");
     let embedder = FastEmbedProvider::bge_small()?;
     let dimension = embedder.dimension();
-    let store = SqliteStubStore::in_memory(dimension)?
-        .with_corpus_root(project_root.to_path_buf());
+    let store = SqliteStubStore::in_memory(dimension)?.with_corpus_root(project_root.to_path_buf());
     let index = HnswVectorIndex::new();
     let mut retriever = SemanticRetriever::new(embedder, store, index);
 
@@ -99,7 +102,9 @@ fn main() -> Result<()> {
         orchestrator.loaded.clear();
         orchestrator.provenance = InMemoryProvenanceStore::default();
 
-        let candidates = orchestrator.retriever.search(query, orchestrator.config.top_k)?;
+        let candidates = orchestrator
+            .retriever
+            .search(query, orchestrator.config.top_k)?;
 
         println!("Query: {}", query);
         println!("{}", "-".repeat(60));
@@ -113,7 +118,10 @@ fn main() -> Result<()> {
 
         println!("\n[context]");
         for hit in &candidates {
-            let admitted = orchestrator.loaded.iter().find(|f| f.stub_id.0 == hit.stub.id.0);
+            let admitted = orchestrator
+                .loaded
+                .iter()
+                .find(|f| f.stub_id.0 == hit.stub.id.0);
             match admitted {
                 Some(frag) => println!(
                     "  LOADED  {} (score {:.2})  chunk {} tok / full {} tok",
@@ -125,7 +133,11 @@ fn main() -> Result<()> {
                 ),
             }
         }
-        for frag in orchestrator.loaded.iter().filter(|f| !initial_ids.contains(f.stub_id.0.as_str())) {
+        for frag in orchestrator
+            .loaded
+            .iter()
+            .filter(|f| !initial_ids.contains(f.stub_id.0.as_str()))
+        {
             println!(
                 "  THINK   {} (via thinking-trace)  chunk {} tok",
                 frag.locator.source, frag.tokens
@@ -144,7 +156,10 @@ fn main() -> Result<()> {
         println!();
 
         if let Some(ref thinking) = response.thinking {
-            println!("[thinking: {} words]\n", thinking.split_whitespace().count());
+            println!(
+                "[thinking: {} words]\n",
+                thinking.split_whitespace().count()
+            );
         }
         println!("{}\n", response.answer);
     }

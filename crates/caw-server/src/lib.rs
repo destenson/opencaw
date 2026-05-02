@@ -308,7 +308,10 @@ fn augment_last_user_message(req: &mut Value, fragments: &[RecallFragment]) -> R
 /// relevant content-type headers; everything else we drop (Host, Accept,
 /// user agent — reqwest supplies its own).
 async fn forward(state: &AppState, req_json: Value, client_headers: &HeaderMap) -> Response {
-    let url = format!("{}/chat/completions", state.upstream_base.trim_end_matches('/'));
+    let url = format!(
+        "{}/chat/completions",
+        state.upstream_base.trim_end_matches('/')
+    );
 
     let mut builder = state.http.post(&url).json(&req_json);
 
@@ -336,10 +339,7 @@ async fn forward(state: &AppState, req_json: Value, client_headers: &HeaderMap) 
 
     let status = upstream_resp.status();
     let mut response_headers = HeaderMap::new();
-    for k in [
-        header::CONTENT_TYPE,
-        header::CACHE_CONTROL,
-    ] {
+    for k in [header::CONTENT_TYPE, header::CACHE_CONTROL] {
         if let Some(v) = upstream_resp.headers().get(k.clone()) {
             response_headers.insert(k, v.clone());
         }

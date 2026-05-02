@@ -145,11 +145,12 @@ fn plan_cells(cfg: &SweepConfig) -> Vec<Cell> {
     let axis_entries: Vec<&Vec<toml::Table>> = cfg.axes.values().collect();
 
     // Cold-start product: one empty "base" cell inherits `fixed` params.
-    let mut cells: Vec<BTreeMap<String, toml::Value>> = vec![cfg
-        .fixed
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect()];
+    let mut cells: Vec<BTreeMap<String, toml::Value>> = vec![
+        cfg.fixed
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    ];
 
     for (name, entries) in axis_names.iter().zip(axis_entries) {
         if entries.is_empty() {
@@ -180,16 +181,17 @@ fn plan_cells(cfg: &SweepConfig) -> Vec<Cell> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let config_path = cli.config.canonicalize().with_context(|| {
-        format!("sweep config not found: {}", cli.config.display())
-    })?;
+    let config_path = cli
+        .config
+        .canonicalize()
+        .with_context(|| format!("sweep config not found: {}", cli.config.display()))?;
     let config_dir = config_path
         .parent()
         .ok_or_else(|| anyhow!("config path has no parent"))?;
     let raw = std::fs::read_to_string(&config_path)
         .with_context(|| format!("read {}", config_path.display()))?;
-    let cfg: SweepConfig = toml::from_str(&raw)
-        .with_context(|| format!("parse {}", config_path.display()))?;
+    let cfg: SweepConfig =
+        toml::from_str(&raw).with_context(|| format!("parse {}", config_path.display()))?;
 
     // Resolve out_dir relative to the config file, unless the CLI override
     // or the config value is already absolute.
@@ -240,23 +242,23 @@ fn main() -> Result<()> {
 
         if cli.dry_run {
             let args = cell.to_args(&report_path)?;
-            eprintln!("  would run: {} {}", caw_bench_path.display(), args.join(" "));
+            eprintln!(
+                "  would run: {} {}",
+                caw_bench_path.display(),
+                args.join(" ")
+            );
             continue;
         }
 
         std::fs::create_dir_all(&cell_dir)
             .with_context(|| format!("create {}", cell_dir.display()))?;
-        let params_json = serde_json::to_string_pretty(&cell.params)
-            .context("serialize cell params")?;
+        let params_json =
+            serde_json::to_string_pretty(&cell.params).context("serialize cell params")?;
         std::fs::write(&params_path, params_json)
             .with_context(|| format!("write {}", params_path.display()))?;
 
         let args = cell.to_args(&report_path)?;
-        eprintln!(
-            "  run: {} {}",
-            caw_bench_path.display(),
-            args.join(" ")
-        );
+        eprintln!("  run: {} {}", caw_bench_path.display(), args.join(" "));
 
         // Point caw-bench's tracing adapter at a per-cell trace file so
         // every sweep cell gets its own JSONL log. Inherits the rest of
@@ -267,9 +269,7 @@ fn main() -> Result<()> {
             .args(&args)
             .env("CAW_TRACE_FILE", &trace_path)
             .status()
-            .with_context(|| {
-                format!("spawn {} failed", caw_bench_path.display())
-            })?;
+            .with_context(|| format!("spawn {} failed", caw_bench_path.display()))?;
 
         if !status.success() {
             // Leave partial state in place so the operator can inspect
@@ -300,9 +300,9 @@ fn main() -> Result<()> {
 
 fn resolve_caw_bench(explicit: Option<&Path>) -> Result<PathBuf> {
     if let Some(p) = explicit {
-        let canonical = p.canonicalize().with_context(|| {
-            format!("--caw-bench path not found: {}", p.display())
-        })?;
+        let canonical = p
+            .canonicalize()
+            .with_context(|| format!("--caw-bench path not found: {}", p.display()))?;
         return Ok(canonical);
     }
     let current = std::env::current_exe().context("current_exe")?;

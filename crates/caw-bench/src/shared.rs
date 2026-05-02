@@ -11,8 +11,7 @@
 use std::sync::{Arc, Mutex};
 
 use caw_core::{
-    CawError, CawResult, ConsolidationNote, EmbeddingProvider, Stub, StubId, StubStore,
-    VectorIndex,
+    CawError, CawResult, ConsolidationNote, EmbeddingProvider, Stub, StubId, StubStore, VectorIndex,
 };
 
 fn poisoned<T>(_: std::sync::PoisonError<T>) -> CawError {
@@ -124,7 +123,10 @@ impl<S: StubStore> StubStore for SharedStore<S> {
     }
 
     fn load_consolidation(&self, stub_id: &StubId) -> CawResult<Vec<ConsolidationNote>> {
-        self.inner.lock().map_err(poisoned)?.load_consolidation(stub_id)
+        self.inner
+            .lock()
+            .map_err(poisoned)?
+            .load_consolidation(stub_id)
     }
 }
 
@@ -176,12 +178,19 @@ impl<S: StubStore> StubStore for ReadOnlyStore<S> {
         self.inner.lock().map_err(poisoned)?.all_embeddings()
     }
 
-    fn save_consolidation(&mut self, _stub_id: &StubId, _note: &ConsolidationNote) -> CawResult<()> {
+    fn save_consolidation(
+        &mut self,
+        _stub_id: &StubId,
+        _note: &ConsolidationNote,
+    ) -> CawResult<()> {
         Ok(())
     }
 
     fn load_consolidation(&self, stub_id: &StubId) -> CawResult<Vec<ConsolidationNote>> {
-        self.inner.lock().map_err(poisoned)?.load_consolidation(stub_id)
+        self.inner
+            .lock()
+            .map_err(poisoned)?
+            .load_consolidation(stub_id)
     }
 }
 
