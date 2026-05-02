@@ -465,6 +465,17 @@ where
     }
 }
 
+impl<R, E, V, P: Default, M, S> DynamicRecallOrchestrator<R, E, V, P, M, S> {
+    /// Reset per-turn state so the orchestrator can be reused across independent
+    /// queries. Clears loaded fragments, relevance scores, and provenance.
+    pub fn reset_session(&mut self) {
+        self.loaded.clear();
+        self.loaded_ids.clear();
+        self.relevance_scores.clear();
+        self.provenance = P::default();
+    }
+}
+
 fn term_overlap_score(context: &str, content: &str) -> f32 {
     let ctx_terms: HashSet<String> = tokenize_terms(context).into_iter().collect();
     let doc_terms: HashSet<String> = tokenize_terms(content).into_iter().collect();

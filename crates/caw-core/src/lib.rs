@@ -683,6 +683,28 @@ pub trait StubStore {
     }
 }
 
+/// No-op store for orchestrators that don't need persistent consolidation.
+/// Satisfies the `S: StubStore` bound without importing an index crate.
+/// `store` is always `None` when using `DynamicRecallOrchestrator::new()`,
+/// so none of these methods are reachable at runtime.
+impl StubStore for () {
+    fn insert(&mut self, _stub: Stub, _embedding: Vec<f32>) -> CawResult<()> {
+        Err(CawError::NotFound("no store configured".into()))
+    }
+    fn get_content(&self, id: &StubId) -> CawResult<String> {
+        Err(CawError::NotFound(format!("no store configured (stub {})", id.0)))
+    }
+    fn get_stub(&self, id: &StubId) -> CawResult<Stub> {
+        Err(CawError::NotFound(format!("no store configured (stub {})", id.0)))
+    }
+    fn get_by_content_hash(&self, _hash: &str) -> CawResult<Option<(Stub, Vec<f32>)>> {
+        Ok(None)
+    }
+    fn all_embeddings(&self) -> CawResult<Vec<(StubId, Vec<f32>)>> {
+        Ok(Vec::new())
+    }
+}
+
 /// Similarity search over embeddings. Implementations should use an
 /// actual indexing structure (HNSW, IVF, etc.), not brute-force scans.
 pub trait VectorIndex {
