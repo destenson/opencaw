@@ -213,12 +213,20 @@ impl IngestionPipeline {
     /// extraction (tree-sitter), summarization, chunking — runs in parallel
     /// via rayon. On large corpora this is the dominant win; embedding
     /// throughput afterwards is gated by the ONNX runtime's own threading.
+    ///
+    /// `already_indexed` is a set of `(path, mtime_unix_secs)` pairs already
+    /// in the index. Files whose stat mtime matches are skipped without being
+    /// read, making warm restarts nearly instant. Pass an empty set to ingest
+    /// everything unconditionally.
+    ///
     /// Returns `(stubs, skipped)` where `skipped` is the count of files
     /// rejected by the extension/directory filter after gitignore filtering.
+    /// Already-indexed files are not included in either return value.
     pub fn ingest_directory(
         &self,
         root: &Path,
         skip_gitignore: bool,
+        already_indexed: &std::collections::HashSet<(String, u64)>,
     ) -> CawResult<(Vec<(Stub, String)>, usize)> {
         // If a .cawignore file exists at the root, use it as the sole ignore
         // source instead of .gitignore. This lets the user include gitignored
@@ -253,6 +261,19 @@ impl IngestionPipeline {
                     debug!(entry=%p.display(), "found file during directory walk");
                 }
                 keep
+            })
+            .filter(|p| {
+                if already_indexed.is_empty() {
+                    return true;
+                }
+                let path_str = p.to_string_lossy().into_owned();
+                let mtime = std::fs::metadata(p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                !already_indexed.contains(&(path_str, mtime))
             })
             .collect();
 

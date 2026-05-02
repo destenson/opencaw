@@ -207,41 +207,47 @@ fn main() -> Result<()> {
 
     eprintln!("Ingesting files from: {}", cli.dir.display());
 
+    // Load (path, mtime) pairs already in the store so ingest_directory can
+    // skip reading unchanged files. A stat syscall per file is much cheaper
+    // than reading and hashing it.
+    let already_indexed: std::collections::HashSet<(String, u64)> = store
+        .indexed_paths()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+
     let (documents, skipped) = pipeline
-        .ingest_directory(&cli.dir, !cli.gitignore)
+        .ingest_directory(&cli.dir, !cli.gitignore, &already_indexed)
         .context("Failed to ingest directory")?;
 
-    let mut vector_index = HnswVectorIndex::new();
-    let mut cached = 0usize;
-    let mut ingested = 0usize;
-
-    for (stub, _embed_text) in &documents {
-        if let Ok(Some((existing_stub, existing_embedding))) =
-            store.get_by_content_hash(&stub.content_hash)
-        {
-            vector_index.add(existing_stub.id.clone(), existing_embedding);
-            cached += 1;
-            continue;
-        }
-
+    // All files returned from ingest_directory are new or changed — unchanged
+    // files were skipped by the mtime check above.
+    let ingested = documents.len();
+    for (stub, _embed_text) in documents {
         let text = format!("{} {} {}", stub.path, stub.summary, stub.outline.join(" "));
         let embeddings = embedder
             .embed_document(vec![text.as_str()])
             .context("Failed to generate embedding")?;
-
         if let Some(embedding) = embeddings.into_iter().next() {
             store
-                .insert(stub.clone(), embedding.clone())
+                .insert(stub, embedding)
                 .context("Failed to insert into stub store")?;
-            vector_index.add(stub.id.clone(), embedding);
-            ingested += 1;
         }
     }
 
+    // Rebuild the HNSW index from all stored embeddings (cached + newly ingested).
+    let all_emb = store.all_embeddings().context("Failed to load embeddings")?;
+    let total_indexed = all_emb.len();
+    let mut vector_index = HnswVectorIndex::new();
+    let mut trace_index = HnswVectorIndex::new();
+    for (id, emb) in all_emb {
+        vector_index.add(id.clone(), emb.clone());
+        trace_index.add(id, emb);
+    }
+
     eprintln!(
-        "Index ready: {} files ({} cached, {} newly ingested, {} skipped).",
-        documents.len(),
-        cached,
+        "Index ready: {} indexed ({} new, {} skipped).",
+        total_indexed,
         ingested,
         skipped,
     );
@@ -258,16 +264,6 @@ fn main() -> Result<()> {
     let retriever = SemanticRetriever::new(embedder, store, vector_index);
 
     let trace_embedder = LazyFastEmbedProvider::new();
-
-    let trace_store = SqliteStubStore::new(&db_path, dimension)
-        .context("Failed to open trace stub store")?
-        .with_corpus_root(cli.dir.clone());
-    let mut trace_index = HnswVectorIndex::new();
-    if let Ok(all_emb) = trace_store.all_embeddings() {
-        for (id, emb) in all_emb {
-            trace_index.add(id, emb);
-        }
-    }
 
     let config = DynamicRecallConfig {
         max_candidates: cli.max_candidates,
