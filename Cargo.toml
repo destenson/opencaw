@@ -54,3 +54,4 @@ caw-index = { workspace = true }
 caw-ingest = { workspace = true }
 caw-orchestrator = { workspace = true }
 tempfile = "3"
+tokio = { workspace = true }
