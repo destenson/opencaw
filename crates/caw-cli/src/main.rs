@@ -2,7 +2,8 @@ use anyhow::{Context, Result};
 use caw_adapters::MockAdapter;
 use caw_core::{
     candidate_list_fragment, CompletionRequest, EmbeddingProvider, Locator, ModelAdapter,
-    RecallFragment, Retriever, StubId, StubStore, Tokenizer, VectorIndex, WhitespaceTokenizer,
+    RecallFragment, Retriever, ScoredStub, StubId, StubStore, Tokenizer, VectorIndex,
+    WhitespaceTokenizer,
 };
 use caw_orchestrator::session::SessionFile;
 use caw_curation::{
@@ -541,11 +542,38 @@ fn run_interactive(
 
         let mut initial_fragments = loaded.clone();
         initial_fragments.extend(candidate_fragment);
-        let response = adapter.complete(CompletionRequest {
-            system: effective_system,
+        let mut response = adapter.complete(CompletionRequest {
+            system: effective_system.clone(),
             user: query.to_string(),
             workspace_fragments: initial_fragments,
         })?;
+
+        // When the candidate list was shown, the model's response may mention
+        // specific files by path. Load those files and re-complete so the final
+        // answer is grounded in actual content rather than just summaries.
+        if above_threshold > config.max_initial_fragments {
+            let answer = &response.answer;
+            let mut seen_paths = std::collections::HashSet::new();
+            let mentioned: Vec<ScoredStub> = hits
+                .iter()
+                .filter(|h| h.score >= config.thresholds.load)
+                .filter(|h| {
+                    let norm = h.stub.path.trim_start_matches("./");
+                    answer.contains(norm) || answer.contains(&h.stub.path)
+                })
+                .filter(|h| seen_paths.insert(h.stub.path.clone()))
+                .cloned()
+                .collect();
+            if !mentioned.is_empty() {
+                debug!(count = mentioned.len(), "loading files mentioned in response to candidate list");
+                load_fragments(&mut retriever, &mentioned, &mut loaded, &mut loaded_ids, &config)?;
+                response = adapter.complete(CompletionRequest {
+                    system: effective_system,
+                    user: query.to_string(),
+                    workspace_fragments: loaded.clone(),
+                })?;
+            }
+        }
 
         if config.enable_probe_recall {
             let probes = extract_probes(&response.answer);
