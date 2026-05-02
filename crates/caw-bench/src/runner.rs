@@ -513,6 +513,7 @@ fn orchestrator_config(mode: RecallMode, cfg: &RunnerConfig) -> DynamicRecallCon
             relevance_decay_rate: 0.8,
             enable_thinking_trace_recall: true,
             enable_probe_recall: true,
+            ..Default::default()
         },
         RecallMode::Off => DynamicRecallConfig {
             max_candidates: cfg.max_candidates,
@@ -524,6 +525,7 @@ fn orchestrator_config(mode: RecallMode, cfg: &RunnerConfig) -> DynamicRecallCon
             relevance_decay_rate: 0.8,
             enable_thinking_trace_recall: false,
             enable_probe_recall: false,
+            ..Default::default()
         },
     }
 }

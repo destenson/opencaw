@@ -59,6 +59,10 @@ pub struct DynamicRecallConfig {
     pub relevance_decay_rate: f32,
     pub enable_thinking_trace_recall: bool,
     pub enable_probe_recall: bool,
+    /// Maximum fragments to load in the initial (pre-probe) phase. If more
+    /// candidates than this clear the load threshold, the query is too broad
+    /// for confident initial augmentation — load nothing and let probes drive.
+    pub max_initial_fragments: usize,
 }
 
 impl Default for DynamicRecallConfig {
@@ -71,6 +75,7 @@ impl Default for DynamicRecallConfig {
             relevance_decay_rate: 0.8,
             enable_thinking_trace_recall: true,
             enable_probe_recall: true,
+            max_initial_fragments: 4,
         }
     }
 }
@@ -221,15 +226,34 @@ where
 
         let system_prompt = self.build_system_prompt(system);
 
-        // Phase 1: Initial retrieval on the user query
+        // Phase 1: Initial retrieval on the user query.
+        // Many candidates clearing the threshold is a signal that the query is
+        // too broad for confident augmentation — load nothing and let probes drive.
         let initial_hits = self.retriever.search(user, self.config.max_candidates)?;
-        debug!(hits = initial_hits.len(), "initial retrieval complete");
-        self.load_fragments(
-            initial_hits
-                .into_iter()
-                .map(|hit| (hit.stub.id, hit.score))
-                .collect(),
-        )?;
+        let above_threshold = initial_hits
+            .iter()
+            .filter(|h| h.score >= self.config.thresholds.load)
+            .count();
+        debug!(
+            hits = initial_hits.len(),
+            above_threshold,
+            max_initial = self.config.max_initial_fragments,
+            "initial retrieval complete"
+        );
+        if above_threshold <= self.config.max_initial_fragments {
+            self.load_fragments(
+                initial_hits
+                    .into_iter()
+                    .map(|hit| (hit.stub.id, hit.score))
+                    .collect(),
+            )?;
+        } else {
+            debug!(
+                above_threshold,
+                max_initial = self.config.max_initial_fragments,
+                "query too broad for initial augmentation — deferring to probe-driven recall"
+            );
+        }
         debug!(loaded = self.loaded.len(), "initial query recall complete");
 
         let mut last_response = self.adapter.complete(CompletionRequest {

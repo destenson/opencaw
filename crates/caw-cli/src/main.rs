@@ -514,7 +514,19 @@ fn run_interactive(
         };
 
         let hits = retriever.search(query, config.max_candidates)?;
-        load_fragments(&mut retriever, &hits, &mut loaded, &mut loaded_ids, &config)?;
+        let above_threshold = hits
+            .iter()
+            .filter(|h| h.score >= config.thresholds.load)
+            .count();
+        if above_threshold <= config.max_initial_fragments {
+            load_fragments(&mut retriever, &hits, &mut loaded, &mut loaded_ids, &config)?;
+        } else {
+            debug!(
+                above_threshold,
+                max_initial = config.max_initial_fragments,
+                "query too broad for initial augmentation — deferring to probe-driven recall"
+            );
+        }
 
         // Session history search runs alongside workspace search.
         if !session_content.is_empty() {

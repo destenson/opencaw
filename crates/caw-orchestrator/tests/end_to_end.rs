@@ -179,6 +179,7 @@ fn recall_loop_admits_fragment_and_tags_provenance() {
         relevance_decay_rate: 0.8,
         enable_thinking_trace_recall: false,
         enable_probe_recall: false,
+        ..Default::default()
     };
 
     // Deterministic second embedder for the orchestrator's recall path
