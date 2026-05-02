@@ -486,6 +486,28 @@ pub trait ModelAdapter {
     fn model_name(&self) -> &str;
     fn capabilities(&self) -> ModelCapabilities;
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse>;
+
+    /// Stream the model's thinking trace, calling `on_step` at each reasoning
+    /// step boundary (`\n\n`). Returning `false` from `on_step` stops replay
+    /// early so the orchestrator can inject context and restart.
+    ///
+    /// Default: runs a full completion, splits the thinking block, and replays
+    /// each paragraph through `on_step`. Streaming adapters override this to
+    /// stop the HTTP response at `</think>` without paying for answer tokens.
+    fn thinking_with_steps(
+        &self,
+        req: CompletionRequest,
+        on_step: &mut dyn FnMut(&str) -> CawResult<bool>,
+    ) -> CawResult<()> {
+        let response = self.complete(req)?;
+        let thinking = response.thinking.unwrap_or_default();
+        for step in thinking.split("\n\n").map(str::trim).filter(|s| !s.is_empty()) {
+            if !on_step(step)? {
+                break;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Forward `ModelAdapter` through a boxed trait object so callers that build
@@ -503,6 +525,14 @@ impl<T: ModelAdapter + ?Sized> ModelAdapter for Box<T> {
 
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
         (**self).complete(req)
+    }
+
+    fn thinking_with_steps(
+        &self,
+        req: CompletionRequest,
+        on_step: &mut dyn FnMut(&str) -> CawResult<bool>,
+    ) -> CawResult<()> {
+        (**self).thinking_with_steps(req, on_step)
     }
 }
 

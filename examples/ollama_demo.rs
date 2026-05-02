@@ -106,6 +106,8 @@ fn main() -> Result<()> {
 
         let response = orchestrator.run_turn(system, query)?;
 
+        let initial_ids: std::collections::HashSet<&str> =
+            candidates.iter().map(|h| h.stub.id.0.as_str()).collect();
         let total_recalled: usize = orchestrator.loaded.iter().map(|f| f.tokens).sum();
         let full_doc_tokens: usize = candidates.iter().map(|h| h.stub.token_estimate).sum();
 
@@ -123,8 +125,14 @@ fn main() -> Result<()> {
                 ),
             }
         }
+        for frag in orchestrator.loaded.iter().filter(|f| !initial_ids.contains(f.stub_id.0.as_str())) {
+            println!(
+                "  THINK   {} (via thinking-trace)  chunk {} tok",
+                frag.locator.source, frag.tokens
+            );
+        }
         println!(
-            "  recalled {} tok — would have been {} tok for full chunks ({:.0}% saving)",
+            "  recalled {} tok — would have been {} tok for initial candidates ({:.0}% saving)",
             total_recalled,
             full_doc_tokens,
             if full_doc_tokens > 0 {
@@ -135,6 +143,9 @@ fn main() -> Result<()> {
         );
         println!();
 
+        if let Some(ref thinking) = response.thinking {
+            println!("[thinking: {} words]\n", thinking.split_whitespace().count());
+        }
         println!("{}\n", response.answer);
     }
 

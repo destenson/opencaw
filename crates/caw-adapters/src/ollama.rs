@@ -2,6 +2,7 @@ use caw_core::{
     split_thinking, CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
     ModelCapabilities, ProvenanceFormat,
 };
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -99,6 +100,12 @@ struct OllamaChatResponse {
     message: OllamaChatMessage,
 }
 
+#[derive(Deserialize)]
+struct OllamaStreamToken {
+    message: OllamaChatMessage,
+    done: bool,
+}
+
 impl ModelAdapter for OllamaAdapter {
     fn model_name(&self) -> &str {
         &self.model
@@ -192,5 +199,115 @@ impl ModelAdapter for OllamaAdapter {
                 )))
             }
         }
+    }
+
+    fn thinking_with_steps(
+        &self,
+        req: CompletionRequest,
+        on_step: &mut dyn FnMut(&str) -> CawResult<bool>,
+    ) -> CawResult<()> {
+        if !self.capabilities().supports_visible_reasoning {
+            // Non-reasoning model: full completion, split on \n\n, replay.
+            let response = self.complete(req)?;
+            let thinking = response.thinking.unwrap_or_default();
+            for step in thinking.split("\n\n").map(str::trim).filter(|s| !s.is_empty()) {
+                if !on_step(step)? {
+                    return Ok(());
+                }
+            }
+            return Ok(());
+        }
+
+        let workspace_context = req.format_workspace(ProvenanceFormat::Bracketed);
+        let full_user = format!("{}{}", req.user, workspace_context);
+
+        let ollama_req = OllamaChatRequest {
+            model: self.model.clone(),
+            messages: vec![
+                OllamaChatMessage { role: "system".to_string(), content: req.system },
+                OllamaChatMessage { role: "user".to_string(), content: full_user },
+            ],
+            stream: true,
+            options: OllamaOptions { temperature: self.temperature, num_predict: 4096 },
+        };
+
+        // Stream the thinking trace and collect completed steps. Steps are
+        // delimited by \n\n within the <think> block. We stop at </think>
+        // without reading the answer tokens — the orchestrator makes a separate
+        // complete() call with the enriched workspace for that.
+        let steps: Vec<String> = self.runtime.block_on(async {
+            let url = format!("{}/api/chat", self.base_url);
+            let resp = self.client.post(&url).json(&ollama_req).send().await
+                .map_err(|e| CawError::Adapter(format!("Request failed: {e}")))?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                return Err(CawError::Adapter(format!("Ollama HTTP {status}: {body}")));
+            }
+
+            let mut stream = resp.bytes_stream();
+            let mut line_buf = String::new();
+            let mut step_buf = String::new();
+            let mut steps: Vec<String> = Vec::new();
+            let mut in_think = false;
+
+            'outer: while let Some(chunk) = stream.next().await {
+                let bytes = chunk
+                    .map_err(|e| CawError::Adapter(format!("Stream error: {e}")))?;
+                for ch in String::from_utf8_lossy(&bytes).chars() {
+                    if ch == '\n' {
+                        if let Ok(token) = serde_json::from_str::<OllamaStreamToken>(&line_buf) {
+                            let content = &token.message.content;
+
+                            if !in_think {
+                                if let Some(after) = content.split_once("<think>").map(|(_, r)| r) {
+                                    in_think = true;
+                                    step_buf.push_str(after);
+                                }
+                            } else {
+                                step_buf.push_str(content);
+                            }
+
+                            if in_think {
+                                if let Some(end) = step_buf.find("</think>") {
+                                    let step = step_buf[..end].trim().to_string();
+                                    if !step.is_empty() {
+                                        steps.push(step);
+                                    }
+                                    break 'outer;
+                                }
+                                // Flush a completed step at \n\n boundary
+                                while let Some(boundary) = step_buf.find("\n\n") {
+                                    let step = step_buf[..boundary].trim().to_string();
+                                    step_buf.drain(..boundary + 2);
+                                    if !step.is_empty() {
+                                        steps.push(step);
+                                    }
+                                }
+                            }
+
+                            if token.done {
+                                break 'outer;
+                            }
+                        }
+                        line_buf.clear();
+                    } else {
+                        line_buf.push(ch);
+                    }
+                }
+            }
+
+            Ok(steps)
+        })?;
+
+        // Replay collected steps through the callback synchronously.
+        // on_step returning false means new context was found — the
+        // orchestrator will restart with the enriched workspace.
+        for step in &steps {
+            if !on_step(step)? {
+                break;
+            }
+        }
+        Ok(())
     }
 }
