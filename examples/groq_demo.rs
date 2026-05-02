@@ -84,8 +84,8 @@ fn main() -> Result<()> {
         config,
     };
 
-    let system = "You are a helpful assistant with access to the OpenCAW project documentation. \
-                  Answer questions accurately based on the recalled context provided.";
+    let system = "Answer questions about the OpenCAW project based on the documentation provided in context. \
+                  Be precise and cite specific details from the recalled fragments.";
 
     let queries = [
         "What is the eviction policy and how does consolidation work?",
@@ -94,6 +94,9 @@ fn main() -> Result<()> {
     ];
 
     for query in &queries {
+        orchestrator.loaded.clear();
+        orchestrator.provenance = InMemoryProvenanceStore::default();
+
         println!("Query: {}", query);
         println!("{}", "-".repeat(60));
         let response = orchestrator.run_turn(system, query)?;
