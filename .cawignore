@@ -1,0 +1,9 @@
+target/
+.fastembed*/
+# bench-results/
+# opencaw_report.json
+data/
+opencaw-corpora/
+.claude/*.lock
+**/*.local.*
+.caw/
