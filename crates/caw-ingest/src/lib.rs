@@ -7,10 +7,10 @@ use caw_core::{CawError, CawResult, ContentKind, Stub, StubId, Tokenizer, Whites
 use chunking::{ChunkingConfig, chunk_document, chunk_summary};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
+use tracing::debug;
 use std::path::Path;
 use std::sync::Arc;
 use summarizer::{DeterministicSummarizer, Summarizer};
-use walkdir::WalkDir;
 
 /// Default tokenizer for the ingestion pipeline.
 /// cl100k_base matches GPT-4 / GPT-3.5 and is close enough for Claude's
@@ -213,16 +213,21 @@ impl IngestionPipeline {
     /// extraction (tree-sitter), summarization, chunking — runs in parallel
     /// via rayon. On large corpora this is the dominant win; embedding
     /// throughput afterwards is gated by the ONNX runtime's own threading.
-    pub fn ingest_directory(&self, root: &Path) -> CawResult<Vec<(Stub, String)>> {
-        let paths: Vec<std::path::PathBuf> = WalkDir::new(root)
+    pub fn ingest_directory(&self, root: &Path, skip_gitignore: bool) -> CawResult<Vec<(Stub, String)>> {
+        let paths: Vec<_> = ignore::WalkBuilder::new(root)
             .follow_links(false)
-            .into_iter()
+            .hidden(!skip_gitignore)
+            .git_ignore(!skip_gitignore)
+            .git_global(!skip_gitignore)
+            .git_exclude(!skip_gitignore)
+            .build()
             .filter_map(|e| e.ok())
             .filter(|e| e.path().is_file() && !should_skip(e.path()))
+            .inspect(|e| debug!(entry=%e.path().display(), "found file during directory walk"))
             .map(|e| e.path().to_path_buf())
             .collect();
 
-        let results: Vec<(Stub, String)> = paths
+        let results: Vec<(_, _)> = paths
             .par_iter()
             .filter_map(|path| SourceDocument::from_path(path).ok())
             .flat_map_iter(|doc| self.ingest(doc).into_iter())
@@ -318,24 +323,18 @@ fn detect_content_kind(path: &Path) -> ContentKind {
     }
 }
 
-/// Skip files that are unlikely to be useful for context recall
+/// Skip files that are unlikely to be useful for context recall.
+/// Hidden files and gitignored paths are already filtered by the WalkBuilder
+/// before this is called; this handles build artifacts and binary extensions
+/// that may not appear in every project's .gitignore.
 fn should_skip(path: &Path) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-
-    // Hidden files and directories
-    if name.starts_with('.') {
-        return true;
-    }
-
-    // Check path components for hidden/build directories
+    // Build artifact directories that may not be in .gitignore
     for component in path.components() {
         if let std::path::Component::Normal(c) = component {
             let s = c.to_str().unwrap_or("");
-            if s.starts_with('.')
-                || s == "target"
+            if s == "target"
                 || s == "node_modules"
                 || s == "__pycache__"
-                || s == ".git"
                 || s == "dist"
                 || s == "build"
                 || s == "vendor"
