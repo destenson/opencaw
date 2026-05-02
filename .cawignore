@@ -7,3 +7,4 @@ opencaw-corpora/
 .claude/*.lock
 **/*.local.*
 .caw/
+**/trace.jsonl
