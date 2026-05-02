@@ -301,9 +301,11 @@ pub struct ScoredStub {
 /// surface the file list so the model can reason about what it needs. Scores are omitted
 /// intentionally — they're an internal signal, not useful guidance for the model.
 pub fn candidate_list_fragment(hits: &[ScoredStub], threshold: f32) -> RecallFragment {
+    // Hits are sorted by score descending; keep only the first (best) chunk per file.
+    let mut seen = std::collections::HashSet::new();
     let lines: Vec<String> = hits
         .iter()
-        .filter(|h| h.score >= threshold)
+        .filter(|h| h.score >= threshold && seen.insert(h.stub.path.clone()))
         .map(|h| {
             if h.stub.summary.is_empty() {
                 format!("- {}", h.stub.path)
