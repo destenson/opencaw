@@ -22,6 +22,45 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::debug;
 
+/// Wraps FastEmbedProvider to defer model loading until the first embed call.
+/// Startup only loads the ONNX model when there are actually new files to embed
+/// or the first query arrives — making warm starts (everything cached) near-instant.
+struct LazyFastEmbedProvider {
+    inner: Option<FastEmbedProvider>,
+}
+
+impl LazyFastEmbedProvider {
+    fn new() -> Self {
+        Self { inner: None }
+    }
+
+    fn ensure_loaded(&mut self) -> caw_core::CawResult<&mut FastEmbedProvider> {
+        if self.inner.is_none() {
+            eprintln!("Loading embedding model...");
+            self.inner = Some(FastEmbedProvider::bge_small()?);
+        }
+        Ok(self.inner.as_mut().unwrap())
+    }
+}
+
+impl EmbeddingProvider for LazyFastEmbedProvider {
+    fn embed(&mut self, texts: Vec<&str>) -> caw_core::CawResult<Vec<Vec<f32>>> {
+        self.ensure_loaded()?.embed(texts)
+    }
+    fn embed_query(&mut self, texts: Vec<&str>) -> caw_core::CawResult<Vec<Vec<f32>>> {
+        self.ensure_loaded()?.embed_query(texts)
+    }
+    fn embed_document(&mut self, texts: Vec<&str>) -> caw_core::CawResult<Vec<Vec<f32>>> {
+        self.ensure_loaded()?.embed_document(texts)
+    }
+    fn dimension(&self) -> usize {
+        384 // BGE-small-en-v1.5 is always 384-dimensional
+    }
+    fn provider_name(&self) -> &str {
+        "fastembed-bge-small"
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "caw",
@@ -39,7 +78,7 @@ struct Cli {
     #[arg(short, long, default_value = "qwen3.6:35b")]
     model: String,
 
-    /// SQLite database path for persistent index (omit for in-memory)
+    /// SQLite database path for persistent index. Defaults to .caw/index.db in the current directory.
     #[arg(long)]
     db: Option<PathBuf>,
 
@@ -122,16 +161,17 @@ fn main() -> Result<()> {
         .with_line_number(true)
         .init();
 
-    eprintln!("Initializing embedding provider...");
-    let mut embedder =
-        FastEmbedProvider::bge_small().context("Failed to initialize embedding provider")?;
+    let mut embedder = LazyFastEmbedProvider::new();
     let dimension = embedder.dimension();
 
     let db_path = cli
         .db
         .as_ref()
         .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| ":memory:".to_string());
+        .unwrap_or_else(|| {
+            std::fs::create_dir_all(".caw").ok();
+            ".caw/index.db".to_string()
+        });
 
     eprintln!("Opening stub store at: {}", db_path);
     let mut store = SqliteStubStore::new(&db_path, dimension)
@@ -167,14 +207,13 @@ fn main() -> Result<()> {
 
     eprintln!("Ingesting files from: {}", cli.dir.display());
 
-    let documents = pipeline
+    let (documents, skipped) = pipeline
         .ingest_directory(&cli.dir, !cli.gitignore)
         .context("Failed to ingest directory")?;
 
     let mut vector_index = HnswVectorIndex::new();
     let mut cached = 0usize;
     let mut ingested = 0usize;
-    let mut ignored = 0usize;
 
     for (stub, _embed_text) in &documents {
         if let Ok(Some((existing_stub, existing_embedding))) =
@@ -200,11 +239,11 @@ fn main() -> Result<()> {
     }
 
     eprintln!(
-        "Index ready: {} files ({} cached, {} newly ingested, {} ignored).",
+        "Index ready: {} files ({} cached, {} newly ingested, {} skipped).",
         documents.len(),
         cached,
         ingested,
-        ignored,
+        skipped,
     );
 
     // Check system prompt budget
@@ -218,8 +257,7 @@ fn main() -> Result<()> {
 
     let retriever = SemanticRetriever::new(embedder, store, vector_index);
 
-    let trace_embedder =
-        FastEmbedProvider::bge_small().context("Failed to initialize trace embedder")?;
+    let trace_embedder = LazyFastEmbedProvider::new();
 
     let trace_store = SqliteStubStore::new(&db_path, dimension)
         .context("Failed to open trace stub store")?
@@ -377,8 +415,8 @@ fn build_completion_adapter(adapter_name: &str, model: &str) -> Result<Box<dyn M
 
 #[allow(clippy::too_many_arguments)]
 fn run_interactive(
-    mut retriever: SemanticRetriever<FastEmbedProvider, SqliteStubStore, HnswVectorIndex>,
-    mut trace_embedder: FastEmbedProvider,
+    mut retriever: SemanticRetriever<LazyFastEmbedProvider, SqliteStubStore, HnswVectorIndex>,
+    mut trace_embedder: LazyFastEmbedProvider,
     mut trace_index: HnswVectorIndex,
     adapter: Box<dyn ModelAdapter>,
     config: DynamicRecallConfig,
@@ -716,7 +754,7 @@ fn load_session_fragments(
 }
 
 fn load_fragments(
-    retriever: &mut SemanticRetriever<FastEmbedProvider, SqliteStubStore, HnswVectorIndex>,
+    retriever: &mut SemanticRetriever<LazyFastEmbedProvider, SqliteStubStore, HnswVectorIndex>,
     hits: &[caw_core::ScoredStub],
     loaded: &mut Vec<caw_core::RecallFragment>,
     loaded_ids: &mut std::collections::HashSet<caw_core::StubId>,

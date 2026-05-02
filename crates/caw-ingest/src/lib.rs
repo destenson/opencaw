@@ -213,8 +213,14 @@ impl IngestionPipeline {
     /// extraction (tree-sitter), summarization, chunking — runs in parallel
     /// via rayon. On large corpora this is the dominant win; embedding
     /// throughput afterwards is gated by the ONNX runtime's own threading.
-    pub fn ingest_directory(&self, root: &Path, skip_gitignore: bool) -> CawResult<Vec<(Stub, String)>> {
-        let paths: Vec<_> = ignore::WalkBuilder::new(root)
+    /// Returns `(stubs, skipped)` where `skipped` is the count of files
+    /// rejected by the extension/directory filter after gitignore filtering.
+    pub fn ingest_directory(
+        &self,
+        root: &Path,
+        skip_gitignore: bool,
+    ) -> CawResult<(Vec<(Stub, String)>, usize)> {
+        let all_paths: Vec<_> = ignore::WalkBuilder::new(root)
             .follow_links(false)
             .hidden(!skip_gitignore)
             .git_ignore(!skip_gitignore)
@@ -222,9 +228,21 @@ impl IngestionPipeline {
             .git_exclude(!skip_gitignore)
             .build()
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_file() && !should_skip(e.path()))
-            .inspect(|e| debug!(entry=%e.path().display(), "found file during directory walk"))
+            .filter(|e| e.path().is_file())
             .map(|e| e.path().to_path_buf())
+            .collect();
+
+        let skipped = all_paths.iter().filter(|p| should_skip(p)).count();
+
+        let paths: Vec<_> = all_paths
+            .into_iter()
+            .filter(|p| {
+                let keep = !should_skip(p);
+                if keep {
+                    debug!(entry=%p.display(), "found file during directory walk");
+                }
+                keep
+            })
             .collect();
 
         let results: Vec<(_, _)> = paths
@@ -233,7 +251,7 @@ impl IngestionPipeline {
             .flat_map_iter(|doc| self.ingest(doc).into_iter())
             .collect();
 
-        Ok(results)
+        Ok((results, skipped))
     }
 }
 
