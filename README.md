@@ -400,12 +400,15 @@ See `TODO.md` for line-item status and `SCOPE.md` for v1 boundaries.
   README that defines what the project is. Flat semantic similarity has no
   concept of document role or hierarchy. Path depth or explicit authority
   signals would need to be added as a scoring factor.
-- Eager recall on vague queries — when a query term appears in many contexts
-  across the corpus (e.g. "opencaw" in a project named opencaw), retrieval
-  fires on everything and the model gets a noisy, mixed workspace before it
-  has had a chance to narrow the question. Detecting low-specificity queries
-  and deferring augmentation until the model's own reasoning narrows the topic
-  would reduce this noise.
+- Vague-query handling — when the ambiguity gate fires (too many candidates
+  above threshold), the current fallback is to load nothing and rely on
+  probe-driven recall. A better fallback: run a keyword search (ripgrep) over
+  the corpus and inject a compact file-list summary — filenames and match counts,
+  no content — so the model can see where the term appears and decide what to
+  probe. For thinking models this is especially natural: the model will reason
+  about the interesting-looking files in its thinking trace, those file names
+  appear at step boundaries, and the existing thinking-trace recall pipeline
+  picks them up and loads the content without any additional mechanism.
 - Insertion-order experiments (relevance-ranked vs reverse-relevance vs
   stub-order)
 - Provenance conflict detection beyond Jaccard term overlap
