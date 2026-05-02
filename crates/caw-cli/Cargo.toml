@@ -6,11 +6,11 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-caw-adapters = { path = "../caw-adapters" }
-caw-core = { path = "../caw-core" }
-caw-curation = { path = "../caw-curation" }
-caw-index = { path = "../caw-index" }
-caw-ingest = { path = "../caw-ingest" }
-caw-orchestrator = { path = "../caw-orchestrator" }
-caw-transform = { path = "../caw-transform" }
+caw-adapters = { workspace = true }
+caw-core = { workspace = true }
+caw-curation = { workspace = true }
+caw-index = { workspace = true }
+caw-ingest = { workspace = true }
+caw-orchestrator = { workspace = true }
+caw-transform = { workspace = true }
 clap = { version = "4", features = ["derive"] }

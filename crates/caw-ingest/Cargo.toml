@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-caw-core = { path = "../caw-core" }
+caw-core = { workspace = true }
 serde.workspace = true
 sha2 = "0.11"
 tree-sitter = "0.26"

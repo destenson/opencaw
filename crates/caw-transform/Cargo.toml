@@ -5,6 +5,6 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
-caw-core = { path = "../caw-core" }
+caw-core = { workspace = true }
 regex = "1"
 serde.workspace = true

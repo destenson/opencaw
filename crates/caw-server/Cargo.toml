@@ -26,5 +26,5 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # Bench workspace bits we reuse wholesale: stub store, embeddings, retrieval.
-caw-core = { path = "../caw-core" }
-caw-index = { path = "../caw-index", features = ["candle"] }
+caw-core = { workspace = true }
+caw-index = { workspace = true, features = ["candle"] }
