@@ -8,17 +8,12 @@ use tracing::{debug, warn};
 
 pub struct SessionFile {
     path: PathBuf,
-    file: File,
+    file: Option<File>,
 }
 
 impl SessionFile {
     pub fn create(path: PathBuf) -> CawResult<Self> {
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|e| caw_core::CawError::Io(e.to_string()))?;
-        Ok(Self { path, file })
+        Ok(Self { path, file: None })
     }
 
     pub fn path(&self) -> &Path {
@@ -30,10 +25,17 @@ impl SessionFile {
         let text = format!(
             "## Turn {turn}\n\n[User]: {user}\n\n[Assistant]: {answer}\n\n---\n\n"
         );
-        self.file
+        let file = self.file.get_or_insert(
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+                .map_err(|e| caw_core::CawError::Io(e.to_string()))?,
+        );
+        file
             .write_all(text.as_bytes())
             .map_err(|e| caw_core::CawError::Io(e.to_string()))?;
-        self.file
+        file
             .flush()
             .map_err(|e| caw_core::CawError::Io(e.to_string()))?;
         Ok(text)
