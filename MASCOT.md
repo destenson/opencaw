@@ -1,8 +1,10 @@
 # OpenCAW
 
-OpenCAW revolutionizes LLM context management with a Rust library that enables thinking-trace-driven recall, eviction, consolidation, and curation. It provides primitives for measuring recall quality, heuristics for false-recall detection, and hooks for LLM-assisted curation. OpenCAW is not another RAG wrapper — it empowers developers to build smarter context management strategies that go beyond retrieval.
+OpenCAW revolutionizes LLM context management with a Rust library that enables thinking-trace-driven recall and active context curation. It also provides primitives for measuring recall quality, heuristics for false-recall detection, and hooks for LLM-assisted curation. OpenCAW is not another RAG wrapper — it empowers developers to build smarter context management strategies that go beyond retrieval.
 
-## OpenCAW needs a mascot
+OpenCAW is designed to be flexible and adaptable, allowing developers to implement their own context management strategies while providing a solid foundation of tools and primitives. Whether you're building a chatbot, a virtual assistant, automated agents, or any application that relies on LLMs, OpenCAW can help you manage context more effectively and improve the quality of your interactions.
+
+## OpenCAW might as well have a mascot
 
 Rust uses the Ferris crab, Python has a friendly snake, and OpenCAW needs a mascot that embodies its core values of smart context management, adaptability, and efficiency. The mascot should be visually appealing, memorable, and convey the idea of a helpful assistant that manages information effectively.
 
