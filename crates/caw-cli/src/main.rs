@@ -16,6 +16,7 @@ use caw_ingest::summarizer::LlmSummarizer;
 use caw_orchestrator::consolidation::LlmConsolidation;
 use caw_orchestrator::dynamic::DynamicRecallConfig;
 use clap::Parser;
+use tracing::debug;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -91,14 +92,28 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    let deps_to_ignore = ["reqwest", "rustls", "globset", "h2", "webpki"].map(|s| format!("{s}=info")).join(",");
     if cli.verbose {
-        unsafe { std::env::set_var("RUST_LOG", "debug") };
-        // TODO: add ",reqwest=info" to RUST_LOG to prevent low-level HTTP logging
-        // TODO: add ",rustls=info" to RUST_LOG to prevent low-level TLS logging
-        // TODO: add ",h2=info" to RUST_LOG to prevent low-level HTTP/2 logging
+        // TODO: update the environment variable instead of overriding it, to allow users to specify additional filters
+        match std::env::var("RUST_LOG") {
+            Ok(existing) => unsafe {
+                std::env::set_var("RUST_LOG", format!("{existing},debug,{}", deps_to_ignore))
+            },
+            Err(_) => unsafe {
+                std::env::set_var("RUST_LOG", format!("debug,{}", deps_to_ignore))
+            },
+        }
+    } else {
+        // TODO: update the environment variable instead of overriding it, to allow users to specify additional filters
+        match std::env::var("RUST_LOG") {
+            Ok(existing) => unsafe {
+                std::env::set_var("RUST_LOG", format!("{existing},{}", deps_to_ignore))
+            },
+            Err(_) => unsafe {
+                std::env::set_var("RUST_LOG", deps_to_ignore)
+            },
+        }
     }
-    // TODO: add a "caw_orchestrator=trace" option for very verbose recall/scheduler logs
-    // TODO: add a "caw_adapters=trace" option for very verbose adapter logs (requests, responses, tool calls)
 
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -432,6 +447,7 @@ fn run_interactive(
     let mut stdout = io::stdout();
 
     loop {
+        debug!("> waiting for user input");
         print!("> ");
         stdout.flush()?;
 
