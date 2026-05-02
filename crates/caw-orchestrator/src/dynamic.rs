@@ -157,13 +157,13 @@ where
     fn auto_recall_enabled(&self) -> bool {
         self.degradation_monitor
             .as_ref()
-            .map_or(true, |m| m.should_auto_recall())
+            .is_none_or(|m| m.should_auto_recall())
     }
 
     fn stub_generation_enabled(&self) -> bool {
         self.degradation_monitor
             .as_ref()
-            .map_or(true, |m| m.should_generate_stubs())
+            .is_none_or(|m| m.should_generate_stubs())
     }
 
     /// Run a single conversational turn with iterative multi-pass recall.

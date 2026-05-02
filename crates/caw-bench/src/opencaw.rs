@@ -133,10 +133,13 @@ fn walk_source_files(root: &Path) -> Vec<std::path::PathBuf> {
                 stack.push(path);
                 continue;
             }
-            match path.extension().and_then(|e| e.to_str()) {
-                Some("rs" | "md" | "toml") => out.push(path),
-                _ => {}
+            if let Some("rs" | "md" | "toml") = path.extension().and_then(|e| e.to_str()) {
+                out.push(path)
             }
+            // match path.extension().and_then(|e| e.to_str()) {
+            //     Some("rs" | "md" | "toml") => out.push(path),
+            //     _ => {}
+            // }
         }
     }
     out.sort();

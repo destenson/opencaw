@@ -468,19 +468,18 @@ fn run_interactive(
                 if step.content.len() < 20 {
                     continue;
                 }
-                if let Ok(embeddings) = trace_embedder.embed_query(vec![&step.content]) {
-                    if let Some(emb) = embeddings.first() {
-                        let index_hits = trace_index.search(emb, config.top_k);
-                        for (stub_id, score) in index_hits {
-                            if loaded_ids.contains(&stub_id) || score < config.thresholds.load {
-                                continue;
-                            }
-                            if let Ok(fragment) = retriever.read_range(&stub_id, "full") {
-                                let current_tokens: usize = loaded.iter().map(|f| f.tokens).sum();
-                                if current_tokens + fragment.tokens <= config.max_workspace_tokens {
-                                    loaded_ids.insert(stub_id);
-                                    loaded.push(fragment);
-                                }
+                if let Ok(embeddings) = trace_embedder.embed_query(vec![&step.content]) 
+                    && let Some(emb) = embeddings.first() {
+                    let index_hits = trace_index.search(emb, config.top_k);
+                    for (stub_id, score) in index_hits {
+                        if loaded_ids.contains(&stub_id) || score < config.thresholds.load {
+                            continue;
+                        }
+                        if let Ok(fragment) = retriever.read_range(&stub_id, "full") {
+                            let current_tokens: usize = loaded.iter().map(|f| f.tokens).sum();
+                            if current_tokens + fragment.tokens <= config.max_workspace_tokens {
+                                loaded_ids.insert(stub_id);
+                                loaded.push(fragment);
                             }
                         }
                     }

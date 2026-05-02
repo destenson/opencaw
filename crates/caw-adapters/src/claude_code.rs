@@ -291,7 +291,7 @@ impl ModelAdapter for ClaudeCodeAdapter {
             }
         });
 
-        let mut final_result: Option<ClaudeStreamResult> = None;
+        let final_result: Option<ClaudeStreamResult>;
         let timeout_reason;
         loop {
             match line_rx.recv_timeout(STREAM_EVENT_TIMEOUT) {

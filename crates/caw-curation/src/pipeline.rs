@@ -140,17 +140,17 @@ impl CurationPipeline<'_> {
         // 3. Compress tool outputs in the retained turns
         let mut compressed_outputs = Vec::new();
         for turn in &retained {
-            if turn.is_tool_output() && !turn.metadata.inline_required {
-                if let Some(compressed) = self.tool_compressor.compress(
-                    turn.metadata.tool_name.as_deref().unwrap_or("unknown"),
-                    &turn.content,
-                    turn.token_estimate,
-                )? {
-                    tokens_saved += compressed
-                        .original_tokens
-                        .saturating_sub(compressed.summary_tokens);
-                    compressed_outputs.push(compressed);
-                }
+            if turn.is_tool_output()
+                && !turn.metadata.inline_required
+                && let Some(compressed) = self.tool_compressor.compress(
+                turn.metadata.tool_name.as_deref().unwrap_or("unknown"),
+                &turn.content,
+                turn.token_estimate,
+            )? {
+                tokens_saved += compressed
+                    .original_tokens
+                    .saturating_sub(compressed.summary_tokens);
+                compressed_outputs.push(compressed);
             }
         }
 

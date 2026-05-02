@@ -345,7 +345,7 @@ fn run_item_fresh(
         .context("run_turn failed")?;
 
     let loaded = orchestrator.loaded.clone();
-    Ok(finalize_result(
+    finalize_result(
         item,
         mode,
         cfg,
@@ -354,7 +354,7 @@ fn run_item_fresh(
         response.answer,
         &stub_summaries,
         judge_adapter,
-    )?)
+    )
 }
 
 /// Run one item against a shared, prebuilt index. All heavy state

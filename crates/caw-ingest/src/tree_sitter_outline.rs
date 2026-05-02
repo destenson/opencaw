@@ -45,12 +45,11 @@ fn node_text<'a>(node: Node<'a>, src: &'a str) -> &'a str {
 /// or just the node's own text if no such child exists. Trims trailing whitespace.
 fn text_until_child(node: Node<'_>, src: &str, stop_kind: &str) -> String {
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            if child.kind() == stop_kind {
-                let start = node.start_byte();
-                let end = child.start_byte();
-                return src[start..end].trim_end().to_string();
-            }
+        if let Some(child) = node.child(i as u32) 
+            && child.kind() == stop_kind {
+            let start = node.start_byte();
+            let end = child.start_byte();
+            return src[start..end].trim_end().to_string();
         }
     }
     first_line(node_text(node, src))
@@ -286,20 +285,18 @@ fn extract_js_node(node: Node<'_>, src: &str, out: &mut Vec<String>, depth: usiz
             // const foo = (...) => { ... }
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                if child.kind() == "variable_declarator" {
-                    if let Some(value) = child.child_by_field_name("value") {
-                        if value.kind() == "arrow_function" {
-                            let name = named_child_text(child, "name", src).unwrap_or("?");
-                            let params = value
-                                .child_by_field_name("parameters")
-                                .map(|n| node_text(n, src));
-                            let kw = keyword_for_lexical(node, src);
-                            if let Some(params) = params {
-                                out.push(format!("{indent}{kw} {name} = {params} =>"));
-                            } else {
-                                out.push(format!("{indent}{kw} {name} = () =>"));
-                            }
-                        }
+                if child.kind() == "variable_declarator" 
+                    && let Some(value) = child.child_by_field_name("value")
+                    && value.kind() == "arrow_function" {
+                    let name = named_child_text(child, "name", src).unwrap_or("?");
+                    let params = value
+                        .child_by_field_name("parameters")
+                        .map(|n| node_text(n, src));
+                    let kw = keyword_for_lexical(node, src);
+                    if let Some(params) = params {
+                        out.push(format!("{indent}{kw} {name} = {params} =>"));
+                    } else {
+                        out.push(format!("{indent}{kw} {name} = () =>"));
                     }
                 }
             }

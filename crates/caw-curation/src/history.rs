@@ -115,7 +115,7 @@ impl HistorySummarizer for ExtractiveHistorySummarizer {
         for turn in turns {
             let sentences: Vec<&str> = turn
                 .content
-                .split(|c: char| c == '.' || c == '!' || c == '?')
+                .split([ '.', '!', '?' ])
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
                 .collect();

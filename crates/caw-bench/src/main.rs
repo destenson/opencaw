@@ -241,10 +241,9 @@ fn main() -> Result<()> {
     // completes so a kill mid-run still leaves a usable partial trace.
     let mut trace_writer: Option<std::io::BufWriter<std::fs::File>> = match &cli.trace_out {
         Some(path) => {
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(parent).ok();
-                }
+            if let Some(parent) = path.parent() 
+                && !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).ok();
             }
             match std::fs::File::create(path) {
                 Ok(f) => {

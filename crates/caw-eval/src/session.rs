@@ -356,10 +356,9 @@ impl SessionEvaluator {
         let mut quality_scores = Vec::new();
         for ann in &self.annotations {
             // Find the most recent recall for this stub to compare against
-            if let Some(recall) = self.recalls.iter().rev().find(|r| r.stub_id == ann.stub_id) {
-                if let Some(ref content) = recall.recalled_content {
-                    quality_scores.push(term_overlap(&ann.content, content));
-                }
+            if let Some(recall) = self.recalls.iter().rev().find(|r| r.stub_id == ann.stub_id) 
+                && let Some(ref content) = recall.recalled_content {
+                quality_scores.push(term_overlap(&ann.content, content));
             }
         }
 

@@ -169,11 +169,10 @@ fn build_embedder(kind: BackendArg, onnx_variant: OnnxVariantArg) -> Result<AnyE
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    if let Some(parent) = cli.out.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create parent dir {}", parent.display()))?;
-        }
+    if let Some(parent) = cli.out.parent() 
+        && !parent.as_os_str().is_empty() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create parent dir {}", parent.display()))?;
     }
     // `verbose` gates one-shot informational output; `log_interval_s` gates
     // the periodic progress/intake loops. `--quiet` forces both off; an
@@ -623,7 +622,7 @@ fn flush_batch(
 
     let items: Vec<(Stub, Vec<f32>)> = buf
         .drain(..)
-        .zip(embeddings_by_idx.into_iter())
+        .zip(embeddings_by_idx)
         .map(|((stub, _embed_text), emb_opt)| {
             let emb = emb_opt.expect("every index should have an embedding");
             done_files.insert(stub.path.clone());
