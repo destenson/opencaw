@@ -1,26 +1,28 @@
 use caw_core::{CawResult, Stub};
 use regex::Regex;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 pub mod recall;
 
 pub use recall::{apply_range, extract_annotations, extract_probes, extract_thinking_steps};
 
+static FILE_REF_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap());
+static AT_PATH_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"@([a-zA-Z0-9_./\-]+)").unwrap());
+static STUB_REFERENCE_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"<file id="([^"]+)""#).unwrap());
+
 /// Prompt transformer that finds file references and replaces them with stubs
 pub struct PromptTransformer {
     stubs: HashMap<String, Stub>,
-    file_ref_pattern: Regex,
-    at_path_pattern: Regex,
 }
 
 impl PromptTransformer {
     pub fn new() -> Self {
         Self {
             stubs: HashMap::new(),
-            // Matches markdown links: [text](path)
-            file_ref_pattern: Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap(),
-            // Matches @path references
-            at_path_pattern: Regex::new(r"@([a-zA-Z0-9_./\-]+)").unwrap(),
         }
     }
 
@@ -35,7 +37,7 @@ impl PromptTransformer {
         let mut references = Vec::new();
 
         // Replace markdown links
-        for cap in self.file_ref_pattern.captures_iter(prompt) {
+        for cap in FILE_REF_PATTERN.captures_iter(prompt) {
             let full_match = cap.get(0).unwrap().as_str();
             let path = cap.get(2).unwrap().as_str();
 
@@ -47,7 +49,7 @@ impl PromptTransformer {
         }
 
         // Replace @path references
-        for cap in self.at_path_pattern.captures_iter(prompt) {
+        for cap in AT_PATH_PATTERN.captures_iter(prompt) {
             let full_match = cap.get(0).unwrap().as_str();
             let path = cap.get(1).unwrap().as_str();
 
@@ -95,8 +97,7 @@ fn format_stub(stub: &Stub) -> String {
 
 /// Parse stub tags from model output to detect which stubs it referenced
 pub fn extract_stub_references(text: &str) -> Vec<String> {
-    let pattern = Regex::new(r#"<file id="([^"]+)""#).unwrap();
-    pattern
+    STUB_REFERENCE_PATTERN
         .captures_iter(text)
         .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string()))
         .collect()

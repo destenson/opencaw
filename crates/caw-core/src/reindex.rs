@@ -17,7 +17,7 @@
 //! without having to wire anything up.
 
 use std::collections::{HashSet, VecDeque};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 /// Sink for "this path needs reingestion" signals. Implementations must be
 /// cheap — recall-path code calls `enqueue` while holding no locks it cares
@@ -57,6 +57,15 @@ struct State {
     closed: bool,
 }
 
+fn lock_state(mutex: &Mutex<State>) -> MutexGuard<'_, State> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn wait_for_state<'a>(cv: &Condvar, state: MutexGuard<'a, State>) -> MutexGuard<'a, State> {
+    cv.wait(state)
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 impl ChannelReindexQueue {
     pub fn new() -> Self {
         Self {
@@ -82,7 +91,7 @@ impl ChannelReindexQueue {
     /// Signal all waiting receivers to exit. After close, `recv` returns
     /// `None` once the deque drains. Subsequent `enqueue` calls are dropped.
     pub fn close(&self) {
-        let mut state = self.inner.state.lock().expect("poisoned");
+        let mut state = lock_state(&self.inner.state);
         state.closed = true;
         self.inner.cv.notify_all();
     }
@@ -96,7 +105,7 @@ impl Default for ChannelReindexQueue {
 
 impl ReindexQueue for ChannelReindexQueue {
     fn enqueue(&self, path: &str) {
-        let mut state = self.inner.state.lock().expect("poisoned");
+        let mut state = lock_state(&self.inner.state);
         if state.closed {
             return;
         }
@@ -115,7 +124,7 @@ impl ReindexReceiver {
     /// Block until a path is available. Returns `None` if the queue is
     /// closed and drained.
     pub fn recv(&self) -> Option<String> {
-        let mut state = self.inner.state.lock().expect("poisoned");
+        let mut state = lock_state(&self.inner.state);
         loop {
             if let Some(path) = state.deque.pop_front() {
                 state.pending.remove(&path);
@@ -124,7 +133,7 @@ impl ReindexReceiver {
             if state.closed {
                 return None;
             }
-            state = self.inner.cv.wait(state).expect("poisoned");
+            state = wait_for_state(&self.inner.cv, state);
         }
     }
 }

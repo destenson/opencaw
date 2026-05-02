@@ -1,10 +1,17 @@
 use caw_core::{CawResult, ModelAnnotation, ProbeMarker, Range, ThinkingStep};
 use regex::Regex;
+use std::sync::LazyLock;
+
+static PROBE_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<probe>(.*?)</probe>").unwrap());
+static THINK_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<think>(.*?)</think>").unwrap());
+static ANNOTATION_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"<note id="([^"]+)">(.*?)</note>"#).unwrap());
 
 /// Extract probe markers from model output
 pub fn extract_probes(text: &str) -> Vec<ProbeMarker> {
-    let pattern = Regex::new(r"<probe>(.*?)</probe>").unwrap();
-    pattern
+    PROBE_PATTERN
         .captures_iter(text)
         .map(|cap| ProbeMarker {
             content: cap.get(1).unwrap().as_str().to_string(),
@@ -17,10 +24,9 @@ pub fn extract_probes(text: &str) -> Vec<ProbeMarker> {
 /// Looks for explicit `<think>` tags first, then falls back to
 /// heuristic boundary detection.
 pub fn extract_thinking_steps(text: &str) -> Vec<ThinkingStep> {
-    let think_pattern = Regex::new(r"<think>(.*?)</think>").unwrap();
     let mut steps = Vec::new();
 
-    for (idx, cap) in think_pattern.captures_iter(text).enumerate() {
+    for (idx, cap) in THINK_PATTERN.captures_iter(text).enumerate() {
         steps.push(ThinkingStep {
             content: cap.get(1).unwrap().as_str().to_string(),
             step_number: idx,
@@ -80,8 +86,7 @@ pub fn apply_range(content: &str, range: &Range) -> CawResult<String> {
 /// Extract model annotations about specific stubs.
 /// Format: `<note id="stub_id">content</note>`
 pub fn extract_annotations(text: &str) -> Vec<ModelAnnotation> {
-    let pattern = Regex::new(r#"<note id="([^"]+)">(.*?)</note>"#).unwrap();
-    pattern
+    ANNOTATION_PATTERN
         .captures_iter(text)
         .map(|cap| ModelAnnotation {
             stub_id: cap.get(1).unwrap().as_str().to_string(),

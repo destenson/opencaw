@@ -3,7 +3,7 @@ use crate::degradation::DegradationMonitor;
 use caw_core::{
     CawResult, CompletionRequest, CompletionResponse, ConsolidationNote, ConsolidationSource,
     EmbeddingProvider, ModelAdapter, ProvenanceStore, Range, RecallFragment, RecallThresholds,
-    Retriever, ScoredStub, StubId, StubStore, VectorIndex,
+    Retriever, StubId, StubStore, VectorIndex,
 };
 use caw_transform::{extract_annotations, extract_probes, extract_thinking_steps};
 use std::collections::{HashMap, HashSet};
@@ -181,7 +181,12 @@ where
 
         // Phase 1: Initial retrieval on the user query
         let initial_hits = self.retriever.search(user, self.config.top_k)?;
-        self.load_fragments(initial_hits)?;
+        self.load_fragments(
+            initial_hits
+                .into_iter()
+                .map(|hit| (hit.stub.id, hit.score))
+                .collect(),
+        )?;
 
         let mut last_response = self.adapter.complete(CompletionRequest {
             system: system_prompt.clone(),
@@ -252,29 +257,7 @@ where
             let embeddings = embed_result?;
             if let Some(embedding) = embeddings.first() {
                 let hits = self.vector_index.search(embedding, self.config.top_k);
-                let scored: Vec<ScoredStub> = hits
-                    .into_iter()
-                    .filter_map(|(id, score)| match self.retriever.read_range(&id, "full") {
-                        Ok(frag) => Some(ScoredStub {
-                            stub: caw_core::Stub {
-                                id,
-                                path: frag.locator.source.clone(),
-                                token_estimate: frag.tokens,
-                                kind: caw_core::ContentKind::Other,
-                                summary: String::new(),
-                                outline: Vec::new(),
-                                content_hash: String::new(),
-                                mtime_unix_secs: 0,
-                                byte_offset: 0,
-                                byte_length: 0,
-                                consolidation_notes: Vec::new(),
-                            },
-                            score,
-                        }),
-                        Err(_) => None,
-                    })
-                    .collect();
-                self.load_fragments(scored)?;
+                self.load_fragments(hits)?;
             }
         }
 
@@ -294,7 +277,11 @@ where
             }
 
             let hits = self.retriever.search(&probe.content, self.config.top_k)?;
-            self.load_fragments(hits)?;
+            self.load_fragments(
+                hits.into_iter()
+                    .map(|hit| (hit.stub.id, hit.score))
+                    .collect(),
+            )?;
         }
 
         Ok(())
@@ -433,13 +420,13 @@ where
         }
     }
 
-    fn load_fragments(&mut self, hits: Vec<ScoredStub>) -> CawResult<()> {
-        for hit in hits {
-            if self.loaded_ids.contains(&hit.stub.id) {
+    fn load_fragments(&mut self, hits: Vec<(StubId, f32)>) -> CawResult<()> {
+        for (stub_id, score) in hits {
+            if self.loaded_ids.contains(&stub_id) {
                 continue;
             }
 
-            if hit.score < self.config.thresholds.load {
+            if score < self.config.thresholds.load {
                 continue;
             }
 
@@ -448,11 +435,11 @@ where
                 break;
             }
 
-            let fragment = self.retriever.read_range(&hit.stub.id, "full")?;
+            let fragment = self.retriever.read_range(&stub_id, "full")?;
 
             if current_tokens + fragment.tokens <= self.config.max_workspace_tokens {
-                self.relevance_scores.insert(hit.stub.id.clone(), hit.score);
-                self.loaded_ids.insert(hit.stub.id.clone());
+                self.relevance_scores.insert(stub_id.clone(), score);
+                self.loaded_ids.insert(stub_id.clone());
                 self.provenance.record_with_context(fragment.clone(), "", 0);
                 self.loaded.push(fragment);
             }

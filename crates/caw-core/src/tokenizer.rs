@@ -9,29 +9,30 @@ pub struct TiktokenTokenizer {
 }
 
 impl TiktokenTokenizer {
+    fn from_bpe(
+        result: Result<tiktoken_rs::CoreBPE, impl std::fmt::Display>,
+        name: &'static str,
+    ) -> CawResult<Self> {
+        let bpe = result.map_err(|err| {
+            crate::CawError::InvalidInput(format!("failed to load {} tokenizer data: {}", name, err))
+        })?;
+        Ok(Self { bpe, name })
+    }
+
     /// cl100k_base encoding — used by GPT-4, GPT-3.5-turbo, and
     /// close enough for Claude models (which use a similar vocabulary size).
     pub fn cl100k() -> CawResult<Self> {
-        Ok(Self {
-            bpe: tiktoken_rs::cl100k_base().expect("cl100k_base data should be bundled"),
-            name: "cl100k_base",
-        })
+        Self::from_bpe(tiktoken_rs::cl100k_base(), "cl100k_base")
     }
 
     /// p50k_base encoding — used by older GPT-3 / Codex models.
     pub fn p50k() -> CawResult<Self> {
-        Ok(Self {
-            bpe: tiktoken_rs::p50k_base().expect("p50k_base data should be bundled"),
-            name: "p50k_base",
-        })
+        Self::from_bpe(tiktoken_rs::p50k_base(), "p50k_base")
     }
 
     /// o200k_base encoding — used by GPT-4o, o1/o3/o4 series.
     pub fn o200k() -> CawResult<Self> {
-        Ok(Self {
-            bpe: tiktoken_rs::o200k_base().expect("o200k_base data should be bundled"),
-            name: "o200k_base",
-        })
+        Self::from_bpe(tiktoken_rs::o200k_base(), "o200k_base")
     }
 
     /// Auto-select encoding based on model name. Falls back to cl100k_base

@@ -3,6 +3,10 @@ use caw_core::{
     ProvenanceStore, RecallFragment, RecallThresholds, Retriever, SchedulerInput, TokenBudget,
 };
 use regex::Regex;
+use std::sync::LazyLock;
+
+static PROBE_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<probe>(.*?)</probe>").unwrap());
 
 /// Orchestrator that implements explicit probe-based recall.
 /// Models emit <probe>query text</probe> markers to request content.
@@ -19,7 +23,6 @@ where
     pub adapter: M,
     pub loaded: Vec<RecallFragment>,
     pub config: ProbeRecallConfig,
-    probe_pattern: Regex,
 }
 
 #[derive(Debug, Clone)]
@@ -68,7 +71,6 @@ where
             adapter,
             loaded: Vec::new(),
             config,
-            probe_pattern: Regex::new(r"<probe>(.*?)</probe>").unwrap(),
         }
     }
 
@@ -115,7 +117,7 @@ where
     }
 
     fn extract_probes(&self, text: &str) -> Vec<String> {
-        self.probe_pattern
+        PROBE_PATTERN
             .captures_iter(text)
             .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string()))
             .collect()
@@ -219,7 +221,6 @@ mod tests {
             adapter: MockAdapter,
             loaded: Vec::new(),
             config: ProbeRecallConfig::default(),
-            probe_pattern: Regex::new(r"<probe>(.*?)</probe>").unwrap(),
         };
 
         let text = "I need to check <probe>configuration settings</probe> and also <probe>error logs</probe>";
