@@ -552,14 +552,20 @@ fn run_interactive(
         // specific files by path. Load those files and re-complete so the final
         // answer is grounded in actual content rather than just summaries.
         if above_threshold > config.max_initial_fragments {
-            let answer = &response.answer;
+            // Check both the answer and the thinking trace — thinking models
+            // will mention files in the trace rather than (or in addition to)
+            // the visible answer.
+            let search_text = match &response.thinking {
+                Some(t) => format!("{}\n{}", t, response.answer),
+                None => response.answer.clone(),
+            };
             let mut seen_paths = std::collections::HashSet::new();
             let mentioned: Vec<ScoredStub> = hits
                 .iter()
                 .filter(|h| h.score >= config.thresholds.load)
                 .filter(|h| {
                     let norm = h.stub.path.trim_start_matches("./");
-                    answer.contains(norm) || answer.contains(&h.stub.path)
+                    search_text.contains(norm) || search_text.contains(&h.stub.path)
                 })
                 .filter(|h| seen_paths.insert(h.stub.path.clone()))
                 .cloned()
