@@ -220,12 +220,23 @@ impl IngestionPipeline {
         root: &Path,
         skip_gitignore: bool,
     ) -> CawResult<(Vec<(Stub, String)>, usize)> {
-        let all_paths: Vec<_> = ignore::WalkBuilder::new(root)
+        // If a .cawignore file exists at the root, use it as the sole ignore
+        // source instead of .gitignore. This lets the user include gitignored
+        // paths (e.g. bench-results/) while still excluding large or irrelevant
+        // trees (e.g. target/, opencaw-corpora/) by listing them in .cawignore.
+        let has_cawignore = root.join(".cawignore").exists();
+        let use_gitignore = !skip_gitignore && !has_cawignore;
+        let mut builder = ignore::WalkBuilder::new(root);
+        builder
             .follow_links(false)
             .hidden(!skip_gitignore)
-            .git_ignore(!skip_gitignore)
-            .git_global(!skip_gitignore)
-            .git_exclude(!skip_gitignore)
+            .git_ignore(use_gitignore)
+            .git_global(use_gitignore)
+            .git_exclude(use_gitignore);
+        if has_cawignore {
+            builder.add_custom_ignore_filename(".cawignore");
+        }
+        let all_paths: Vec<_> = builder
             .build()
             .filter_map(|e| e.ok())
             .filter(|e| e.path().is_file())
