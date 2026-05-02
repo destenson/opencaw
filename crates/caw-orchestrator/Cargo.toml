@@ -8,6 +8,7 @@ license.workspace = true
 caw-core = { path = "../caw-core" }
 caw-transform = { path = "../caw-transform" }
 regex = "1"
+tracing.workspace = true
 
 [dev-dependencies]
 caw-adapters = { path = "../caw-adapters" }

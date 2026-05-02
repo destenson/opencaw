@@ -10,6 +10,7 @@ use caw_core::{
     ProvenanceStore, RecallFragment, Retriever, SchedulerInput, TokenBudget,
 };
 use std::collections::HashSet;
+use tracing::{debug, info};
 
 #[derive(Debug, Clone)]
 pub struct OrchestratorConfig {
@@ -63,6 +64,14 @@ where
     M: ModelAdapter,
 {
     pub fn run_turn(&mut self, system: &str, user: &str) -> CawResult<CompletionResponse> {
+        let has_reasoning = self.adapter.capabilities().supports_visible_reasoning;
+        debug!(
+            model = self.adapter.model_name(),
+            query = &user[..user.len().min(80)],
+            visible_reasoning = has_reasoning,
+            "run_turn start"
+        );
+
         // seen_this_turn prevents re-injecting a stub across thinking restarts,
         // even if it gets evicted by the budget scheduler mid-loop.
         let mut seen_this_turn: HashSet<String> = HashSet::new();
@@ -78,8 +87,13 @@ where
             &mut seen_this_turn,
         )?;
 
-        if self.adapter.capabilities().supports_visible_reasoning {
-            for _ in 0..self.config.max_recall_iterations {
+        debug!(loaded = self.loaded.len(), "initial query recall complete");
+
+        if has_reasoning {
+            let mut iterations = 0usize;
+            for i in 0..self.config.max_recall_iterations {
+                debug!(iteration = i + 1, loaded = self.loaded.len(), "thinking phase start");
+
                 let req = CompletionRequest {
                     system: system.to_string(),
                     user: user.to_string(),
@@ -97,6 +111,10 @@ where
 
                 let mut admitted_any = false;
                 adapter.thinking_with_steps(req, &mut |step| {
+                    debug!(
+                        step = &step[..step.len().min(120)],
+                        "thinking step — searching"
+                    );
                     let new = do_recall(
                         step,
                         retriever,
@@ -108,17 +126,27 @@ where
                     )?;
                     if new {
                         admitted_any = true;
+                        debug!("new context admitted — stopping stream for restart");
                     }
                     // Stop stream on first new admission — restart with richer workspace.
                     Ok(!new)
                 })?;
 
+                iterations = i + 1;
                 if !admitted_any {
+                    debug!(iterations, "thinking loop converged — no new admissions");
                     break;
                 }
             }
+
+            info!(
+                iterations,
+                loaded = self.loaded.len(),
+                "thinking-trace recall complete"
+            );
         }
 
+        debug!(workspace_frags = self.loaded.len(), "sending final complete");
         self.adapter.complete(CompletionRequest {
             system: system.to_string(),
             user: user.to_string(),
@@ -144,6 +172,8 @@ where
     P: ProvenanceStore,
 {
     let hits = retriever.search(query, config.top_k)?;
+    let total_hits = hits.len();
+
     let mut candidates = Vec::new();
     let mut candidate_scores = Vec::new();
 
@@ -151,10 +181,22 @@ where
         .into_iter()
         .filter(|h| h.score >= config.thresholds.load && !seen.contains(&h.stub.id.0))
     {
+        debug!(
+            path = %hit.stub.path,
+            score = hit.score,
+            "candidate above threshold"
+        );
         let fragment = retriever.read_range(&hit.stub.id, &config.default_range)?;
         candidate_scores.push(hit.score);
         candidates.push(fragment);
     }
+
+    debug!(
+        query = &query[..query.len().min(80)],
+        total_hits,
+        candidates = candidates.len(),
+        "recall search done"
+    );
 
     if candidates.is_empty() {
         return Ok(false);
@@ -167,11 +209,20 @@ where
         budget: config.budget,
     });
 
-    *loaded = decision.keep;
     for frag in &decision.admitted {
+        debug!(
+            path = %frag.locator.source,
+            tokens = frag.tokens,
+            "fragment admitted"
+        );
         seen.insert(frag.stub_id.0.clone());
         provenance.record(frag.clone());
     }
 
+    for frag in &decision.evicted {
+        debug!(path = %frag.locator.source, "fragment evicted");
+    }
+
+    *loaded = decision.keep;
     Ok(!decision.admitted.is_empty())
 }

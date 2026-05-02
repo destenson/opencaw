@@ -1,8 +1,9 @@
 use caw_core::{
-    CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities,
-    ProvenanceFormat, split_thinking,
+    split_thinking, CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
+    ModelCapabilities, ProvenanceFormat,
 };
 use futures_util::StreamExt;
+use tracing::{debug, info};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -222,6 +223,8 @@ impl ModelAdapter for OllamaAdapter {
             return Ok(());
         }
 
+        debug!(model = %self.model, "streaming thinking trace");
+
         let workspace_context = req.format_workspace(ProvenanceFormat::Bracketed);
         let full_user = format!("{}{}", req.user, workspace_context);
 
@@ -280,6 +283,7 @@ impl ModelAdapter for OllamaAdapter {
                                 if let Some(after) = content.split_once("<think>").map(|(_, r)| r) {
                                     in_think = true;
                                     step_buf.push_str(after);
+                                    debug!("<think> detected — collecting steps");
                                 }
                             } else {
                                 step_buf.push_str(content);
@@ -289,8 +293,13 @@ impl ModelAdapter for OllamaAdapter {
                                 if let Some(end) = step_buf.find("</think>") {
                                     let step = step_buf[..end].trim().to_string();
                                     if !step.is_empty() {
+                                        debug!(
+                                            step_preview = &step[..step.len().min(80)],
+                                            "step at </think>"
+                                        );
                                         steps.push(step);
                                     }
+                                    debug!("</think> detected — stopping stream");
                                     break 'outer;
                                 }
                                 // Flush a completed step at \n\n boundary
@@ -298,6 +307,10 @@ impl ModelAdapter for OllamaAdapter {
                                     let step = step_buf[..boundary].trim().to_string();
                                     step_buf.drain(..boundary + 2);
                                     if !step.is_empty() {
+                                        debug!(
+                                            step_preview = &step[..step.len().min(80)],
+                                            "step boundary flushed"
+                                        );
                                         steps.push(step);
                                     }
                                 }
@@ -317,11 +330,14 @@ impl ModelAdapter for OllamaAdapter {
             Ok(steps)
         })?;
 
+        info!(model = %self.model, steps = steps.len(), "thinking trace collected");
+
         // Replay collected steps through the callback synchronously.
         // on_step returning false means new context was found — the
         // orchestrator will restart with the enriched workspace.
-        for step in &steps {
+        for (i, step) in steps.iter().enumerate() {
             if !on_step(step)? {
+                debug!(step_index = i, "early stop — new context admitted at this step");
                 break;
             }
         }

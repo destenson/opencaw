@@ -26,6 +26,7 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 rayon = "1"
 caw-adapters = { path = "crates/caw-adapters" }
@@ -55,3 +56,5 @@ caw-ingest = { workspace = true }
 caw-orchestrator = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true }
+tracing.workspace = true
+tracing-subscriber.workspace = true
