@@ -2,6 +2,7 @@ use caw_core::{
     CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities,
     ProvenanceFormat,
 };
+use tracing::trace;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -234,6 +235,7 @@ impl ModelAdapter for OpenAiCompatibleAdapter {
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
         let workspace_context = req.format_workspace(ProvenanceFormat::Bracketed);
         let full_user_message = format!("{}{}", req.user, workspace_context);
+        trace!(model = %self.model, system = %req.system, prompt = %full_user_message, "→ llm");
 
         let chat_req = ChatCompletionRequest {
             model: self.model.clone(),
@@ -298,6 +300,7 @@ impl ModelAdapter for OpenAiCompatibleAdapter {
             .map(|c| c.message.content.clone())
             .unwrap_or_default();
 
+        trace!(model = %self.model, answer = %answer, "← llm");
         Ok(CompletionResponse {
             answer,
             thinking: None,

@@ -3,7 +3,7 @@ use caw_core::{
     ModelCapabilities, ProvenanceFormat,
 };
 use futures_util::StreamExt;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -132,6 +132,7 @@ impl ModelAdapter for OllamaAdapter {
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
         let workspace_context = req.format_workspace(ProvenanceFormat::Bracketed);
         let full_user_message = format!("{}{}", req.user, workspace_context);
+        trace!(model = %self.model, system = %req.system, prompt = %full_user_message, "→ llm");
 
         let ollama_req = OllamaChatRequest {
             model: self.model.clone(),
@@ -183,6 +184,7 @@ impl ModelAdapter for OllamaAdapter {
         match serde_json::from_str::<OllamaChatResponse>(&body) {
             Ok(parsed) => {
                 let (thinking, answer) = split_thinking(&parsed.message.content);
+                trace!(model = %self.model, answer = %answer, "← llm");
                 Ok(CompletionResponse { answer, thinking })
             }
             Err(parse_err) => {

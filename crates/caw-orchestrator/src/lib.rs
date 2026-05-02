@@ -10,7 +10,7 @@ use caw_core::{
     ProvenanceStore, RecallFragment, Retriever, SchedulerInput, TokenBudget,
 };
 use std::collections::HashSet;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 #[derive(Debug, Clone)]
 pub struct OrchestratorConfig {
@@ -215,6 +215,7 @@ where
             tokens = frag.tokens,
             "fragment admitted"
         );
+        trace!("admitted content: {}", &frag.content[..frag.content.len().min(256)]);
         seen.insert(frag.stub_id.0.clone());
         provenance.record(frag.clone());
     }

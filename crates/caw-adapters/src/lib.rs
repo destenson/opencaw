@@ -15,6 +15,7 @@ pub use claude_code::ClaudeCodeAdapter;
 pub use groq::GroqAdapter;
 pub use ollama::OllamaAdapter;
 pub use openai_compatible::{OpenAiCompatibleAdapter, RequestHeaders};
+use ::tracing::trace;
 pub use tracing::{TraceSink, TracingAdapter};
 
 /// Create a shared tokio runtime for all adapters.
@@ -33,8 +34,10 @@ pub struct MockAdapter {
 
 impl MockAdapter {
     pub fn new(name: impl Into<String>, supports_visible_reasoning: bool) -> Self {
+        let name = name.into();
+        trace!("New mock adapter: {}", name);
         Self {
-            name: name.into(),
+            name,
             caps: ModelCapabilities {
                 supports_tool_calls: true,
                 supports_hidden_reasoning: false,

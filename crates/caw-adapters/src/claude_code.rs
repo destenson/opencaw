@@ -2,6 +2,7 @@ use caw_core::{
     CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities,
     ProvenanceFormat,
 };
+use tracing::trace;
 use serde::Deserialize;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
@@ -167,6 +168,7 @@ impl ModelAdapter for ClaudeCodeAdapter {
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
         let workspace_context = req.format_workspace(ProvenanceFormat::Xml);
         let full_user_message = format!("{}{}", req.user, workspace_context);
+        trace!(model = %self.model, prompt = %full_user_message, "→ llm");
 
         // Use stream-json so a reader-side watchdog can detect upstream
         // hangs. Previously the CLI could sit in ep_poll indefinitely with
@@ -364,6 +366,7 @@ impl ModelAdapter for ClaudeCodeAdapter {
             );
         }
 
+        trace!(model = %self.model, answer = %parsed.result, "← llm");
         Ok(CompletionResponse {
             answer: parsed.result,
             thinking: None,
