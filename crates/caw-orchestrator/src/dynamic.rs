@@ -241,11 +241,24 @@ where
             max_initial = self.config.max_initial_fragments,
             "initial retrieval complete"
         );
+        let distinct_above_unload = initial_hits
+            .iter()
+            .filter(|h| h.score >= self.config.thresholds.unload)
+            .map(|h| h.stub.path.as_str())
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        let show_listing = above_threshold > self.config.max_initial_fragments
+            || distinct_above_unload > self.config.max_initial_fragments;
         // Build the candidate list before consuming initial_hits. Returns Some
         // only when the gate fires; the borrow ends before the move below.
-        let candidate_fragment: Option<RecallFragment> =
-            (above_threshold > self.config.max_initial_fragments)
-                .then(|| candidate_list_fragment(&initial_hits, self.config.thresholds.load));
+        let candidate_fragment: Option<RecallFragment> = show_listing.then(|| {
+            let list_threshold = if above_threshold > self.config.max_initial_fragments {
+                self.config.thresholds.load
+            } else {
+                self.config.thresholds.unload
+            };
+            candidate_list_fragment(&initial_hits, list_threshold)
+        });
 
         if candidate_fragment.is_none() {
             self.load_fragments(
@@ -257,8 +270,9 @@ where
         } else {
             debug!(
                 above_threshold,
+                distinct_above_unload,
                 max_initial = self.config.max_initial_fragments,
-                "query too broad for initial augmentation — surfacing candidate list"
+                "query matches multiple sources — surfacing candidate list"
             );
         }
         debug!(loaded = self.loaded.len(), "initial query recall complete");

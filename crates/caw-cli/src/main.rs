@@ -585,16 +585,35 @@ fn run_interactive(
             .iter()
             .filter(|h| h.score >= config.thresholds.load)
             .count();
-        let candidate_fragment: Option<RecallFragment> = (above_threshold
-            > config.max_initial_fragments)
-            .then(|| candidate_list_fragment(&hits, config.thresholds.load));
+        // Count distinct file paths with any signal above the unload threshold.
+        // When that count exceeds max_initial_fragments, the query matches too
+        // many distinct sources to auto-load confidently — show a listing so
+        // the model can choose. This catches cases where one chunk scores high
+        // (and would be auto-loaded) but several other files are also relevant.
+        let distinct_above_unload = hits
+            .iter()
+            .filter(|h| h.score >= config.thresholds.unload)
+            .map(|h| h.stub.path.as_str())
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        let show_listing = above_threshold > config.max_initial_fragments
+            || distinct_above_unload > config.max_initial_fragments;
+        let candidate_fragment: Option<RecallFragment> = show_listing.then(|| {
+            let list_threshold = if above_threshold > config.max_initial_fragments {
+                config.thresholds.load
+            } else {
+                config.thresholds.unload
+            };
+            candidate_list_fragment(&hits, list_threshold)
+        });
         if candidate_fragment.is_none() {
             load_fragments(&mut retriever, &hits, &mut loaded, &mut loaded_ids, &mut relevance_scores, &config)?;
         } else {
             debug!(
                 above_threshold,
+                distinct_above_unload,
                 max_initial = config.max_initial_fragments,
-                "query too broad for initial augmentation — surfacing candidate list"
+                "query matches multiple sources — surfacing candidate list"
             );
         }
 
