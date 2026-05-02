@@ -1,12 +1,12 @@
 use caw_core::{
-    is_looping, CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
-    ModelCapabilities, ProvenanceFormat,
+    CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities,
+    ProvenanceFormat, is_looping,
 };
-use tracing::trace;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
+use tracing::trace;
 
 pub struct GroqAdapter {
     api_key: String,
@@ -37,22 +37,22 @@ impl GroqAdapter {
         }
     }
 
-    pub fn llama_70b(runtime: Arc<Runtime>) -> CawResult<Self> {
+    pub fn groq_model(model: impl Into<String>, runtime: Arc<Runtime>) -> CawResult<Self> {
         let api_key = std::env::var("GROQ_API_KEY")
             .map_err(|_| CawError::Adapter("GROQ_API_KEY not set".into()))?;
-        Ok(Self::new_with(api_key, "llama-3.3-70b-versatile", runtime))
+        Ok(Self::new_with(api_key, model, runtime))
+    }
+
+    pub fn llama_70b(runtime: Arc<Runtime>) -> CawResult<Self> {
+        Self::groq_model("llama-3.3-70b-versatile", runtime)
     }
 
     pub fn llama_8b(runtime: Arc<Runtime>) -> CawResult<Self> {
-        let api_key = std::env::var("GROQ_API_KEY")
-            .map_err(|_| CawError::Adapter("GROQ_API_KEY not set".into()))?;
-        Ok(Self::new_with(api_key, "llama-3.1-8b-instant", runtime))
+        Self::groq_model("llama-3.1-8b-instant", runtime)
     }
 
     pub fn mixtral(runtime: Arc<Runtime>) -> CawResult<Self> {
-        let api_key = std::env::var("GROQ_API_KEY")
-            .map_err(|_| CawError::Adapter("GROQ_API_KEY not set".into()))?;
-        Ok(Self::new_with(api_key, "mixtral-8x7b-32768", runtime))
+        Self::groq_model("mixtral-8x7b-32768", runtime)
     }
 }
 

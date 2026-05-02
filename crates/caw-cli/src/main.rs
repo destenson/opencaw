@@ -1,11 +1,10 @@
 use anyhow::{Context, Result};
 use caw_adapters::MockAdapter;
 use caw_core::{
-    candidate_list_fragment, CompletionRequest, EmbeddingProvider, Locator, ModelAdapter,
-    RecallFragment, Retriever, ScoredStub, StubId, StubStore, Tokenizer, VectorIndex,
-    WhitespaceTokenizer,
+    CompletionRequest, EmbeddingProvider, Locator, ModelAdapter, RecallFragment, Retriever,
+    ScoredStub, StubId, StubStore, Tokenizer, VectorIndex, WhitespaceTokenizer,
+    candidate_list_fragment,
 };
-use caw_orchestrator::session::SessionFile;
 use caw_curation::{
     ConversationTurn, CurationPipelineBuilder, ExtractiveHistorySummarizer,
     ExtractiveToolOutputCompressor, HistorySummarizerConfig, LlmHistorySummarizer,
@@ -16,11 +15,12 @@ use caw_ingest::IngestionPipeline;
 use caw_ingest::summarizer::LlmSummarizer;
 use caw_orchestrator::consolidation::LlmConsolidation;
 use caw_orchestrator::dynamic::DynamicRecallConfig;
+use caw_orchestrator::session::SessionFile;
 use clap::Parser;
-use tracing::debug;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tracing::debug;
 
 #[derive(Parser)]
 #[command(
@@ -35,6 +35,9 @@ struct Cli {
     /// Model adapter to use for completions
     #[arg(short, long, default_value = "mock")]
     adapter: String,
+
+    #[arg(short, long, default_value = "qwen3.6:35b")]
+    model: String,
 
     /// SQLite database path for persistent index (omit for in-memory)
     #[arg(long)]
@@ -93,19 +96,17 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let logstr = ["reqwest", "rustls", "globset", "h2", "hyper", "webpki"].map(|s| format!("{s}=info")).join(",");
+    let logstr = ["reqwest", "rustls", "globset", "h2", "hyper", "webpki"]
+        .map(|s| format!("{s}=info"))
+        .join(",");
     let logstr = if cli.verbose {
         format!("debug,{}", logstr)
     } else {
         logstr
     };
     match std::env::var("RUST_LOG") {
-        Ok(existing) => unsafe {
-            std::env::set_var("RUST_LOG", format!("{existing},{}", logstr))
-        },
-        Err(_) => unsafe {
-            std::env::set_var("RUST_LOG", logstr)
-        },
+        Ok(existing) => unsafe { std::env::set_var("RUST_LOG", format!("{existing},{}", logstr)) },
+        Err(_) => unsafe { std::env::set_var("RUST_LOG", logstr) },
     }
 
     tracing_subscriber::fmt()
@@ -231,7 +232,7 @@ fn main() -> Result<()> {
         ..Default::default()
     };
 
-    let adapter: Box<dyn ModelAdapter> = build_completion_adapter(&cli.adapter)?;
+    let adapter: Box<dyn ModelAdapter> = build_completion_adapter(&cli.adapter, &cli.model)?;
 
     eprintln!("Using adapter: {}", adapter.model_name());
 
@@ -277,35 +278,45 @@ fn build_aux_adapter(model: &str) -> Box<dyn ModelAdapter + Send + Sync> {
     }
 }
 
-fn build_completion_adapter(adapter_name: &str) -> Result<Box<dyn ModelAdapter>> {
+fn build_completion_adapter(adapter_name: &str, model: &str) -> Result<Box<dyn ModelAdapter>> {
     let adapter: Box<dyn ModelAdapter> = match adapter_name {
         "mock" => Box::new(MockAdapter::new("mock-local", true)),
         "anthropic" | "claude" => {
             let rt = caw_adapters::create_runtime()?;
-            Box::new(
-                caw_adapters::AnthropicAdapter::claude_sonnet(rt)
-                    .context("Failed to create Anthropic adapter")?,
-            )
+            match model {
+                "sonnet" => Box::new(caw_adapters::AnthropicAdapter::claude_sonnet(rt)?),
+                "opus" => Box::new(caw_adapters::AnthropicAdapter::claude_opus(rt)?),
+                _ => Box::new(caw_adapters::AnthropicAdapter::claude_sonnet(rt)?),
+            }
         }
         "groq" => {
             let rt = caw_adapters::create_runtime()?;
-            Box::new(
-                caw_adapters::GroqAdapter::llama_70b(rt)
-                    .context("Failed to create Groq adapter")?,
-            )
+            match model {
+                "llama-70b" => Box::new(caw_adapters::GroqAdapter::llama_70b(rt)?),
+                m => Box::new(caw_adapters::GroqAdapter::groq_model(m, rt)?),
+            }
         }
         "claude-code" => Box::new(caw_adapters::ClaudeCodeAdapter::sonnet()),
         "claude-code-haiku" => Box::new(caw_adapters::ClaudeCodeAdapter::haiku()),
         "ollama" => {
             let rt = caw_adapters::create_runtime()?;
-            Box::new(caw_adapters::OllamaAdapter::llama3_2(rt))
+            match model {
+                "haiku" => Box::new(caw_adapters::OllamaAdapter::llama3_2(rt)),
+                m => Box::new(caw_adapters::OllamaAdapter::local(m, rt)),
+            }
         }
         "perplexity" => {
             let rt = caw_adapters::create_runtime()?;
-            Box::new(
-                caw_adapters::OpenAiCompatibleAdapter::perplexity(rt)
-                    .context("Failed to create Perplexity adapter")?,
-            )
+            match model {
+                "hermes" => Box::new(
+                    caw_adapters::OpenAiCompatibleAdapter::perplexity(rt)
+                        .context("Failed to create Perplexity adapter")?,
+                ),
+                m => Box::new(
+                    caw_adapters::OpenAiCompatibleAdapter::perplexity_model(m, rt)
+                        .context("Failed to create Perplexity adapter with model")?,
+                ),
+            }
         }
         s if s.starts_with("vllm://") => {
             let rt = caw_adapters::create_runtime()?;
@@ -386,10 +397,7 @@ fn run_interactive(
     if let Some(sdir) = session_dir {
         std::fs::create_dir_all(sdir).ok();
         let pipeline = caw_ingest::IngestionPipeline::new();
-        let file_name = format!(
-            "session-{}.md",
-            caw_orchestrator::session::timestamp_str()
-        );
+        let file_name = format!("session-{}.md", caw_orchestrator::session::timestamp_str());
         let current_path = sdir.join(&file_name);
         match SessionFile::load_previous(sdir, &current_path, &pipeline, &mut retriever) {
             Ok(n) => eprintln!("[session] loaded {n} stubs from previous sessions"),
@@ -511,9 +519,9 @@ fn run_interactive(
             .iter()
             .filter(|h| h.score >= config.thresholds.load)
             .count();
-        let candidate_fragment: Option<RecallFragment> =
-            (above_threshold > config.max_initial_fragments)
-                .then(|| candidate_list_fragment(&hits, config.thresholds.load));
+        let candidate_fragment: Option<RecallFragment> = (above_threshold
+            > config.max_initial_fragments)
+            .then(|| candidate_list_fragment(&hits, config.thresholds.load));
         if candidate_fragment.is_none() {
             load_fragments(&mut retriever, &hits, &mut loaded, &mut loaded_ids, &config)?;
         } else {
@@ -571,8 +579,17 @@ fn run_interactive(
                 .cloned()
                 .collect();
             if !mentioned.is_empty() {
-                debug!(count = mentioned.len(), "loading files mentioned in response to candidate list");
-                load_fragments(&mut retriever, &mentioned, &mut loaded, &mut loaded_ids, &config)?;
+                debug!(
+                    count = mentioned.len(),
+                    "loading files mentioned in response to candidate list"
+                );
+                load_fragments(
+                    &mut retriever,
+                    &mentioned,
+                    &mut loaded,
+                    &mut loaded_ids,
+                    &config,
+                )?;
                 response = adapter.complete(CompletionRequest {
                     system: effective_system,
                     user: query.to_string(),
