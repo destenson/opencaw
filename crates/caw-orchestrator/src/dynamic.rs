@@ -3,7 +3,7 @@ use crate::degradation::DegradationMonitor;
 use caw_core::{
     CawResult, CompletionRequest, CompletionResponse, ConsolidationNote, ConsolidationSource,
     EmbeddingProvider, ModelAdapter, ProvenanceStore, Range, RecallFragment, RecallThresholds,
-    Retriever, StubId, StubStore, VectorIndex,
+    Retriever, StubId, StubStore, VectorIndex, tokenize_terms,
 };
 use caw_transform::{extract_annotations, extract_probes, extract_thinking_steps};
 use std::collections::{HashMap, HashSet};
@@ -466,8 +466,8 @@ where
 }
 
 fn term_overlap_score(context: &str, content: &str) -> f32 {
-    let ctx_terms: HashSet<String> = tokenize_for_scoring(context).into_iter().collect();
-    let doc_terms: HashSet<String> = tokenize_for_scoring(content).into_iter().collect();
+    let ctx_terms: HashSet<String> = tokenize_terms(context).into_iter().collect();
+    let doc_terms: HashSet<String> = tokenize_terms(content).into_iter().collect();
 
     if ctx_terms.is_empty() || doc_terms.is_empty() {
         return 0.0;
@@ -475,77 +475,6 @@ fn term_overlap_score(context: &str, content: &str) -> f32 {
 
     let intersection = ctx_terms.intersection(&doc_terms).count() as f32;
     intersection / ctx_terms.len().min(doc_terms.len()) as f32
-}
-
-fn tokenize_for_scoring(text: &str) -> Vec<String> {
-    text.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| s.len() > 2 && !is_stopword(s))
-        .map(String::from)
-        .collect()
-}
-
-fn is_stopword(word: &str) -> bool {
-    matches!(
-        word,
-        "the"
-            | "and"
-            | "for"
-            | "are"
-            | "but"
-            | "not"
-            | "you"
-            | "all"
-            | "can"
-            | "has"
-            | "was"
-            | "one"
-            | "our"
-            | "out"
-            | "his"
-            | "her"
-            | "had"
-            | "how"
-            | "its"
-            | "may"
-            | "who"
-            | "did"
-            | "get"
-            | "let"
-            | "say"
-            | "she"
-            | "too"
-            | "use"
-            | "way"
-            | "with"
-            | "this"
-            | "that"
-            | "from"
-            | "have"
-            | "been"
-            | "they"
-            | "them"
-            | "then"
-            | "than"
-            | "each"
-            | "which"
-            | "their"
-            | "will"
-            | "would"
-            | "there"
-            | "what"
-            | "about"
-            | "could"
-            | "other"
-            | "into"
-            | "more"
-            | "some"
-            | "very"
-            | "when"
-            | "also"
-            | "just"
-            | "should"
-    )
 }
 
 fn truncate_str(s: &str, max: usize) -> String {

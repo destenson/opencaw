@@ -9,7 +9,6 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::workload::{CorpusDoc, Scoring, WorkloadItem};
-use caw_core::ContentKind;
 use caw_ingest::SourceDocument;
 use std::path::Path;
 
@@ -142,15 +141,4 @@ fn walk_source_files(root: &Path) -> Vec<std::path::PathBuf> {
     }
     out.sort();
     out
-}
-
-/// Kind detection fallback for paths we construct without extension info.
-fn kind_for_path(p: &str) -> ContentKind {
-    if p.ends_with(".md") {
-        ContentKind::Markdown
-    } else if p.ends_with(".rs") {
-        ContentKind::Code
-    } else {
-        ContentKind::PlainText
-    }
 }

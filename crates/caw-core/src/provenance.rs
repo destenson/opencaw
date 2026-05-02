@@ -46,7 +46,7 @@ impl ProvenanceLedger {
     /// Extract the most frequent non-stopword terms from text
     fn extract_topic_terms(text: &str) -> Vec<String> {
         let mut freq: HashMap<String, u32> = HashMap::new();
-        for token in tokenize(text) {
+        for token in tokenize_terms(text) {
             *freq.entry(token).or_default() += 1;
         }
 
@@ -154,7 +154,7 @@ impl ProvenanceStore for ProvenanceLedger {
     }
 }
 
-fn tokenize(text: &str) -> Vec<String> {
+pub fn tokenize_terms(text: &str) -> Vec<String> {
     text.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| s.len() > 2 && !is_stopword(s))

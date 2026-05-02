@@ -108,13 +108,6 @@ caw-cli:           0 tests
 caw-ingest:        0 tests
 ```
 
-Warnings from the same run:
-
-```
-caw-eval: fields `score` and `content_tokens` are never read in `RecallEvent`
-caw-bench: function `kind_for_path` is never used in `opencaw.rs`
-```
-
 Coverage gap: caw-curation, caw-eval, caw-ingest, and caw-bench have zero tests. These contain non-trivial logic — hysteresis analysis, history partition thresholds, chunking boundary detection, BM25 scoring. The end-to-end test exercises the full stack via `MockAdapter` and is the primary smoke test, but it does not exercise curation or eval code paths at all.
 
 ---
@@ -123,25 +116,19 @@ Coverage gap: caw-curation, caw-eval, caw-ingest, and caw-bench have zero tests.
 
 ### High Priority
 
-1. **Dead-code warnings still leak through the default test pass** — `crates/caw-eval/src/session.rs:43-49` and `crates/caw-bench/src/opencaw.rs:148`. `cargo test --workspace` still warns that `RecallEvent.score`, `RecallEvent.content_tokens`, and `kind_for_path` are unused. This is not a correctness bug, but it means the repo's headline "all tests pass cleanly" is no longer literally true.
+1. **OllamaAdapter capability detection is still hardcoded by model-name substring** — `crates/caw-adapters/src/ollama.rs:116-129`. The code still carries a `TODO` to query Ollama's `/api/models` endpoint and instead infers visible reasoning/tool support from names like `deepseek` and `qwen`. That directly affects whether cooperation instructions are injected, so a naming mismatch changes orchestrator behavior, not just metadata.
 
-2. **OllamaAdapter capability detection is still hardcoded by model-name substring** — `crates/caw-adapters/src/ollama.rs:116-129`. The code still carries a `TODO` to query Ollama's `/api/models` endpoint and instead infers visible reasoning/tool support from names like `deepseek` and `qwen`. That directly affects whether cooperation instructions are injected, so a naming mismatch changes orchestrator behavior, not just metadata.
+2. **Server embedding choice is still hardwired to Candle** — `crates/caw-server/src/lib.rs:89-96`. `build_state` constructs `CandleEmbeddingProvider::bge_small()` directly, so CPU-only deployments still fail at startup instead of degrading to FastEmbed. That coupling is reasonable for the benchmark-focused v0 target, but it remains undocumented at the README entry point.
 
-3. **Server embedding choice is still hardwired to Candle** — `crates/caw-server/src/lib.rs:89-96`. `build_state` constructs `CandleEmbeddingProvider::bge_small()` directly, so CPU-only deployments still fail at startup instead of degrading to FastEmbed. That coupling is reasonable for the benchmark-focused v0 target, but it remains undocumented at the README entry point.
-
-4. **Benchmark defaults and library defaults still diverge** — `crates/caw-bench/src/runner.rs:18-47`. Bench runs default to load/unload thresholds of 0.3/0.2 while the library still presents 0.7/0.4 as its defaults. Until the sweep harness is run and numbers are recorded, one of those defaults is effectively guesswork.
+3. **Benchmark defaults and library defaults still diverge** — `crates/caw-bench/src/runner.rs:18-47`. Bench runs default to load/unload thresholds of 0.3/0.2 while the library still presents 0.7/0.4 as its defaults. Until the sweep harness is run and numbers are recorded, one of those defaults is effectively guesswork.
 
 ### Medium Priority
 
-5. **Stopword list duplicated** — `is_stopword()` appears identically in `caw-core/src/provenance.rs:165-226` and `caw-orchestrator/src/dynamic.rs:501-561`. Future updates must be made in two places. Move to `caw-core` and re-export.
-
-6. **`caw-adapters/src/claude_code.rs:354` — `.expect("loop exits with final_result set on success path")`** — A logic invariant assertion. If the loop is refactored the invariant could silently break. Should be `unreachable!()` with a comment, or restructured so the result is not in an Option at all.
-
-7. **The session-eval comment is honest, but the analytics path still does not exist** — `crates/caw-eval/src/session.rs:39-49`. The dead-code suppression attribute is gone, which is an improvement, but the stored fields are still unused and now surface as a warning. Either consume them in a report path or trim them until that path exists.
+4. **`caw-adapters/src/claude_code.rs:354` — `.expect("loop exits with final_result set on success path")`** — A logic invariant assertion. If the loop is refactored the invariant could silently break. Should be `unreachable!()` with a comment, or restructured so the result is not in an Option at all.
 
 ### Low Priority
 
-8. **`RecallOrchestrator` and `ThinkingTraceOrchestrator` not actively used** — These older orchestrators in `caw-orchestrator/src/lib.rs` and `caw-orchestrator/src/thinking_trace.rs` predate `DynamicRecallOrchestrator` and are not wired into any demo, test, or bench path. If retained they need tests; if superseded they add maintenance surface without benefit.
+5. **`RecallOrchestrator` and `ThinkingTraceOrchestrator` not actively used** — These older orchestrators in `caw-orchestrator/src/lib.rs` and `caw-orchestrator/src/thinking_trace.rs` predate `DynamicRecallOrchestrator` and are not wired into any demo, test, or bench path. If retained they need tests; if superseded they add maintenance surface without benefit.
 
 ---
 
@@ -165,9 +152,9 @@ No PRPs directory exists.
 
 Run `caw-bench` with `opencaw` and `niah` workloads in recall-on vs recall-off mode at several top_k / threshold combinations via the `sweep.rs` binary. Primary deliverable: a table of recall@k, context efficiency, and answer score per configuration. Specifically verify whether load=0.7 is workload-appropriate or whether the bench's hardcoded 0.3 reflects a real problem with the library default.
 
-**Week 3-4: Fix the highest-impact technical debt**
+**Week 3-4: Fix the remaining mechanical debt**
 
-Clean up the remaining dead-code warnings in `caw-eval` and `caw-bench`, document or relax the server's Candle-only startup assumption, and collapse the duplicated stopword list into a single shared implementation. Primary deliverable: a clean `cargo test --workspace` run with no avoidable warnings and fewer misleading maintenance surfaces.
+Document or relax the server's Candle-only startup assumption. Resolve the Ollama capability detection TODO by querying `/api/models` rather than matching on model name substrings. Primary deliverable: no silent behavior changes from model naming mismatches, and the server's deployment constraints documented at the README entry point.
 
 **Week 5-8: Model cooperation calibration harness**
 

@@ -3,6 +3,7 @@ pub mod reindex;
 pub mod scheduler;
 pub mod tokenizer;
 
+pub use provenance::tokenize_terms;
 pub use reindex::{ChannelReindexQueue, NoopReindexQueue, ReindexQueue, ReindexReceiver};
 
 use serde::{Deserialize, Serialize};

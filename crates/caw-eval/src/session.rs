@@ -36,14 +36,8 @@ pub struct SessionEvaluator {
 }
 
 #[derive(Debug, Clone)]
-// score and content_tokens are stored per-event for future per-recall analytics
-// (e.g., score distribution over a session). The running totals already consume
-// content_tokens at record time; keeping the per-event values lets downstream
-// reporters reconstruct the trace without a second pass.
 struct RecallEvent {
     stub_id: String,
-    score: f32,
-    content_tokens: usize,
     step: usize,
     stub_summary: Option<String>,
     recalled_content: Option<String>,
@@ -126,10 +120,9 @@ impl SessionEvaluator {
     }
 
     pub fn record_recall(&mut self, stub_id: &StubId, score: f32, content_tokens: usize) {
+        let _ = score;
         self.recalls.push(RecallEvent {
             stub_id: stub_id.0.clone(),
-            score,
-            content_tokens,
             step: self.current_step,
             stub_summary: None,
             recalled_content: None,
@@ -149,10 +142,9 @@ impl SessionEvaluator {
         stub_summary: &str,
         recalled_content: &str,
     ) {
+        let _ = score;
         self.recalls.push(RecallEvent {
             stub_id: stub_id.0.clone(),
-            score,
-            content_tokens,
             step: self.current_step,
             stub_summary: Some(stub_summary.to_string()),
             recalled_content: Some(recalled_content.to_string()),
