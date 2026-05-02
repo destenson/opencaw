@@ -432,6 +432,7 @@ fn run_interactive(
 
     let mut loaded: Vec<RecallFragment> = Vec::new();
     let mut loaded_ids: HashSet<StubId> = HashSet::new();
+    let mut relevance_scores: HashMap<StubId, f32> = HashMap::new();
 
     // Session history: in-memory content map + dedicated vector index.
     let mut session_index = HnswVectorIndex::new();
@@ -508,6 +509,25 @@ fn run_interactive(
             continue;
         }
 
+        // Decay relevance of every loaded fragment and evict those that have
+        // fallen below the unload threshold. This prevents stale context from
+        // prior turns from crowding out content relevant to the current query.
+        let decay_rate = config.relevance_decay_rate;
+        let unload_threshold = config.thresholds.unload;
+        for score in relevance_scores.values_mut() {
+            *score *= decay_rate;
+        }
+        let evicted: HashSet<StubId> = relevance_scores
+            .iter()
+            .filter(|(_, s)| **s < unload_threshold)
+            .map(|(id, _)| id.clone())
+            .collect();
+        if !evicted.is_empty() {
+            relevance_scores.retain(|id, _| !evicted.contains(id));
+            loaded_ids.retain(|id| !evicted.contains(id));
+            loaded.retain(|f| !evicted.contains(&f.stub_id));
+        }
+
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -569,7 +589,7 @@ fn run_interactive(
             > config.max_initial_fragments)
             .then(|| candidate_list_fragment(&hits, config.thresholds.load));
         if candidate_fragment.is_none() {
-            load_fragments(&mut retriever, &hits, &mut loaded, &mut loaded_ids, &config)?;
+            load_fragments(&mut retriever, &hits, &mut loaded, &mut loaded_ids, &mut relevance_scores, &config)?;
         } else {
             debug!(
                 above_threshold,
@@ -588,6 +608,7 @@ fn run_interactive(
                         &session_content,
                         &mut loaded,
                         &mut loaded_ids,
+                        &mut relevance_scores,
                         &config,
                     );
                 }
@@ -634,6 +655,7 @@ fn run_interactive(
                     &mentioned,
                     &mut loaded,
                     &mut loaded_ids,
+                    &mut relevance_scores,
                     &config,
                 )?;
                 response = adapter.complete(CompletionRequest {
@@ -653,6 +675,7 @@ fn run_interactive(
                     &probe_hits,
                     &mut loaded,
                     &mut loaded_ids,
+                    &mut relevance_scores,
                     &config,
                 )?;
             }
@@ -711,7 +734,7 @@ fn run_interactive(
 
         if !loaded.is_empty() {
             eprintln!(
-                "[workspace: {} fragments, ~{} words]",
+                "[workspace: {} fragments, ~{} tokens]",
                 loaded.len(),
                 loaded.iter().map(|f| f.tokens).sum::<usize>()
             );
@@ -726,10 +749,16 @@ fn load_session_fragments(
     session_content: &std::collections::HashMap<StubId, String>,
     loaded: &mut Vec<RecallFragment>,
     loaded_ids: &mut std::collections::HashSet<StubId>,
+    relevance_scores: &mut std::collections::HashMap<StubId, f32>,
     config: &DynamicRecallConfig,
 ) {
     for (stub_id, score) in hits {
-        if loaded_ids.contains(&stub_id) || score < config.thresholds.load {
+        if loaded_ids.contains(&stub_id) {
+            let entry = relevance_scores.entry(stub_id).or_insert(0.0);
+            *entry = entry.max(score);
+            continue;
+        }
+        if score < config.thresholds.load {
             continue;
         }
         let current_tokens: usize = loaded.iter().map(|f| f.tokens).sum();
@@ -740,6 +769,7 @@ fn load_session_fragments(
             let tokens = count_tokens_cl100k(content);
             if current_tokens + tokens <= config.max_workspace_tokens {
                 loaded_ids.insert(stub_id.clone());
+                relevance_scores.insert(stub_id.clone(), score);
                 loaded.push(RecallFragment {
                     stub_id,
                     content: content.clone(),
@@ -759,10 +789,15 @@ fn load_fragments(
     hits: &[caw_core::ScoredStub],
     loaded: &mut Vec<caw_core::RecallFragment>,
     loaded_ids: &mut std::collections::HashSet<caw_core::StubId>,
+    relevance_scores: &mut std::collections::HashMap<caw_core::StubId, f32>,
     config: &DynamicRecallConfig,
 ) -> Result<()> {
     for hit in hits {
         if loaded_ids.contains(&hit.stub.id) {
+            // Already in workspace — refresh its score so it isn't evicted
+            // prematurely when it's still relevant to the current query.
+            let entry = relevance_scores.entry(hit.stub.id.clone()).or_insert(0.0);
+            *entry = entry.max(hit.score);
             continue;
         }
         if hit.score < config.thresholds.load {
@@ -776,6 +811,7 @@ fn load_fragments(
         let fragment = retriever.read_range(&hit.stub.id, "full")?;
         if current_tokens + fragment.tokens <= config.max_workspace_tokens {
             loaded_ids.insert(hit.stub.id.clone());
+            relevance_scores.insert(hit.stub.id.clone(), hit.score);
             loaded.push(fragment);
         }
     }
