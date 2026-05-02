@@ -12,11 +12,11 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use caw_adapters::MockAdapter;
+use caw_core::provenance::InMemoryProvenanceStore;
 use caw_core::{CawResult, ContentKind, EmbeddingProvider, RecallThresholds};
 use caw_index::{HnswVectorIndex, SemanticRetriever, SqliteStubStore};
 use caw_ingest::{IngestionPipeline, SourceDocument};
 use caw_orchestrator::dynamic::{DynamicRecallConfig, DynamicRecallOrchestrator};
-use caw_core::provenance::InMemoryProvenanceStore;
 
 /// Deterministic embedder that hashes tokens into fixed-dimensional buckets.
 /// Not semantically meaningful in general, but for the disjoint vocabularies
@@ -130,12 +130,20 @@ fn recall_loop_admits_fragment_and_tags_provenance() {
     // byte_length) recorded on each stub, so the fixture docs need to exist
     // as real files under a corpus root for the recall path to resolve them.
     let corpus_root = tempfile::tempdir().expect("tempdir");
-    for doc in fixture_docs() {
+    let mut docs = fixture_docs();
+    for doc in &mut docs {
         let full = corpus_root.path().join(&doc.path);
         if let Some(parent) = full.parent() {
             std::fs::create_dir_all(parent).expect("create fixture parent dir");
         }
         std::fs::write(&full, &doc.content).expect("write fixture doc");
+        doc.mtime_unix_secs = std::fs::metadata(&full)
+            .expect("fixture metadata")
+            .modified()
+            .expect("fixture modified time")
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("fixture mtime before epoch")
+            .as_secs();
     }
 
     let dim = 64;
@@ -150,7 +158,7 @@ fn recall_loop_admits_fragment_and_tags_provenance() {
     // IngestionPipeline::new() now defaults to cl100k tiktoken, so token
     // estimates reflect a real BPE — exercising the wired-up default.
     let pipeline = IngestionPipeline::new();
-    for doc in fixture_docs() {
+    for doc in docs {
         for (stub, _embed_text) in pipeline.ingest(doc) {
             retriever.insert(stub).expect("insert into retriever");
         }
@@ -195,9 +203,7 @@ fn recall_loop_admits_fragment_and_tags_provenance() {
     // A query with vocabulary aligned to the auth doc. With disjoint vocabs
     // and bucket hashing, the cosine match should prefer auth over others.
     let user_query = "how does session token validation work in the authentication middleware";
-    let response = orchestrator
-        .run_turn("", user_query)
-        .expect("run_turn");
+    let response = orchestrator.run_turn("", user_query).expect("run_turn");
 
     // MockAdapter echoes the workspace via format_workspace — so if any
     // fragment was admitted, its provenance locator appears in the answer.
