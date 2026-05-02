@@ -2,34 +2,36 @@
 
 ## Executive Summary
 
-OpenCAW is a well-structured Rust library in late-MVP state. The core recall pipeline — ingest, embed, retrieve, orchestrate, curate, evaluate — is implemented and the full workspace test suite passes cleanly. The project's primary gaps are a missing calibration harness for model cooperation, mechanical-quality consolidation notes as the default, and no benchmark sweep data to back the library's threshold defaults. The most important next work is generating actual numbers from the benchmark harness that already exists, not adding new features.
+OpenCAW is a well-structured Rust library in late-MVP state. The core recall pipeline — ingest, embed, retrieve, orchestrate, curate, evaluate — is implemented and the full workspace test suite passes cleanly, but the workspace still emits two dead-code warnings on a normal `cargo test --workspace`. The project's primary gaps are a missing calibration harness for model cooperation, mechanical-quality consolidation notes as the default, and no benchmark sweep data to back the library's threshold defaults. The most important next work is generating actual numbers from the benchmark harness that already exists, not adding new features.
 
 ---
 
 ## Recent Activity (last 20 commits)
 
-1. `981eb39` Show crate/file/line in trace output
-2. `4c724c7` Add trace-level prompt/response logging to all adapters
-3. `c9b2070` Add tracing to orchestrator and Ollama streaming path
-4. `2dec7ea` cargo fmt
-5. `fc8788c` apply cargo clippy suggestions
-6. `09089fb` Refactor fixture_docs to use current mtime + improve metadata handling
-7. `aa48cb4` Purge "You are a helpful assistant."
-8. `eb334b9` Thinking-trace recall loop with Ollama streaming
-9. `7d236d3` Update deps to use workspace references for caw-core
-10. `895f6ed` Add `thinking` field to CompletionResponse across adapters; implement `split_thinking`
-11. `1f62ddf` Add Ollama demo with file ingestion and query orchestration
-12. `89ef01f` Enhance Groq demo with recall instrumentation and candidate visibility
-13. `c62bb9c` Reset orchestrator state before processing each query in Groq demo
-14. `c472947` Add Groq demo example; update dependencies
-15. `6e1b784` Fix semantic_demo example
-16. `f6f217e` Add history externalization feature
-17. `93b45be` Stale-stub detection on recall with reindex queue
-18. `c8ed770` caw-server v0: OpenAI-compatible proxy that injects recalled context
-19. `c611f08` Update STREAM_EVENT_TIMEOUT and set cwd for ClaudeCode adapter
-20. `0cc266e` Increase STREAM_EVENT_TIMEOUT and enhance ClaudeCode streaming
+Entries below are based on the actual diffs at `HEAD`, not treated as verbatim truth from the commit subjects.
 
-Recent work has focused on observability (tracing), adapter stability (Ollama streaming, ClaudeCode), and demos. The caw-server v0 was added recently and is now a functional proxy, not an empty scaffold as the README describes.
+1. `197ffe3` Remove `#[allow(dead_code)]` from `kind_for_path` and `RecallEvent`; warnings still remain in the test run
+2. `7a2c305` Make the reindex queue recover from poisoned locks, return tokenizer construction errors as `CawResult`, switch recall loading to scored `StubId` pairs, and move regexes to `LazyLock`
+3. `bcb06b4` Expand `SCOPE.md` and substantially rewrite the codebase review report
+4. `981eb39` Show crate/file/line in trace output
+5. `4c724c7` Add trace-level prompt/response logging to all adapters
+6. `c9b2070` Add tracing to orchestrator and Ollama streaming path
+7. `2dec7ea` cargo fmt
+8. `fc8788c` apply cargo clippy suggestions
+9. `09089fb` Refactor fixture_docs to use current mtime and improve metadata handling
+10. `aa48cb4` Purge "You are a helpful assistant."
+11. `eb334b9` Thinking-trace recall loop with Ollama streaming
+12. `7d236d3` Update dependencies in Cargo.toml files to use workspace references for caw-core
+13. `895f6ed` Add thinking field to CompletionResponse across adapters and implement split_thinking function
+14. `1f62ddf` Add Ollama demo with file ingestion and query orchestration
+15. `89ef01f` Enhance Groq demo with recall instrumentation and candidate visibility
+16. `c62bb9c` Reset orchestrator state before processing each query in Groq demo
+17. `c472947` Add Groq demo example and update dependencies in Cargo.toml
+18. `6e1b784` Fix semantic_demo example in project root
+19. `f6f217e` Add history externalization feature to context management framework
+20. `93b45be` Stale-stub detection on recall with reindex queue
+
+Recent work has focused on observability (tracing), adapter stability (Ollama streaming, ClaudeCode), and tightening mechanical quality around tokenizer construction and synchronization. The latest commit metadata slightly overstates the dead-code cleanup, so the review above treats the diff as authoritative. The caw-server v0 is still a functional proxy even though the README still describes it as scaffold-only.
 
 ---
 
@@ -37,7 +39,7 @@ Recent work has focused on observability (tracing), adapter stability (Ollama st
 
 ### Working
 
-- **caw-core**: Complete. All shared types, traits, error types, tokenizer abstractions, provenance stores, scheduling interfaces, and the `CompletionRequest::format_workspace()` formatter with XML/bracketed dual-format support. `split_thinking()`, hysteresis types, `Range::apply()`, byte-range locators all present and functional.
+- **caw-core**: Complete. All shared types, traits, error types, tokenizer abstractions, provenance stores, scheduling interfaces, and the `CompletionRequest::format_workspace()` formatter with XML/bracketed dual-format support. `split_thinking()`, hysteresis types, `Range::apply()`, byte-range locators all present and functional. The recent tokenizer refactor now returns `CawResult` instead of panicking when bundled BPE data fails to load.
 
 - **caw-ingest**: Complete for v1 scope. SHA256 hashing, `TiktokenTokenizer` defaulting to cl100k, tree-sitter outlines for Rust/Python/JS/TS/Go with naive fallback, adaptive chunking with structural boundary detection, LLM and deterministic summarizers, parallel directory ingestion via rayon. `IngestionPipeline::ingest()` returns `(Stub, embed_text)` pairs with precomputed token counts to avoid double-tokenization.
 
@@ -57,7 +59,7 @@ Recent work has focused on observability (tracing), adapter stability (Ollama st
 
 - **caw-server**: Functional v0 proxy (README incorrectly describes it as "scaffold only"). Receives OpenAI-protocol requests, embeds the last user message, retrieves top-k fragments, splices them in with bracketed provenance, and proxies to an upstream server. Supports Flat or HNSW retriever at startup. `build_state`/`build_router` public for integration test mounting.
 
-- **caw-core/reindex**: `ChannelReindexQueue` with condvar-based blocking recv, dedup of pending paths, and `run_worker` helper. `SqliteStubStore` notifies the queue on mtime-mismatch staleness and marks the row stale in DB for durability across restarts.
+- **caw-core/reindex**: `ChannelReindexQueue` with condvar-based blocking recv, dedup of pending paths, poison-tolerant lock recovery, and `run_worker` helper. `SqliteStubStore` notifies the queue on mtime-mismatch staleness and marks the row stale in DB for durability across restarts.
 
 ### Incomplete / Partial
 
@@ -106,6 +108,13 @@ caw-cli:           0 tests
 caw-ingest:        0 tests
 ```
 
+Warnings from the same run:
+
+```
+caw-eval: fields `score` and `content_tokens` are never read in `RecallEvent`
+caw-bench: function `kind_for_path` is never used in `opencaw.rs`
+```
+
 Coverage gap: caw-curation, caw-eval, caw-ingest, and caw-bench have zero tests. These contain non-trivial logic — hysteresis analysis, history partition thresholds, chunking boundary detection, BM25 scoring. The end-to-end test exercises the full stack via `MockAdapter` and is the primary smoke test, but it does not exercise curation or eval code paths at all.
 
 ---
@@ -114,13 +123,13 @@ Coverage gap: caw-curation, caw-eval, caw-ingest, and caw-bench have zero tests.
 
 ### High Priority
 
-1. **`Regex::new(...).unwrap()` compiled on each call** — `caw-transform/src/lib.rs:21,23,98`; `caw-transform/src/recall.rs:6,83`; `caw-orchestrator/src/probe_recall.rs:71,222`. These are literal patterns that are infallible in practice but re-compile the regex on every struct construction or function call. Use `std::sync::LazyLock` to compile once. The `extract_stub_references` function at `caw-transform/src/lib.rs:98` is particularly bad — it compiles a regex on every call and is in a library hot path (called per model output).
+1. **Dead-code warnings still leak through the default test pass** — `crates/caw-eval/src/session.rs:43-49` and `crates/caw-bench/src/opencaw.rs:148`. `cargo test --workspace` still warns that `RecallEvent.score`, `RecallEvent.content_tokens`, and `kind_for_path` are unused. This is not a correctness bug, but it means the repo's headline "all tests pass cleanly" is no longer literally true.
 
-2. **`expect("poisoned")` on mutex locks in production path** — `caw-core/src/reindex.rs:85,99,118,127`. A panicking thread poisons these mutexes and causes cascading panics via `.expect()`. The reindex queue is used in the server's live request path. Should recover from poison via `PoisonError::into_inner()`.
+2. **OllamaAdapter capability detection is still hardcoded by model-name substring** — `crates/caw-adapters/src/ollama.rs:116-129`. The code still carries a `TODO` to query Ollama's `/api/models` endpoint and instead infers visible reasoning/tool support from names like `deepseek` and `qwen`. That directly affects whether cooperation instructions are injected, so a naming mismatch changes orchestrator behavior, not just metadata.
 
-3. **`expect(...)` on tiktoken data bundles** — `caw-core/src/tokenizer.rs:16,24,32`. These panic at process startup if the bundled BPE data is corrupted or missing. Since `IngestionPipeline::new()` calls `default_tokenizer()`, the entire ingestion pipeline fails to construct with a panic rather than a `CawResult` error. The `TiktokenTokenizer::cl100k()` et al. should return `CawResult<Self>`.
+3. **Server embedding choice is still hardwired to Candle** — `crates/caw-server/src/lib.rs:89-96`. `build_state` constructs `CandleEmbeddingProvider::bge_small()` directly, so CPU-only deployments still fail at startup instead of degrading to FastEmbed. That coupling is reasonable for the benchmark-focused v0 target, but it remains undocumented at the README entry point.
 
-4. **Synthetic `Stub` construction in thinking-trace recall** — `caw-orchestrator/src/dynamic.rs:258-276`. When a thinking-trace hit comes back from the vector index, a `Stub` with zeroed-out metadata is constructed just to satisfy `load_fragments`'s type signature. The stub fields are unused in that function. `load_fragments` should accept `Vec<(StubId, f32)>` and do its own store lookup, eliminating the fake struct that currently hides a real type mismatch.
+4. **Benchmark defaults and library defaults still diverge** — `crates/caw-bench/src/runner.rs:18-47`. Bench runs default to load/unload thresholds of 0.3/0.2 while the library still presents 0.7/0.4 as its defaults. Until the sweep harness is run and numbers are recorded, one of those defaults is effectively guesswork.
 
 ### Medium Priority
 
@@ -128,15 +137,11 @@ Coverage gap: caw-curation, caw-eval, caw-ingest, and caw-bench have zero tests.
 
 6. **`caw-adapters/src/claude_code.rs:354` — `.expect("loop exits with final_result set on success path")`** — A logic invariant assertion. If the loop is refactored the invariant could silently break. Should be `unreachable!()` with a comment, or restructured so the result is not in an Option at all.
 
-7. **OllamaAdapter capability detection by model name string** — `caw-adapters/src/ollama.rs:127-129`. Model naming is under Ollama's control and changes regularly. `.contains("deepseek")` will fail for models like `deepseek-r1:32b` versus `deepseek-v3` with different reasoning behavior. Add a configuration override or a runtime capability probe.
-
-8. **`#[allow(dead_code)]` in `caw-eval/src/session.rs:39`** — The `RecallEvent` fields `score` and `content_tokens` are stored for future per-recall analytics. The comment explaining rationale is present, which is the right approach, but if the analytics never arrive this becomes permanent dead weight.
+7. **The session-eval comment is honest, but the analytics path still does not exist** — `crates/caw-eval/src/session.rs:39-49`. The dead-code suppression attribute is gone, which is an improvement, but the stored fields are still unused and now surface as a warning. Either consume them in a report path or trim them until that path exists.
 
 ### Low Priority
 
-9. **`caw-server/src/lib.rs` hardwires `CandleEmbeddingProvider`** — `build_state` requires CUDA. A server on a CPU-only host fails at startup. FastEmbed would work with no CUDA dependency. Coupling is intentional for v0 scope but undocumented.
-
-10. **`RecallOrchestrator` and `ThinkingTraceOrchestrator` not actively used** — These older orchestrators in `caw-orchestrator/src/lib.rs` and `caw-orchestrator/src/thinking_trace.rs` predate `DynamicRecallOrchestrator` and are not wired into any demo, test, or bench path. If retained they need tests; if superseded they add maintenance surface without benefit.
+8. **`RecallOrchestrator` and `ThinkingTraceOrchestrator` not actively used** — These older orchestrators in `caw-orchestrator/src/lib.rs` and `caw-orchestrator/src/thinking_trace.rs` predate `DynamicRecallOrchestrator` and are not wired into any demo, test, or bench path. If retained they need tests; if superseded they add maintenance surface without benefit.
 
 ---
 
@@ -162,7 +167,7 @@ Run `caw-bench` with `opencaw` and `niah` workloads in recall-on vs recall-off m
 
 **Week 3-4: Fix the highest-impact technical debt**
 
-Replace `Regex::new(...).unwrap()` constructions with `LazyLock` statics in `caw-transform` and `caw-orchestrator/src/probe_recall.rs`. Fix the synthetic Stub construction in `DynamicRecallOrchestrator::process_thinking_trace` — change `load_fragments` to accept scored id pairs directly and do its own stub lookup, eliminating the fake struct. Fix tiktoken constructors to return `CawResult` rather than panicking.
+Clean up the remaining dead-code warnings in `caw-eval` and `caw-bench`, document or relax the server's Candle-only startup assumption, and collapse the duplicated stopword list into a single shared implementation. Primary deliverable: a clean `cargo test --workspace` run with no avoidable warnings and fewer misleading maintenance surfaces.
 
 **Week 5-8: Model cooperation calibration harness**
 
