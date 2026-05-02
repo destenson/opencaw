@@ -89,8 +89,14 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     verbose: bool,
 
+    /// Whether to respect .gitignore when ingesting files from the specified directory.
+    /// By default, .gitignore is respected and ignored files are not ingested. Setting
+    /// this flag to false will cause all files to be ingested regardless of .gitignore rules.
     #[arg(long, default_value_t = true)]
     gitignore: bool,
+
+    #[arg(long, default_value_t = false)]
+    amnesia: bool,
 }
 
 fn main() -> Result<()> {
@@ -168,6 +174,7 @@ fn main() -> Result<()> {
     let mut vector_index = HnswVectorIndex::new();
     let mut cached = 0usize;
     let mut ingested = 0usize;
+    let mut ignored = 0usize;
 
     for (stub, _embed_text) in &documents {
         if let Ok(Some((existing_stub, existing_embedding))) =
@@ -193,10 +200,11 @@ fn main() -> Result<()> {
     }
 
     eprintln!(
-        "Index ready: {} files ({} cached, {} newly ingested).",
+        "Index ready: {} files ({} cached, {} newly ingested, {} ignored).",
         documents.len(),
         cached,
-        ingested
+        ingested,
+        ignored,
     );
 
     // Check system prompt budget
@@ -265,6 +273,7 @@ fn main() -> Result<()> {
         &cli.aux_model,
         cli.max_tokens,
         cli.session_dir.as_deref(),
+        cli.amnesia,
     )
 }
 
@@ -378,6 +387,7 @@ fn run_interactive(
     aux_model: &str,
     context_budget: usize,
     session_dir: Option<&std::path::Path>,
+    amnesia: bool,
 ) -> Result<()> {
     use caw_transform::{extract_probes, extract_thinking_steps};
     use std::collections::{HashMap, HashSet};
@@ -391,7 +401,7 @@ fn run_interactive(
     let mut session_file: Option<SessionFile> = None;
     let mut session_turn = 0usize;
 
-    if let Some(sdir) = session_dir {
+    if !amnesia && let Some(sdir) = session_dir {
         std::fs::create_dir_all(sdir).ok();
         let pipeline = caw_ingest::IngestionPipeline::new();
         let file_name = format!("session-{}.md", caw_orchestrator::session::timestamp_str());
