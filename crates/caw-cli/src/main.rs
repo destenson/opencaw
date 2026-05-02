@@ -499,6 +499,7 @@ fn run_interactive(
 
         let mut query = String::new();
         if stdin.lock().read_line(&mut query)? == 0 {
+            println!();
             break;
         }
 
