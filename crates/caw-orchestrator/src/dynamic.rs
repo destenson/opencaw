@@ -8,6 +8,7 @@ use caw_core::{
 use caw_transform::{extract_annotations, extract_probes, extract_thinking_steps, strip_markers};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
+use tracing::{debug, info, trace};
 
 /// Advanced orchestrator with iterative multi-pass recall.
 ///
@@ -170,8 +171,17 @@ where
 
     /// Run a single conversational turn with iterative multi-pass recall.
     pub fn run_turn(&mut self, system: &str, user: &str) -> CawResult<CompletionResponse> {
+        let caps = self.adapter.capabilities();
+        debug!(
+            model = %self.adapter.model_name(),
+            query = %user,
+            visible_reasoning = caps.supports_visible_reasoning,
+            "run_turn start"
+        );
+
         // Pass-through mode: skip all recall machinery
         if !self.stub_generation_enabled() {
+            debug!("pass-through mode active — skipping recall");
             return self.adapter.complete(CompletionRequest {
                 system: system.to_string(),
                 user: user.to_string(),
@@ -183,12 +193,14 @@ where
 
         // Phase 1: Initial retrieval on the user query
         let initial_hits = self.retriever.search(user, self.config.top_k)?;
+        debug!(hits = initial_hits.len(), "initial retrieval complete");
         self.load_fragments(
             initial_hits
                 .into_iter()
                 .map(|hit| (hit.stub.id, hit.score))
                 .collect(),
         )?;
+        debug!(loaded = self.loaded.len(), "initial query recall complete");
 
         let mut last_response = self.adapter.complete(CompletionRequest {
             system: system_prompt.clone(),
@@ -197,17 +209,16 @@ where
         })?;
 
         // Phase 2: Iterative recall refinement
-        for _ in 0..self.config.max_recall_iterations {
+        for i in 0..self.config.max_recall_iterations {
             let loaded_before = self.loaded.len();
+            debug!(iteration = i + 1, loaded = loaded_before, "refinement iteration start");
 
             self.decay_relevance_scores();
             self.refresh_relevance_scores(user, &last_response.answer);
 
             // Automatic recall only runs when the monitor permits it
             if self.auto_recall_enabled() {
-                if self.config.enable_thinking_trace_recall
-                    && self.adapter.capabilities().supports_visible_reasoning
-                {
+                if self.config.enable_thinking_trace_recall && caps.supports_visible_reasoning {
                     self.process_thinking_trace(&last_response.answer)?;
                 }
 
@@ -220,8 +231,15 @@ where
             self.evict_stale_fragments(user);
 
             if self.loaded.len() == loaded_before {
+                debug!(iterations = i + 1, "refinement converged — no new admissions");
                 break;
             }
+
+            debug!(
+                new_fragments = self.loaded.len() - loaded_before,
+                total_loaded = self.loaded.len(),
+                "new context admitted — re-completing"
+            );
 
             let warnings = self.provenance.format_overlap_warnings();
             let enriched_system = if warnings.is_empty() {
@@ -237,12 +255,19 @@ where
             })?;
         }
 
+        info!(
+            model = %self.adapter.model_name(),
+            workspace_frags = self.loaded.len(),
+            workspace_tokens = self.loaded.iter().map(|f| f.tokens).sum::<usize>(),
+            "run_turn complete"
+        );
         last_response.answer = strip_markers(&last_response.answer);
         Ok(last_response)
     }
 
     fn process_thinking_trace(&mut self, output: &str) -> CawResult<()> {
         let steps = extract_thinking_steps(output);
+        debug!(steps = steps.len(), "thinking-trace steps extracted");
 
         for step in steps {
             if step.content.len() < 20 {
@@ -269,6 +294,7 @@ where
 
     fn process_probes(&mut self, output: &str) -> CawResult<()> {
         let probes = extract_probes(output);
+        debug!(probes = probes.len(), "probes extracted");
 
         for probe in probes {
             if let Some(monitor) = &mut self.degradation_monitor {
@@ -386,6 +412,7 @@ where
         for idx in to_evict {
             let fragment = self.loaded.remove(idx);
             self.loaded_ids.remove(&fragment.stub_id);
+            debug!(path = %fragment.locator.source, "fragment evicted");
 
             let decayed_score = self
                 .relevance_scores
@@ -430,21 +457,37 @@ where
             }
 
             if score < self.config.thresholds.load {
+                trace!(score, threshold = self.config.thresholds.load, "candidate below threshold — skipped");
                 continue;
             }
 
             let current_tokens: usize = self.loaded.iter().map(|f| f.tokens).sum();
             if current_tokens >= self.config.max_workspace_tokens {
+                debug!(current_tokens, max = self.config.max_workspace_tokens, "workspace budget full — stopping");
                 break;
             }
 
             let fragment = self.retriever.read_range(&stub_id, "full")?;
 
             if current_tokens + fragment.tokens <= self.config.max_workspace_tokens {
+                debug!(
+                    path = %fragment.locator.source,
+                    score,
+                    tokens = fragment.tokens,
+                    "fragment admitted"
+                );
                 self.relevance_scores.insert(stub_id.clone(), score);
                 self.loaded_ids.insert(stub_id.clone());
                 self.provenance.record_with_context(fragment.clone(), "", 0);
                 self.loaded.push(fragment);
+            } else {
+                debug!(
+                    path = %fragment.locator.source,
+                    fragment_tokens = fragment.tokens,
+                    current_tokens,
+                    max = self.config.max_workspace_tokens,
+                    "fragment would exceed budget — skipped"
+                );
             }
         }
 
