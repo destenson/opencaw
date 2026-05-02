@@ -4,7 +4,8 @@ use crate::session::{self, SessionFile};
 use caw_core::{
     CawResult, CompletionRequest, CompletionResponse, ConsolidationNote, ConsolidationSource,
     EmbeddingProvider, Locator, ModelAdapter, ProvenanceStore, Range, RecallFragment,
-    RecallThresholds, Retriever, StubId, StubStore, VectorIndex, tokenize_terms,
+    RecallThresholds, Retriever, StubId, StubStore, VectorIndex,
+    candidate_list_fragment, tokenize_terms,
 };
 use caw_ingest::IngestionPipeline;
 use caw_transform::{extract_annotations, extract_probes, extract_thinking_steps, strip_markers};
@@ -240,7 +241,13 @@ where
             max_initial = self.config.max_initial_fragments,
             "initial retrieval complete"
         );
-        if above_threshold <= self.config.max_initial_fragments {
+        // Build the candidate list before consuming initial_hits. Returns Some
+        // only when the gate fires; the borrow ends before the move below.
+        let candidate_fragment: Option<RecallFragment> =
+            (above_threshold > self.config.max_initial_fragments)
+                .then(|| candidate_list_fragment(&initial_hits, self.config.thresholds.load));
+
+        if candidate_fragment.is_none() {
             self.load_fragments(
                 initial_hits
                     .into_iter()
@@ -251,15 +258,21 @@ where
             debug!(
                 above_threshold,
                 max_initial = self.config.max_initial_fragments,
-                "query too broad for initial augmentation — deferring to probe-driven recall"
+                "query too broad for initial augmentation — surfacing candidate list"
             );
         }
         debug!(loaded = self.loaded.len(), "initial query recall complete");
 
+        // Candidate list fragment (if any) is injected only into this first
+        // completion — it's not tracked in self.loaded and won't be evicted
+        // or counted against the workspace budget across turns.
+        let mut initial_fragments = self.loaded.clone();
+        initial_fragments.extend(candidate_fragment);
+
         let mut last_response = self.adapter.complete(CompletionRequest {
             system: system_prompt.clone(),
             user: user.to_string(),
-            workspace_fragments: self.loaded.clone(),
+            workspace_fragments: initial_fragments,
         })?;
 
         // Phase 2: Iterative recall refinement

@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use caw_adapters::MockAdapter;
 use caw_core::{
-    CompletionRequest, EmbeddingProvider, Locator, ModelAdapter, RecallFragment, Retriever,
-    StubId, StubStore, Tokenizer, VectorIndex, WhitespaceTokenizer,
+    candidate_list_fragment, CompletionRequest, EmbeddingProvider, Locator, ModelAdapter,
+    RecallFragment, Retriever, StubId, StubStore, Tokenizer, VectorIndex, WhitespaceTokenizer,
 };
 use caw_orchestrator::session::SessionFile;
 use caw_curation::{
@@ -92,27 +92,19 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let deps_to_ignore = ["reqwest", "rustls", "globset", "h2", "webpki"].map(|s| format!("{s}=info")).join(",");
-    if cli.verbose {
-        // TODO: update the environment variable instead of overriding it, to allow users to specify additional filters
-        match std::env::var("RUST_LOG") {
-            Ok(existing) => unsafe {
-                std::env::set_var("RUST_LOG", format!("{existing},debug,{}", deps_to_ignore))
-            },
-            Err(_) => unsafe {
-                std::env::set_var("RUST_LOG", format!("debug,{}", deps_to_ignore))
-            },
-        }
+    let logstr = ["reqwest", "rustls", "globset", "h2", "hyper", "webpki"].map(|s| format!("{s}=info")).join(",");
+    let logstr = if cli.verbose {
+        format!("debug,{}", logstr)
     } else {
-        // TODO: update the environment variable instead of overriding it, to allow users to specify additional filters
-        match std::env::var("RUST_LOG") {
-            Ok(existing) => unsafe {
-                std::env::set_var("RUST_LOG", format!("{existing},{}", deps_to_ignore))
-            },
-            Err(_) => unsafe {
-                std::env::set_var("RUST_LOG", deps_to_ignore)
-            },
-        }
+        logstr
+    };
+    match std::env::var("RUST_LOG") {
+        Ok(existing) => unsafe {
+            std::env::set_var("RUST_LOG", format!("{existing},{}", logstr))
+        },
+        Err(_) => unsafe {
+            std::env::set_var("RUST_LOG", logstr)
+        },
     }
 
     tracing_subscriber::fmt()
@@ -518,13 +510,16 @@ fn run_interactive(
             .iter()
             .filter(|h| h.score >= config.thresholds.load)
             .count();
-        if above_threshold <= config.max_initial_fragments {
+        let candidate_fragment: Option<RecallFragment> =
+            (above_threshold > config.max_initial_fragments)
+                .then(|| candidate_list_fragment(&hits, config.thresholds.load));
+        if candidate_fragment.is_none() {
             load_fragments(&mut retriever, &hits, &mut loaded, &mut loaded_ids, &config)?;
         } else {
             debug!(
                 above_threshold,
                 max_initial = config.max_initial_fragments,
-                "query too broad for initial augmentation — deferring to probe-driven recall"
+                "query too broad for initial augmentation — surfacing candidate list"
             );
         }
 
@@ -544,10 +539,12 @@ fn run_interactive(
             }
         }
 
+        let mut initial_fragments = loaded.clone();
+        initial_fragments.extend(candidate_fragment);
         let response = adapter.complete(CompletionRequest {
             system: effective_system,
             user: query.to_string(),
-            workspace_fragments: loaded.clone(),
+            workspace_fragments: initial_fragments,
         })?;
 
         if config.enable_probe_recall {

@@ -296,6 +296,40 @@ pub struct ScoredStub {
     pub score: f32,
 }
 
+/// Build a synthetic fragment listing candidate files for the model to choose from.
+/// Used when the ambiguity gate fires: rather than loading content or loading nothing,
+/// surface the file list so the model can reason about what it needs. Scores are omitted
+/// intentionally — they're an internal signal, not useful guidance for the model.
+pub fn candidate_list_fragment(hits: &[ScoredStub], threshold: f32) -> RecallFragment {
+    let lines: Vec<String> = hits
+        .iter()
+        .filter(|h| h.score >= threshold)
+        .map(|h| {
+            if h.stub.summary.is_empty() {
+                format!("- {}", h.stub.path)
+            } else {
+                format!("- {} — {}", h.stub.path, h.stub.summary)
+            }
+        })
+        .collect();
+
+    let content = format!(
+        "These files match your query but have not been loaded. \
+         Mention the specific ones you need in order to answer accurately:\n\n{}",
+        lines.join("\n")
+    );
+
+    RecallFragment {
+        stub_id: StubId("__candidates__".to_string()),
+        content: content.clone(),
+        locator: Locator {
+            source: "search-candidates".to_string(),
+            locator: "file-list".to_string(),
+        },
+        tokens: content.split_whitespace().count().max(1),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RecallFragment {
     pub stub_id: StubId,
