@@ -27,7 +27,7 @@ use std::sync::Arc;
 )]
 struct Cli {
     /// Directory to ingest
-    #[arg(short, long)]
+    #[arg(short, long, default_value = ".")]
     dir: PathBuf,
 
     /// Model adapter to use for completions
@@ -75,12 +75,37 @@ struct Cli {
 
     /// Directory for session history files. Each run appends to a new file;
     /// previous runs' files are indexed at startup for cross-session recall.
-    #[arg(long)]
+    #[arg(long, default_value = ".caw")]
     session_dir: Option<PathBuf>,
+
+    /// Enable verbose logging for debugging and analysis
+    /// This turns on debug-level logs that show internal operations like fragment loading,
+    /// probe extraction, thinking trace processing, and curation decisions.
+    #[arg(long, default_value_t = false)]
+    verbose: bool,
+
+    #[arg(long, default_value_t = true)]
+    gitignore: bool,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if cli.verbose {
+        unsafe { std::env::set_var("RUST_LOG", "debug") };
+        // TODO: add ",reqwest=info" to RUST_LOG to prevent low-level HTTP logging
+        // TODO: add ",rustls=info" to RUST_LOG to prevent low-level TLS logging
+        // TODO: add ",h2=info" to RUST_LOG to prevent low-level HTTP/2 logging
+    }
+    // TODO: add a "caw_orchestrator=trace" option for very verbose recall/scheduler logs
+    // TODO: add a "caw_adapters=trace" option for very verbose adapter logs (requests, responses, tool calls)
+
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_target(true)
+        .with_file(true)
+        .with_line_number(true)
+        .init();
 
     eprintln!("Initializing embedding provider...");
     let mut embedder =
@@ -131,7 +156,7 @@ fn main() -> Result<()> {
     eprintln!("Ingesting files from: {}", cli.dir.display());
 
     let documents = pipeline
-        .ingest_directory(&cli.dir)
+        .ingest_directory(&cli.dir, !cli.gitignore)
         .context("Failed to ingest directory")?;
 
     let mut vector_index = HnswVectorIndex::new();

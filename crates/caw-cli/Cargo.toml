@@ -14,3 +14,5 @@ caw-ingest = { workspace = true }
 caw-orchestrator = { workspace = true }
 caw-transform = { workspace = true }
 clap = { version = "4", features = ["derive"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
