@@ -210,6 +210,16 @@ The framework defines **curation hooks** — extension points where concrete pol
 - **Default implementation:** a cheap model generates a running summary, updated every N turns. The summary replaces the turns it covers.
 - **Retention exception:** the most recent K turns are always preserved verbatim (configurable; default 3). This ensures the model has immediate conversational context.
 
+#### History externalization (alternative to summarization)
+
+Rather than compressing history, it can be externalized to the filesystem and recalled on demand via the same stub-and-recall machinery used for workspace files — practically eliminating context-length restrictions on history without lossy compression.
+
+- **Storage unit:** one file per session (not per turn). Session files are structured text the existing ingestion pipeline can handle; the adaptive chunker splits them at turn boundaries.
+- **Write path:** the orchestrator appends each turn to the active session file and immediately indexes the new chunk. No file watching needed — the writer and the indexer are the same process.
+- **Closed sessions:** treated as immutable documents. Re-indexed on hash change, which handles user redactions without special casing.
+- **Recall:** probe/embedding matching surfaces relevant prior exchanges inline, tagged `[recalled from history/2026-04-30.md:turn-12]` so the model knows it is remembering, not reading a new source. The retrieval path is identical to file recall.
+- **Tradeoff vs. summarization:** lossless, but retrieval-shaped — exchanges that were topically diffuse when written may not surface on a semantically focused query. The most recent K turns should still be kept verbatim in context as a retrieval floor.
+
 #### Tool output compression
 
 - **Trigger:** any tool result exceeding a configurable token threshold.
