@@ -395,6 +395,17 @@ See `TODO.md` for line-item status and `SCOPE.md` for v1 boundaries.
 - Re-embedding of *chunk content* in addition to stub metadata — today's
   stub-level embeddings can't disambiguate questions whose answer lives
   inside a specific paragraph of an otherwise-generic doc
+- Document authority is not encoded in retrieval ranking — a sub-crate README
+  that densely uses the project name scores alongside (or above) the root
+  README that defines what the project is. Flat semantic similarity has no
+  concept of document role or hierarchy. Path depth or explicit authority
+  signals would need to be added as a scoring factor.
+- Eager recall on vague queries — when a query term appears in many contexts
+  across the corpus (e.g. "opencaw" in a project named opencaw), retrieval
+  fires on everything and the model gets a noisy, mixed workspace before it
+  has had a chance to narrow the question. Detecting low-specificity queries
+  and deferring augmentation until the model's own reasoning narrows the topic
+  would reduce this noise.
 - Insertion-order experiments (relevance-ranked vs reverse-relevance vs
   stub-order)
 - Provenance conflict detection beyond Jaccard term overlap
