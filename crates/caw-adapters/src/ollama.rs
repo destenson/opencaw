@@ -1,6 +1,6 @@
 use caw_core::{
-    split_thinking, CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
-    ModelCapabilities, ProvenanceFormat,
+    is_looping, split_thinking, CawError, CawResult, CompletionRequest, CompletionResponse,
+    ModelAdapter, ModelCapabilities, ProvenanceFormat,
 };
 use futures_util::StreamExt;
 use tracing::{debug, info, trace};
@@ -20,6 +20,12 @@ pub struct OllamaAdapter {
     /// orchestrator modes against the same input, since stochastic
     /// sampling otherwise dominates any framework-level signal.
     temperature: Option<f32>,
+    /// Cached result of querying `/api/show` to check whether the model's
+    /// chat template handles a `system` role message. Mistral-family models
+    /// often omit `{{ .System }}` from their template; sending a system
+    /// message to such a model causes degenerate looping output. When false,
+    /// the system content is folded into the first user message instead.
+    system_supported: std::sync::OnceLock<bool>,
 }
 
 impl std::fmt::Debug for OllamaAdapter {
@@ -43,6 +49,7 @@ impl OllamaAdapter {
             client: Client::new(),
             runtime,
             temperature: None,
+            system_supported: std::sync::OnceLock::new(),
         }
     }
 
@@ -72,6 +79,64 @@ impl OllamaAdapter {
     pub fn phi4_reasoning_3_8b(runtime: Arc<Runtime>) -> Self {
         Self::local("huihui_ai/phi4-reasoning-abliterated:3.8b", runtime)
     }
+
+    /// Build the messages array, folding the system content into the first
+    /// user message when the model's template doesn't support a system role.
+    fn build_messages(&self, system: String, user: String) -> Vec<OllamaChatMessage> {
+        let supported = self.system_supported.get_or_init(|| {
+            self.runtime
+                .block_on(probe_system_support(&self.client, &self.base_url, &self.model))
+        });
+
+        if *supported && !system.is_empty() {
+            vec![
+                OllamaChatMessage { role: "system".to_string(), content: system },
+                OllamaChatMessage { role: "user".to_string(), content: user },
+            ]
+        } else if !system.is_empty() {
+            vec![OllamaChatMessage {
+                role: "user".to_string(),
+                content: format!("{}\n\n{}", system, user),
+            }]
+        } else {
+            vec![OllamaChatMessage { role: "user".to_string(), content: user }]
+        }
+    }
+}
+
+/// Query Ollama's `/api/show` endpoint and return whether the model's chat
+/// template includes a system-message placeholder (`{{ .System }}`). Mistral-
+/// family models frequently omit it; sending a separate system role message to
+/// such a model causes the tokenizer to produce degenerate looping output.
+/// Falls back to `true` (assume supported) on any network or parse error so
+/// that unexpected failures degrade gracefully rather than silently mangling
+/// every request.
+async fn probe_system_support(client: &Client, base_url: &str, model: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    struct ShowResponse {
+        template: Option<String>,
+    }
+
+    let Ok(resp) = client
+        .post(format!("{}/api/show", base_url))
+        .json(&serde_json::json!({ "model": model }))
+        .send()
+        .await
+    else {
+        return true;
+    };
+
+    if !resp.status().is_success() {
+        return true;
+    }
+
+    let Ok(show) = resp.json::<ShowResponse>().await else {
+        return true;
+    };
+
+    show.template
+        .map(|t| t.contains(".System"))
+        .unwrap_or(true)
 }
 
 /// Uses Ollama's /api/chat endpoint with proper message roles
@@ -136,16 +201,7 @@ impl ModelAdapter for OllamaAdapter {
 
         let ollama_req = OllamaChatRequest {
             model: self.model.clone(),
-            messages: vec![
-                OllamaChatMessage {
-                    role: "system".to_string(),
-                    content: req.system,
-                },
-                OllamaChatMessage {
-                    role: "user".to_string(),
-                    content: full_user_message,
-                },
-            ],
+            messages: self.build_messages(req.system, full_user_message),
             stream: false,
             options: OllamaOptions {
                 temperature: self.temperature,
@@ -184,6 +240,12 @@ impl ModelAdapter for OllamaAdapter {
         match serde_json::from_str::<OllamaChatResponse>(&body) {
             Ok(parsed) => {
                 let (thinking, answer) = split_thinking(&parsed.message.content);
+                if is_looping(&answer) {
+                    return Err(CawError::DegenerateOutput {
+                        model: self.model.clone(),
+                        sample: answer.chars().take(120).collect(),
+                    });
+                }
                 trace!(model = %self.model, answer = %answer, "← llm");
                 Ok(CompletionResponse { answer, thinking })
             }
@@ -232,16 +294,7 @@ impl ModelAdapter for OllamaAdapter {
 
         let ollama_req = OllamaChatRequest {
             model: self.model.clone(),
-            messages: vec![
-                OllamaChatMessage {
-                    role: "system".to_string(),
-                    content: req.system,
-                },
-                OllamaChatMessage {
-                    role: "user".to_string(),
-                    content: full_user,
-                },
-            ],
+            messages: self.build_messages(req.system, full_user),
             stream: true,
             options: OllamaOptions {
                 temperature: self.temperature,

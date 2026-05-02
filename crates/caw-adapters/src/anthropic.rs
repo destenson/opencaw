@@ -1,6 +1,6 @@
 use caw_core::{
-    CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities,
-    ProvenanceFormat,
+    is_looping, CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
+    ModelCapabilities, ProvenanceFormat,
 };
 use tracing::trace;
 use reqwest::Client;
@@ -124,6 +124,12 @@ impl ModelAdapter for AnthropicAdapter {
             .map(|c| c.text.clone())
             .unwrap_or_default();
 
+        if is_looping(&answer) {
+            return Err(CawError::DegenerateOutput {
+                model: self.model.clone(),
+                sample: answer.chars().take(120).collect(),
+            });
+        }
         trace!(model = %self.model, answer = %answer, "← llm");
         Ok(CompletionResponse {
             answer,

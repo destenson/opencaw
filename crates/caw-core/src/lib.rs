@@ -31,12 +31,59 @@ pub enum CawError {
     /// treat this as a miss, not a hard failure.
     #[error("stale stub at {path}")]
     StaleStub { path: String },
+    /// The model produced degenerate looping output. The `sample` field
+    /// contains the first 120 chars of the response for diagnostics.
+    #[error("degenerate output from {model}: {sample}...")]
+    DegenerateOutput { model: String, sample: String },
 }
 
 impl From<std::io::Error> for CawError {
     fn from(e: std::io::Error) -> Self {
         CawError::Io(e.to_string())
     }
+}
+
+/// Returns `true` if `text` looks like degenerate looping output.
+///
+/// Two signals, either sufficient:
+/// - One word accounts for >70% of all whitespace-separated tokens (catches
+///   "wordwordword" or "word word word word").
+/// - Unique trigrams are <10% of total trigrams with ≥30 words (catches
+///   multi-word loops like "the cat sat the cat sat…").
+///
+/// Responses shorter than 20 words are never flagged — structured one-liners
+/// and short factual answers would produce false positives.
+pub fn is_looping(text: &str) -> bool {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() < 20 {
+        return false;
+    }
+
+    // Single-word dominance
+    let modal_count = {
+        let mut counts = std::collections::HashMap::new();
+        for &w in &words {
+            *counts.entry(w).or_insert(0usize) += 1;
+        }
+        counts.into_values().max().unwrap_or(0)
+    };
+    if modal_count * 100 / words.len() > 70 {
+        return true;
+    }
+
+    // Trigram diversity collapse
+    if words.len() >= 30 {
+        let total = words.len() - 2;
+        let unique: std::collections::HashSet<[&str; 3]> = words
+            .windows(3)
+            .map(|w| [w[0], w[1], w[2]])
+            .collect();
+        if unique.len() * 10 < total {
+            return true;
+        }
+    }
+
+    false
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
