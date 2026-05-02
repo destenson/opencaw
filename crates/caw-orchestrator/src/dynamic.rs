@@ -5,7 +5,7 @@ use caw_core::{
     EmbeddingProvider, ModelAdapter, ProvenanceStore, Range, RecallFragment, RecallThresholds,
     Retriever, StubId, StubStore, VectorIndex, tokenize_terms,
 };
-use caw_transform::{extract_annotations, extract_probes, extract_thinking_steps};
+use caw_transform::{extract_annotations, extract_probes, extract_thinking_steps, strip_markers};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -125,10 +125,12 @@ where
     /// whatever tag the system prompt asks the model to emit.
     fn build_system_prompt(&self, base: &str) -> String {
         let caps = self.adapter.capabilities();
-        let reasoning_capable = caps.supports_tool_calls
-            || caps.supports_visible_reasoning
-            || caps.supports_hidden_reasoning;
-        if !reasoning_capable {
+        // Only inject cooperation instructions for models with visible reasoning
+        // traces. Those models emit <think> blocks where probes and notes are
+        // genuinely useful mid-trace signals. For non-reasoning models the
+        // instructions confuse the model into wrapping its answer in note/probe
+        // tags rather than producing prose.
+        if !caps.supports_visible_reasoning {
             return base.to_string();
         }
 
@@ -235,6 +237,7 @@ where
             })?;
         }
 
+        last_response.answer = strip_markers(&last_response.answer);
         Ok(last_response)
     }
 

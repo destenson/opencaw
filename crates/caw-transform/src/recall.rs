@@ -83,6 +83,16 @@ pub fn apply_range(content: &str, range: &Range) -> CawResult<String> {
     Ok(range.apply(content))
 }
 
+/// Strip cooperation-protocol markers from the final answer before returning
+/// it to the caller. Note content is kept inline (small models often wrap their
+/// entire answer in a note tag). Probe markers are discarded — they are
+/// retrieval queries, not answer text.
+pub fn strip_markers(text: &str) -> String {
+    let text = ANNOTATION_PATTERN.replace_all(text, "$2");
+    let text = PROBE_PATTERN.replace_all(&text, "");
+    text.trim().to_string()
+}
+
 /// Extract model annotations about specific stubs.
 /// Format: `<note id="stub_id">content</note>`
 pub fn extract_annotations(text: &str) -> Vec<ModelAnnotation> {

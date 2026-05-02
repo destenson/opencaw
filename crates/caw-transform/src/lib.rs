@@ -5,7 +5,7 @@ use std::sync::LazyLock;
 
 pub mod recall;
 
-pub use recall::{apply_range, extract_annotations, extract_probes, extract_thinking_steps};
+pub use recall::{apply_range, extract_annotations, extract_probes, extract_thinking_steps, strip_markers};
 
 static FILE_REF_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap());
