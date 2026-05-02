@@ -2,6 +2,7 @@ pub mod consolidation;
 pub mod degradation;
 pub mod dynamic;
 pub mod probe_recall;
+pub mod session;
 pub mod thinking_trace;
 
 use caw_core::RecallThresholds;

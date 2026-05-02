@@ -152,6 +152,10 @@ where
             tokens,
         })
     }
+
+    fn insert(&mut self, stub: Stub, _content: String) -> CawResult<()> {
+        self.insert(stub)
+    }
 }
 
 /// Hybrid retriever combining semantic (embedding) and keyword (BM25) search.
@@ -275,6 +279,10 @@ where
 
     fn read_range(&self, id: &StubId, range: &str) -> CawResult<RecallFragment> {
         self.semantic.read_range(id, range)
+    }
+
+    fn insert(&mut self, stub: Stub, content: String) -> CawResult<()> {
+        self.insert(stub, content)
     }
 }
 

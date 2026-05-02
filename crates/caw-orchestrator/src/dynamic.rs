@@ -1,14 +1,17 @@
 use crate::consolidation::{ConsolidationSynthesizer, MechanicalConsolidation};
 use crate::degradation::DegradationMonitor;
+use crate::session::{self, SessionFile};
 use caw_core::{
     CawResult, CompletionRequest, CompletionResponse, ConsolidationNote, ConsolidationSource,
-    EmbeddingProvider, ModelAdapter, ProvenanceStore, Range, RecallFragment, RecallThresholds,
-    Retriever, StubId, StubStore, VectorIndex, tokenize_terms,
+    EmbeddingProvider, Locator, ModelAdapter, ProvenanceStore, Range, RecallFragment,
+    RecallThresholds, Retriever, StubId, StubStore, VectorIndex, tokenize_terms,
 };
+use caw_ingest::IngestionPipeline;
 use caw_transform::{extract_annotations, extract_probes, extract_thinking_steps, strip_markers};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::time::Instant;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 /// Advanced orchestrator with iterative multi-pass recall.
 ///
@@ -34,6 +37,12 @@ pub struct DynamicRecallOrchestrator<R, E, V, P, M, S = ()> {
     /// When present, enables graceful degradation based on component health.
     /// Without this, the orchestrator runs at full capability unconditionally.
     pub degradation_monitor: Option<DegradationMonitor>,
+    /// Append-only session log for crash recovery and cross-session recall.
+    session: Option<SessionFile>,
+    /// In-memory content for turns recorded this session. Served directly
+    /// rather than going through the StubStore file-reading path.
+    session_content: HashMap<StubId, String>,
+    session_turn: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +103,9 @@ where
             store: None,
             consolidation_synthesizer: Box::new(MechanicalConsolidation),
             degradation_monitor: None,
+            session: None,
+            session_content: HashMap::new(),
+            session_turn: 0,
         }
     }
 
@@ -113,6 +125,22 @@ where
     ) -> Self {
         self.consolidation_synthesizer = synthesizer;
         self
+    }
+
+    /// Enable session history: write each turn to an append-only file in
+    /// `session_dir` and recall them semantically in future turns.
+    /// Previous runs' session files in the same directory are ingested
+    /// read-only at startup so prior exchanges are immediately retrievable.
+    pub fn with_session(mut self, session_dir: &Path) -> CawResult<Self> {
+        std::fs::create_dir_all(session_dir)
+            .map_err(|e| caw_core::CawError::Io(e.to_string()))?;
+        let pipeline = IngestionPipeline::new();
+        let file_name = format!("session-{}.md", session::timestamp_str());
+        let file_path = session_dir.join(file_name);
+        let loaded = SessionFile::load_previous(session_dir, &file_path, &pipeline, &mut self.retriever)?;
+        debug!(dir = %session_dir.display(), stubs = loaded, "loaded prior session history");
+        self.session = Some(SessionFile::create(file_path)?);
+        Ok(self)
     }
 
     /// Build the system prompt, optionally injecting cooperation instructions
@@ -262,6 +290,29 @@ where
             "run_turn complete"
         );
         last_response.answer = strip_markers(&last_response.answer);
+
+        // Record completed turn to session history. Take the SessionFile out of
+        // self so the borrow checker allows simultaneous access to other fields.
+        if let Some(mut sf) = self.session.take() {
+            self.session_turn += 1;
+            match sf.write_turn(self.session_turn, user, &last_response.answer) {
+                Ok(text) => {
+                    let stub_id = StubId(format!("session-turn-{}", self.session_turn));
+                    match self.embedder.embed_document(vec![text.as_str()]) {
+                        Ok(embeddings) => {
+                            if let Some(emb) = embeddings.into_iter().next() {
+                                self.vector_index.add(stub_id.clone(), emb);
+                                self.session_content.insert(stub_id, text);
+                            }
+                        }
+                        Err(e) => warn!(error = %e, "session turn embedding failed"),
+                    }
+                }
+                Err(e) => warn!(error = %e, "session turn write failed"),
+            }
+            self.session = Some(sf);
+        }
+
         Ok(last_response)
     }
 
@@ -467,7 +518,21 @@ where
                 break;
             }
 
-            let fragment = self.retriever.read_range(&stub_id, "full")?;
+            let fragment = match self.session_content.get(&stub_id) {
+                Some(content) => {
+                    let tokens = content.split_whitespace().count().max(1);
+                    RecallFragment {
+                        stub_id: stub_id.clone(),
+                        content: content.clone(),
+                        locator: Locator {
+                            source: "session history".to_string(),
+                            locator: "full".to_string(),
+                        },
+                        tokens,
+                    }
+                }
+                None => self.retriever.read_range(&stub_id, "full")?,
+            };
 
             if current_tokens + fragment.tokens <= self.config.max_workspace_tokens {
                 debug!(

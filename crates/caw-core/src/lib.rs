@@ -494,6 +494,11 @@ pub struct ModelAnnotation {
 pub trait Retriever {
     fn search(&mut self, query: &str, top_k: usize) -> CawResult<Vec<ScoredStub>>;
     fn read_range(&self, id: &StubId, range: &str) -> CawResult<RecallFragment>;
+    /// Insert a new document. Default no-op for read-only retrievers.
+    fn insert(&mut self, stub: Stub, content: String) -> CawResult<()> {
+        let _ = (stub, content);
+        Ok(())
+    }
 }
 
 pub trait BudgetScheduler {

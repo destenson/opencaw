@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
 use caw_adapters::MockAdapter;
 use caw_core::{
-    CompletionRequest, EmbeddingProvider, ModelAdapter, Retriever, StubStore, Tokenizer,
-    VectorIndex, WhitespaceTokenizer,
+    CompletionRequest, EmbeddingProvider, Locator, ModelAdapter, RecallFragment, Retriever,
+    StubId, StubStore, Tokenizer, VectorIndex, WhitespaceTokenizer,
 };
+use caw_orchestrator::session::SessionFile;
 use caw_curation::{
     ConversationTurn, CurationPipelineBuilder, ExtractiveHistorySummarizer,
     ExtractiveToolOutputCompressor, HistorySummarizerConfig, LlmHistorySummarizer,
@@ -71,6 +72,11 @@ struct Cli {
     /// Enable curation pipeline (history summarization + tool output compression)
     #[arg(long)]
     curate: bool,
+
+    /// Directory for session history files. Each run appends to a new file;
+    /// previous runs' files are indexed at startup for cross-session recall.
+    #[arg(long)]
+    session_dir: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -227,6 +233,7 @@ fn main() -> Result<()> {
         cli.curate,
         &cli.aux_model,
         cli.max_tokens,
+        cli.session_dir.as_deref(),
     )
 }
 
@@ -329,13 +336,40 @@ fn run_interactive(
     curate: bool,
     aux_model: &str,
     context_budget: usize,
+    session_dir: Option<&std::path::Path>,
 ) -> Result<()> {
-    use caw_core::{RecallFragment, StubId};
     use caw_transform::{extract_probes, extract_thinking_steps};
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     let mut loaded: Vec<RecallFragment> = Vec::new();
     let mut loaded_ids: HashSet<StubId> = HashSet::new();
+
+    // Session history: in-memory content map + dedicated vector index.
+    let mut session_index = HnswVectorIndex::new();
+    let mut session_content: HashMap<StubId, String> = HashMap::new();
+    let mut session_file: Option<SessionFile> = None;
+    let mut session_turn = 0usize;
+
+    if let Some(sdir) = session_dir {
+        std::fs::create_dir_all(sdir).ok();
+        let pipeline = caw_ingest::IngestionPipeline::new();
+        let file_name = format!(
+            "session-{}.md",
+            caw_orchestrator::session::timestamp_str()
+        );
+        let current_path = sdir.join(&file_name);
+        match SessionFile::load_previous(sdir, &current_path, &pipeline, &mut retriever) {
+            Ok(n) => eprintln!("[session] loaded {n} stubs from previous sessions"),
+            Err(e) => eprintln!("[session] warning: {e}"),
+        }
+        match SessionFile::create(current_path) {
+            Ok(sf) => {
+                eprintln!("[session] recording to {}", sdir.display());
+                session_file = Some(sf);
+            }
+            Err(e) => eprintln!("[session] warning: could not create session file: {e}"),
+        }
+    }
     let mut history: Vec<ConversationTurn> = Vec::new();
 
     // Set up curation components
@@ -441,6 +475,22 @@ fn run_interactive(
         let hits = retriever.search(query, config.top_k)?;
         load_fragments(&mut retriever, &hits, &mut loaded, &mut loaded_ids, &config)?;
 
+        // Session history search runs alongside workspace search.
+        if !session_content.is_empty() {
+            if let Ok(embeddings) = trace_embedder.embed_query(vec![query]) {
+                if let Some(emb) = embeddings.first() {
+                    let session_hits = session_index.search(emb, config.top_k);
+                    load_session_fragments(
+                        session_hits,
+                        &session_content,
+                        &mut loaded,
+                        &mut loaded_ids,
+                        &config,
+                    );
+                }
+            }
+        }
+
         let response = adapter.complete(CompletionRequest {
             system: effective_system,
             user: query.to_string(),
@@ -490,6 +540,20 @@ fn run_interactive(
 
         println!("\n{}\n", response.answer);
 
+        // Record turn: write to disk for persistence, embed for future recall.
+        if let Some(ref mut sf) = session_file {
+            session_turn += 1;
+            if let Ok(text) = sf.write_turn(session_turn, query, &response.answer) {
+                let stub_id = StubId(format!("session-turn-{session_turn}"));
+                if let Ok(embeddings) = trace_embedder.embed_document(vec![text.as_str()]) {
+                    if let Some(emb) = embeddings.into_iter().next() {
+                        session_index.add(stub_id.clone(), emb);
+                        session_content.insert(stub_id, text);
+                    }
+                }
+            }
+        }
+
         history.push(ConversationTurn {
             role: TurnRole::Assistant,
             content: response.answer.clone(),
@@ -508,6 +572,39 @@ fn run_interactive(
     }
 
     Ok(())
+}
+
+fn load_session_fragments(
+    hits: Vec<(StubId, f32)>,
+    session_content: &std::collections::HashMap<StubId, String>,
+    loaded: &mut Vec<RecallFragment>,
+    loaded_ids: &mut std::collections::HashSet<StubId>,
+    config: &DynamicRecallConfig,
+) {
+    for (stub_id, score) in hits {
+        if loaded_ids.contains(&stub_id) || score < config.thresholds.load {
+            continue;
+        }
+        let current_tokens: usize = loaded.iter().map(|f| f.tokens).sum();
+        if current_tokens >= config.max_workspace_tokens {
+            break;
+        }
+        if let Some(content) = session_content.get(&stub_id) {
+            let tokens = content.split_whitespace().count().max(1);
+            if current_tokens + tokens <= config.max_workspace_tokens {
+                loaded_ids.insert(stub_id.clone());
+                loaded.push(RecallFragment {
+                    stub_id,
+                    content: content.clone(),
+                    locator: Locator {
+                        source: "session history".to_string(),
+                        locator: "full".to_string(),
+                    },
+                    tokens,
+                });
+            }
+        }
+    }
 }
 
 fn load_fragments(
