@@ -2,10 +2,10 @@ use crate::consolidation::{ConsolidationSynthesizer, MechanicalConsolidation};
 use crate::degradation::DegradationMonitor;
 use crate::session::{self, SessionFile};
 use caw_core::{
-    count_tokens_cl100k, CawResult, CompletionRequest, CompletionResponse, ConsolidationNote,
-    ConsolidationSource, EmbeddingProvider, Locator, ModelAdapter, ProvenanceStore, Range,
-    RecallFragment, RecallThresholds, Retriever, ScoredStub, StubId, StubStore, VectorIndex,
-    candidate_list_fragment, tokenize_terms,
+    count_tokens_cl100k, CawError, CawResult, CompletionRequest, CompletionResponse,
+    ConsolidationNote, ConsolidationSource, EmbeddingProvider, Locator, ModelAdapter,
+    ProvenanceStore, Range, RecallFragment, RecallThresholds, Retriever, ScoredStub, StubId,
+    StubStore, VectorIndex, candidate_list_fragment, tokenize_terms,
 };
 use caw_eval::SessionEvaluator;
 use caw_ingest::{IngestionPipeline, DocumentIdSet};
@@ -14,6 +14,25 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
 use tracing::{debug, info, trace, warn};
+
+/// Controls whether the orchestrator injects probe/annotation cooperation
+/// instructions into the system prompt.
+///
+/// The default (`Auto`) preserves the pre-calibration behavior: instructions
+/// are injected only for models whose adapter reports `supports_visible_reasoning`.
+/// After running `caw-bench-coop` you can override this per-model based on
+/// empirical compliance data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CooperationMode {
+    /// Use adapter capability flags: inject instructions only for models with
+    /// `supports_visible_reasoning`. This is the default.
+    #[default]
+    Auto,
+    /// Always inject probe/annotation instructions regardless of capability flags.
+    Cooperative,
+    /// Never inject probe/annotation instructions.
+    Transparent,
+}
 
 /// Advanced orchestrator with iterative multi-pass recall.
 ///
@@ -68,6 +87,10 @@ pub struct DynamicRecallConfig {
     /// candidates than this clear the load threshold, the query is too broad
     /// for confident initial augmentation — load nothing and let probes drive.
     pub max_initial_fragments: usize,
+    /// Whether to inject probe/annotation cooperation instructions into the
+    /// system prompt. Defaults to `Auto` (capability-based). Override with
+    /// calibration data from `caw-bench-coop`.
+    pub cooperation_mode: CooperationMode,
 }
 
 impl Default for DynamicRecallConfig {
@@ -81,6 +104,7 @@ impl Default for DynamicRecallConfig {
             enable_thinking_trace_recall: true,
             enable_probe_recall: true,
             max_initial_fragments: 4,
+            cooperation_mode: CooperationMode::Auto,
         }
     }
 }
@@ -176,13 +200,15 @@ where
     /// itself is a convention; the orchestrator's `extract_probes` parses
     /// whatever tag the system prompt asks the model to emit.
     fn build_system_prompt(&self, base: &str) -> String {
-        let caps = self.adapter.capabilities();
-        // Only inject cooperation instructions for models with visible reasoning
-        // traces. Those models emit <think> blocks where probes and notes are
-        // genuinely useful mid-trace signals. For non-reasoning models the
-        // instructions confuse the model into wrapping its answer in note/probe
-        // tags rather than producing prose.
-        if !caps.supports_visible_reasoning {
+        let inject = match self.config.cooperation_mode {
+            CooperationMode::Cooperative => true,
+            CooperationMode::Transparent => false,
+            // Auto: inject only for models with visible reasoning traces,
+            // where probes/annotations are useful mid-trace signals.
+            // Non-reasoning models confuse the instructions with output format.
+            CooperationMode::Auto => self.adapter.capabilities().supports_visible_reasoning,
+        };
+        if !inject {
             return base.to_string();
         }
 
@@ -685,7 +711,17 @@ where
                         tokens,
                     }
                 }
-                None => self.retriever.read_range(&stub_id, "full")?,
+                None => match self.retriever.read_range(&stub_id, "full") {
+                    Ok(f) => f,
+                    // The source file changed since the index was built. Skip this
+                    // candidate — treating it as a miss is correct and matches the
+                    // documented intent of StaleStub.
+                    Err(CawError::StaleStub { path }) => {
+                        debug!(%path, "stale stub skipped during load_fragments");
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                },
             };
 
             if current_tokens + fragment.tokens <= self.config.max_workspace_tokens {

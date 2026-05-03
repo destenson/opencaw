@@ -24,6 +24,10 @@ path = "src/bin/intent_bench.rs"
 name = "caw-bench-tune"
 path = "src/bin/tune.rs"
 
+[[bin]]
+name = "caw-bench-coop"
+path = "src/bin/coop.rs"
+
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
