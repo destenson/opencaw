@@ -220,6 +220,7 @@ mod tests {
                 locator: Locator::full("test.md"),
                 tokens: 3,
             }],
+            workspace_guidance: Vec::new(),
         };
         let resp = adapter.complete(req).unwrap();
         assert!(resp.answer.contains("hello"));

@@ -222,6 +222,7 @@ where
                 system: system.to_string(),
                 user: user.to_string(),
                 workspace_fragments: Vec::new(),
+                workspace_guidance: Vec::new(),
             });
         }
 
@@ -287,6 +288,7 @@ where
             system: system_prompt.clone(),
             user: user.to_string(),
             workspace_fragments: initial_fragments,
+            workspace_guidance: Vec::new(),
         })?;
 
         // Phase 2: Iterative recall refinement
@@ -333,6 +335,7 @@ where
                 system: enriched_system,
                 user: user.to_string(),
                 workspace_fragments: self.loaded.clone(),
+                workspace_guidance: Vec::new(),
             })?;
         }
 

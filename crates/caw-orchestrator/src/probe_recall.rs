@@ -87,6 +87,7 @@ where
                 system: system.to_string(),
                 user: current_user.clone(),
                 workspace_fragments: self.loaded.clone(),
+                workspace_guidance: Vec::new(),
             })?;
 
             let probes = self.extract_probes(&response.answer);

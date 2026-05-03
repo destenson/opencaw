@@ -35,7 +35,8 @@ container. It implements:
   hysteresis, cooperation)
 - **caw-cli**: Command-line interface tying it all together
 - **caw-bench**: Benchmark harness (NIAH, opencaw, and sysdoc Q&A workloads,
-  recall-on vs recall-off). Ships the `caw-bench-build-index` binary for
+  recall-on vs recall-off). Also includes `caw-bench-intent` for benchmarking
+  small query-intent classifiers. Ships the `caw-bench-build-index` binary for
   streaming, resumable, GPU-pipelined index construction over large corpora.
 - **caw-server**: HTTP/gRPC service (scaffold only)
 
@@ -191,8 +192,14 @@ use caw_adapters::ClaudeCodeAdapter;
 # Build the workspace
 cargo build --workspace
 
-# Run CLI demo
+# Run CLI demo (defaults to an Ollama intent classifier: llama3.2:3b)
 cargo run -p caw-cli
+
+# Show the classifier output for each query
+cargo run -p caw-cli -- --show-intent
+
+# Disable the intent classifier explicitly
+cargo run -p caw-cli -- --no-intent-classifier
 
 # Run tests
 cargo test --workspace

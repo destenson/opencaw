@@ -86,6 +86,7 @@ impl ConsolidationSynthesizer for LlmConsolidation {
             system,
             user,
             workspace_fragments: Vec::new(),
+            workspace_guidance: Vec::new(),
         })?;
 
         let answer = resp.answer.trim().to_string();

@@ -379,11 +379,118 @@ pub struct ModelCapabilities {
     pub supports_visible_reasoning: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct QueryIntent {
+    pub is_inventory_request: bool,
+    pub is_results_request: bool,
+    pub wants_exact_names_or_paths: bool,
+    pub wants_numeric_values: bool,
+    pub wants_latest_run_only: bool,
+    pub wants_comparison: bool,
+    pub wants_explanation: bool,
+    pub needs_grounded_evidence_only: bool,
+    pub abstain: bool,
+    pub confidence: f32,
+}
+
+impl QueryIntent {
+    pub fn classifier_system_prompt() -> &'static str {
+        concat!(
+            "You are a query-intent classifier for context planning. ",
+            "Return exactly one JSON object and no surrounding prose or markdown. ",
+            "Use this schema with booleans plus a confidence float in [0,1]: ",
+            "{\"is_inventory_request\":bool,\"is_results_request\":bool,",
+            "\"wants_exact_names_or_paths\":bool,\"wants_numeric_values\":bool,",
+            "\"wants_latest_run_only\":bool,\"wants_comparison\":bool,",
+            "\"wants_explanation\":bool,\"needs_grounded_evidence_only\":bool,",
+            "\"abstain\":bool,\"confidence\":number}. ",
+            "Mark abstain=true when the query is ambiguous or you are not confident enough to route retrieval."
+        )
+    }
+
+    pub fn classifier_user_prompt(query: &str) -> String {
+        format!(
+            "Classify the user's query for retrieval planning.\n\nUser query:\n{query}\n"
+        )
+    }
+
+    pub fn from_classifier_response(raw: &str) -> CawResult<Self> {
+        let json = extract_json_object(raw)
+            .ok_or_else(|| CawError::InvalidInput("classifier did not return a JSON object".into()))?;
+        let mut parsed: Self = serde_json::from_str(json)
+            .map_err(|e| CawError::InvalidInput(format!("invalid classifier JSON: {e}")))?;
+        if !parsed.confidence.is_finite() {
+            parsed.confidence = 0.0;
+        }
+        parsed.confidence = parsed.confidence.clamp(0.0, 1.0);
+        Ok(parsed)
+    }
+
+    pub fn guidance_lines(&self) -> Vec<String> {
+        if self.abstain {
+            return Vec::new();
+        }
+
+        let mut lines = Vec::new();
+        if self.is_inventory_request {
+            lines.push(
+                "For inventory-style questions, list exact names or paths present in recalled evidence before summarizing.".to_string(),
+            );
+        }
+        if self.is_results_request {
+            lines.push(
+                "For result-oriented questions, report only metrics and values explicitly present in recalled evidence.".to_string(),
+            );
+        }
+        if self.wants_exact_names_or_paths {
+            lines.push(
+                "Prefer precise artifact names, file names, and paths over paraphrases.".to_string(),
+            );
+        }
+        if self.wants_numeric_values {
+            lines.push(
+                "Prefer exact numeric values and units when they are available in recalled evidence.".to_string(),
+            );
+        }
+        if self.wants_latest_run_only {
+            lines.push(
+                "If multiple runs are present, prioritize the newest clearly identified run or timestamped artifact.".to_string(),
+            );
+        }
+        if self.wants_comparison {
+            lines.push(
+                "Keep compared artifacts separate and label each metric or claim with the corresponding artifact.".to_string(),
+            );
+        }
+        if self.wants_explanation {
+            lines.push(
+                "Separate direct evidence from inference when explaining causes or tradeoffs.".to_string(),
+            );
+        }
+        if self.needs_grounded_evidence_only {
+            lines.push(
+                "If recalled context lacks direct evidence, say which artifact or file is still needed instead of guessing.".to_string(),
+            );
+        }
+        lines
+    }
+
+    pub fn is_actionable(&self, min_confidence: f32) -> bool {
+        !self.abstain && self.confidence >= min_confidence
+    }
+}
+
+pub trait IntentClassifier {
+    fn classify(&self, query: &str) -> CawResult<QueryIntent>;
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct CompletionRequest {
     pub system: String,
     pub user: String,
     pub workspace_fragments: Vec<RecallFragment>,
+    pub workspace_guidance: Vec<String>,
 }
 
 /// Actual token usage reported by the model API. Preferred over estimates
@@ -481,7 +588,12 @@ impl CompletionRequest {
             })
             .collect();
 
-        let guidance = workspace_guidance(&self.workspace_fragments, extra_guidance);
+        let inline_guidance: Vec<&str> = self
+            .workspace_guidance
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let guidance = workspace_guidance(&self.workspace_fragments, &inline_guidance, extra_guidance);
 
         format!(
             "\n\nRecalled workspace context (each block is verbatim from the cited source — \
@@ -492,7 +604,11 @@ impl CompletionRequest {
     }
 }
 
-fn workspace_guidance(fragments: &[RecallFragment], extra_guidance: &[&str]) -> String {
+fn workspace_guidance(
+    fragments: &[RecallFragment],
+    inline_guidance: &[&str],
+    extra_guidance: &[&str],
+) -> String {
     let has_candidate_list = fragments.iter().any(|fragment| {
         fragment.locator.source == "search-candidates" || fragment.stub_id.0 == "__candidates__"
     });
@@ -505,9 +621,9 @@ fn workspace_guidance(fragments: &[RecallFragment], extra_guidance: &[&str]) -> 
         );
     }
 
-    for guidance in extra_guidance {
+    for guidance in inline_guidance.iter().chain(extra_guidance.iter()) {
         let trimmed = guidance.trim();
-        if !trimmed.is_empty() {
+        if !trimmed.is_empty() && !lines.iter().any(|line| line == &format!("- {trimmed}")) {
             lines.push(format!("- {trimmed}"));
         }
     }
@@ -517,6 +633,51 @@ fn workspace_guidance(fragments: &[RecallFragment], extra_guidance: &[&str]) -> 
     } else {
         format!("\nAnswering hints:\n{}", lines.join("\n"))
     }
+}
+
+fn extract_json_object(raw: &str) -> Option<&str> {
+    let mut start = None;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in raw.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => {
+                if start.is_none() {
+                    start = Some(idx);
+                }
+                depth += 1;
+            }
+            '}' => {
+                if depth == 0 {
+                    continue;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    let begin = start?;
+                    return Some(&raw[begin..=idx]);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 /// Hysteresis thresholds for recall loading/unloading.
@@ -834,6 +995,7 @@ mod tests {
                 "file-list",
                 "- bench-results/throughput/20260419-053329/summary.txt",
             )],
+            workspace_guidance: Vec::new(),
         };
 
         let formatted = request.format_workspace(ProvenanceFormat::Bracketed);
@@ -851,6 +1013,7 @@ mod tests {
                 "full",
                 "done: 158895 stubs across 27258 files in 392.2s",
             )],
+            workspace_guidance: Vec::new(),
         };
 
         let formatted = request.format_workspace_with_guidance(
@@ -862,6 +1025,36 @@ mod tests {
         );
         assert!(formatted.contains("list exact run names or paths present in recalled text"));
         assert!(formatted.contains("report only values explicitly present in loaded evidence"));
+    }
+
+    #[test]
+    fn query_intent_parses_json_from_classifier_output() {
+        let parsed = QueryIntent::from_classifier_response(
+            "```json\n{\"is_inventory_request\":true,\"confidence\":0.82}\n```",
+        )
+        .unwrap();
+        assert!(parsed.is_inventory_request);
+        assert_eq!(parsed.confidence, 0.82);
+    }
+
+    #[test]
+    fn query_intent_guidance_is_added_to_workspace() {
+        let request = CompletionRequest {
+            system: String::new(),
+            user: "what are the latest results?".to_string(),
+            workspace_fragments: vec![sample_fragment("report.json", "full", "latency_ms: 123")],
+            workspace_guidance: QueryIntent {
+                is_results_request: true,
+                wants_numeric_values: true,
+                confidence: 0.9,
+                ..Default::default()
+            }
+            .guidance_lines(),
+        };
+
+        let formatted = request.format_workspace(ProvenanceFormat::Bracketed);
+        assert!(formatted.contains("report only metrics and values explicitly present"));
+        assert!(formatted.contains("Prefer exact numeric values and units"));
     }
 }
 

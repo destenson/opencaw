@@ -16,6 +16,10 @@ path = "src/bin/sweep.rs"
 name = "caw-bench-build-index"
 path = "src/bin/build_index.rs"
 
+[[bin]]
+name = "caw-bench-intent"
+path = "src/bin/intent_bench.rs"
+
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true

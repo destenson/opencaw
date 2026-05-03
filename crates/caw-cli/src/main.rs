@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use caw_adapters::MockAdapter;
 use caw_core::{
     CompletionRequest, EmbeddingProvider, Locator, ModelAdapter, RecallFragment, Retriever,
-    ScoredStub, StubId, StubStore, Tokenizer, VectorIndex, WhitespaceTokenizer,
+    QueryIntent, ScoredStub, StubId, StubStore, Tokenizer, VectorIndex, WhitespaceTokenizer,
     candidate_list_fragment, count_tokens_cl100k,
 };
 use caw_curation::{
@@ -77,6 +77,26 @@ struct Cli {
 
     #[arg(short, long)]
     model: Option<String>,
+
+    /// Adapter used to classify user queries before answer generation.
+    #[arg(long, default_value = "ollama")]
+    intent_adapter: String,
+
+    /// Small model used for query-intent classification.
+    #[arg(long, default_value = "llama3.2:3b")]
+    intent_model: String,
+
+    /// Disable the query-intent classifier and skip intent-guidance injection.
+    #[arg(long, default_value_t = false)]
+    no_intent_classifier: bool,
+
+    /// Minimum classifier confidence required before intent guidance is used.
+    #[arg(long, default_value = "0.65")]
+    intent_confidence: f32,
+
+    /// Print classifier output for each query when intent classification is enabled.
+    #[arg(long, default_value_t = false)]
+    show_intent: bool,
 
     /// SQLite database path for persistent index. Defaults to .caw/index.db in the current directory.
     #[arg(long)]
@@ -274,8 +294,16 @@ fn main() -> Result<()> {
 
     let adapter: Box<dyn ModelAdapter> =
         build_completion_adapter(&cli.adapter, cli.model.as_deref())?;
+    let intent_adapter = if cli.no_intent_classifier {
+        None
+    } else {
+        Some(build_intent_adapter(&cli.intent_adapter, &cli.intent_model)?)
+    };
 
     eprintln!("Using adapter: {}", adapter.model_name());
+    if let Some(classifier) = intent_adapter.as_ref() {
+        eprintln!("Using intent classifier: {}", classifier.model_name());
+    }
 
     // LLM consolidation is available for when the DynamicRecallOrchestrator is
     // used directly (via with_consolidation_synthesizer). The manual recall loop
@@ -296,6 +324,8 @@ fn main() -> Result<()> {
         eprintln!("Curation pipeline enabled (history summarization + tool output compression)");
     }
 
+    let show_intent = cli.show_intent || cli.verbose;
+
     eprintln!("Enter queries (Ctrl+D to exit):\n");
 
     run_interactive(
@@ -303,6 +333,9 @@ fn main() -> Result<()> {
         trace_embedder,
         trace_index,
         adapter,
+        intent_adapter,
+        cli.intent_confidence,
+        show_intent,
         config,
         &cli.system,
         cli.curate,
@@ -415,12 +448,31 @@ fn build_completion_adapter(
     Ok(adapter)
 }
 
+fn build_intent_adapter(adapter_name: &str, model: &str) -> Result<Box<dyn ModelAdapter>> {
+    build_completion_adapter(adapter_name, Some(model))
+}
+
+fn classify_query_intent(adapter: &dyn ModelAdapter, query: &str) -> Result<QueryIntent> {
+    let response = adapter.complete(CompletionRequest {
+        system: QueryIntent::classifier_system_prompt().to_string(),
+        user: QueryIntent::classifier_user_prompt(query),
+        workspace_fragments: Vec::new(),
+        workspace_guidance: Vec::new(),
+    })?;
+
+    QueryIntent::from_classifier_response(&response.answer)
+        .map_err(|e| anyhow::anyhow!("intent classifier returned invalid output: {e}"))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_interactive(
     mut retriever: SemanticRetriever<FastEmbedProvider, SqliteStubStore, HnswVectorIndex>,
     mut trace_embedder: LazyFastEmbedProvider,
     mut trace_index: HnswVectorIndex,
     adapter: Box<dyn ModelAdapter>,
+    intent_adapter: Option<Box<dyn ModelAdapter>>,
+    intent_confidence: f32,
+    show_intent: bool,
     config: DynamicRecallConfig,
     system: &str,
     curate: bool,
@@ -589,6 +641,19 @@ fn run_interactive(
             system.to_string()
         };
 
+        let query_intent = intent_adapter
+            .as_ref()
+            .map(|classifier| classify_query_intent(classifier.as_ref(), query))
+            .transpose()?;
+        if show_intent && let Some(intent) = query_intent.as_ref() {
+            eprintln!("[intent] {:?}", intent);
+        }
+        let query_guidance = query_intent
+            .as_ref()
+            .filter(|intent| intent.is_actionable(intent_confidence))
+            .map(QueryIntent::guidance_lines)
+            .unwrap_or_default();
+
         let hits = retriever.search(query, config.max_candidates)?;
         let above_threshold = hits
             .iter()
@@ -656,6 +721,7 @@ fn run_interactive(
             system: effective_system.clone(),
             user: query.to_string(),
             workspace_fragments: initial_fragments,
+            workspace_guidance: query_guidance.clone(),
         })?;
 
         // When the candidate list was shown, the model's response may mention
@@ -697,6 +763,7 @@ fn run_interactive(
                     system: effective_system,
                     user: query.to_string(),
                     workspace_fragments: loaded.clone(),
+                    workspace_guidance: query_guidance.clone(),
                 })?;
             }
         }

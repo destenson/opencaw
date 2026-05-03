@@ -82,6 +82,7 @@ impl Summarizer for LlmSummarizer {
             system,
             user,
             workspace_fragments: Vec::new(),
+            workspace_guidance: Vec::new(),
         })?;
 
         let answer = resp.answer.trim().to_string();

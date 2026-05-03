@@ -148,6 +148,27 @@ Cartesian product of all axes is the cell list. Any `caw-bench` flag is
 valid in either section — keys convert `snake_case → kebab-case` when
 passed to the subprocess.
 
+## Intent Bench
+
+`caw-bench-intent` evaluates small models as strict JSON query-intent
+classifiers. This is useful for deciding which cheap model is good enough
+to route inventory vs. results vs. comparison vs. explanation queries
+before the main answer model runs.
+
+```bash
+# Compare a pool of local Ollama models on the built-in intent set
+cargo run -p caw-bench --bin caw-bench-intent --release -- \
+  --candidate qwen2:0.5b \
+  --candidate tinyllama:1.1b \
+  --candidate llama3.2:3b \
+  --out intent-report.json
+```
+
+The JSON report includes overall exact-match rate, per-field accuracy, and
+per-tag exact-match rates so you can spot models that are strong on one
+classification family (for example inventory or comparison) even if they
+aren't the best overall.
+
 ## Caveats
 
 - Each item runs the orchestrator twice (on + off), and a fresh adapter +

@@ -295,6 +295,7 @@ fn augment_last_user_message(req: &mut Value, fragments: &[RecallFragment]) -> R
         system: String::new(),
         user: String::new(),
         workspace_fragments: fragments.to_vec(),
+        workspace_guidance: Vec::new(),
     };
     let workspace = cr.format_workspace(ProvenanceFormat::Bracketed);
 

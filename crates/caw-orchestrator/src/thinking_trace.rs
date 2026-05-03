@@ -88,6 +88,7 @@ where
             system: system.to_string(),
             user: user.to_string(),
             workspace_fragments: self.loaded.clone(),
+            workspace_guidance: Vec::new(),
         })?;
 
         Ok(response)

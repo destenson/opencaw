@@ -92,6 +92,7 @@ impl HistorySummarizer for LlmHistorySummarizer<'_> {
                 .to_string(),
             user: prompt,
             workspace_fragments: vec![],
+            workspace_guidance: Vec::new(),
         };
 
         let resp = self.adapter.complete(req)?;

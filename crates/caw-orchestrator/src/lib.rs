@@ -99,6 +99,7 @@ where
                     system: system.to_string(),
                     user: user.to_string(),
                     workspace_fragments: self.loaded.clone(),
+                    workspace_guidance: Vec::new(),
                 };
 
                 // Split field borrows so the closure can mutate retriever/loaded/
@@ -152,6 +153,7 @@ where
             system: system.to_string(),
             user: user.to_string(),
             workspace_fragments: self.loaded.clone(),
+            workspace_guidance: Vec::new(),
         })
     }
 }
