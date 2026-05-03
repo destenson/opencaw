@@ -540,6 +540,58 @@ impl QueryIntent {
     pub fn is_actionable(&self, min_confidence: f32) -> bool {
         !self.abstain && self.confidence.map_or(true, |c| c >= min_confidence)
     }
+
+    /// Merge multiple classifier votes by strict majority (> half must agree for a field
+    /// to be set). Returns the default intent if `votes` is empty.
+    pub fn majority_vote(votes: &[QueryIntent]) -> QueryIntent {
+        if votes.is_empty() {
+            return QueryIntent::default();
+        }
+        if votes.len() == 1 {
+            return votes[0].clone();
+        }
+
+        let threshold = votes.len() / 2 + 1;
+        let count = |f: fn(&QueryIntent) -> bool| votes.iter().filter(|v| f(v)).count() >= threshold;
+
+        let confidence = {
+            let vals: Vec<f32> = votes.iter().filter_map(|v| v.confidence).collect();
+            if vals.is_empty() { None } else { Some(vals.iter().sum::<f32>() / vals.len() as f32) }
+        };
+
+        // Include extra bool-true keys that the majority agree on.
+        let mut extra_counts: HashMap<String, usize> = HashMap::new();
+        for vote in votes {
+            for (k, v) in &vote.extra {
+                if matches!(v, serde_json::Value::Bool(true)) {
+                    *extra_counts.entry(k.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+        let extra = extra_counts
+            .into_iter()
+            .filter(|(_, n)| *n >= threshold)
+            .map(|(k, _)| (k, serde_json::Value::Bool(true)))
+            .collect();
+
+        QueryIntent {
+            is_inventory_request:      count(|v| v.is_inventory_request),
+            is_results_request:        count(|v| v.is_results_request),
+            is_status_request:         count(|v| v.is_status_request),
+            is_next_step_request:      count(|v| v.is_next_step_request),
+            wants_exact_names_or_paths: count(|v| v.wants_exact_names_or_paths),
+            wants_numeric_values:      count(|v| v.wants_numeric_values),
+            wants_latest_run_only:     count(|v| v.wants_latest_run_only),
+            wants_comparison:          count(|v| v.wants_comparison),
+            wants_explanation:         count(|v| v.wants_explanation),
+            wants_completion_state:    count(|v| v.wants_completion_state),
+            wants_recommended_actions: count(|v| v.wants_recommended_actions),
+            needs_grounded_evidence_only: count(|v| v.needs_grounded_evidence_only),
+            abstain:                   count(|v| v.abstain),
+            confidence,
+            extra,
+        }
+    }
 }
 
 pub trait IntentClassifier {

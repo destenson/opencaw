@@ -82,9 +82,11 @@ struct Cli {
     #[arg(long, default_value = "ollama")]
     intent_adapter: String,
 
-    /// Small model used for query-intent classification.
-    #[arg(long, default_value = "llama3.2:3b")]
-    intent_model: String,
+    /// Small model(s) used for query-intent classification. Repeat the flag to
+    /// enable an ensemble: each model is run independently and the results are
+    /// merged by majority vote, filtering spurious false positives.
+    #[arg(long, default_value = "llama3.2:3b", num_args = 1..)]
+    intent_model: Vec<String>,
 
     /// Disable the query-intent classifier and skip intent-guidance injection.
     #[arg(long, default_value_t = false)]
@@ -294,15 +296,23 @@ fn main() -> Result<()> {
 
     let adapter: Box<dyn ModelAdapter> =
         build_completion_adapter(&cli.adapter, cli.model.as_deref())?;
-    let intent_adapter = if cli.no_intent_classifier {
-        None
+    let intent_adapters: Vec<Box<dyn ModelAdapter>> = if cli.no_intent_classifier {
+        Vec::new()
     } else {
-        Some(build_intent_adapter(&cli.intent_adapter, &cli.intent_model)?)
+        cli.intent_model
+            .iter()
+            .map(|model| build_intent_adapter(&cli.intent_adapter, model))
+            .collect::<Result<Vec<_>>>()?
     };
 
     eprintln!("Using adapter: {}", adapter.model_name());
-    if let Some(classifier) = intent_adapter.as_ref() {
-        eprintln!("Using intent classifier: {}", classifier.model_name());
+    match intent_adapters.len() {
+        0 => {}
+        1 => eprintln!("Using intent classifier: {}", intent_adapters[0].model_name()),
+        n => eprintln!(
+            "Using intent classifier ensemble ({n} models): {}",
+            intent_adapters.iter().map(|a| a.model_name()).collect::<Vec<_>>().join(", ")
+        ),
     }
 
     // LLM consolidation is available for when the DynamicRecallOrchestrator is
@@ -333,7 +343,7 @@ fn main() -> Result<()> {
         trace_embedder,
         trace_index,
         adapter,
-        intent_adapter,
+        intent_adapters,
         cli.intent_confidence,
         show_intent,
         config,
@@ -471,7 +481,7 @@ fn run_interactive(
     mut trace_embedder: LazyFastEmbedProvider,
     mut trace_index: HnswVectorIndex,
     adapter: Box<dyn ModelAdapter>,
-    intent_adapter: Option<Box<dyn ModelAdapter>>,
+    intent_adapters: Vec<Box<dyn ModelAdapter>>,
     intent_confidence: f32,
     show_intent: bool,
     config: DynamicRecallConfig,
@@ -642,13 +652,36 @@ fn run_interactive(
             system.to_string()
         };
 
-        let query_intent = intent_adapter
-            .as_ref()
-            .map(|classifier| classify_query_intent(classifier.as_ref(), query))
-            .transpose()?;
-        if show_intent && let Some(intent) = query_intent.as_ref() {
-            eprintln!("[intent] {:?}", intent);
-        }
+        let query_intent = if intent_adapters.is_empty() {
+            None
+        } else {
+            let votes: Vec<(String, QueryIntent)> = intent_adapters
+                .iter()
+                .filter_map(|a| {
+                    classify_query_intent(a.as_ref(), query)
+                        .ok()
+                        .map(|v| (a.model_name().to_string(), v))
+                })
+                .collect();
+            if show_intent {
+                if votes.len() > 1 {
+                    for (name, v) in &votes {
+                        eprintln!("[intent {name}] {:?}", v);
+                    }
+                }
+            }
+            if votes.is_empty() {
+                None
+            } else {
+                let intents: Vec<QueryIntent> = votes.into_iter().map(|(_, v)| v).collect();
+                let merged = QueryIntent::majority_vote(&intents);
+                if show_intent {
+                    let label = if intent_adapters.len() > 1 { " merged" } else { "" };
+                    eprintln!("[intent{label}] {:?}", merged);
+                }
+                Some(merged)
+            }
+        };
         let query_guidance = query_intent
             .as_ref()
             .filter(|intent| intent.is_actionable(intent_confidence))
