@@ -160,7 +160,7 @@ fn print_summary(
     writeln!(writer)?;
     writeln!(writer, "leaderboard")?;
 
-    for (index, summary) in summaries.iter().take(3).enumerate() {
+    for (index, summary) in summaries.iter().take(5).enumerate() {
         writeln!(
             writer,
             concat!(
