@@ -632,13 +632,16 @@ fn run_interactive(
                 Some(merged)
             }
         };
-        let guidance = query_intent
+        let actionable = query_intent
             .as_ref()
-            .filter(|intent| intent.is_actionable(intent_confidence))
+            .filter(|intent| intent.is_actionable(intent_confidence));
+        let guidance = actionable
             .map(QueryIntent::guidance_lines)
             .unwrap_or_default();
+        let signals = actionable.map(|i| i.augmentation_signals());
 
-        let response = orchestrator.run_turn(&effective_system, query, &guidance)?;
+        let response =
+            orchestrator.run_turn(&effective_system, query, &guidance, signals.as_ref())?;
 
         println!("\n{}\n", response.answer);
 

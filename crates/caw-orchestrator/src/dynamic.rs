@@ -2,10 +2,10 @@ use crate::consolidation::{ConsolidationSynthesizer, MechanicalConsolidation};
 use crate::degradation::DegradationMonitor;
 use crate::session::{self, SessionFile};
 use caw_core::{
-    CawError, CawResult, CompletionRequest, CompletionResponse, ConsolidationNote,
-    ConsolidationSource, EmbeddingProvider, Locator, ModelAdapter, ProvenanceStore, Range,
-    RecallFragment, RecallThresholds, Retriever, ScoredStub, StubId, StubStore, VectorIndex,
-    candidate_list_fragment, count_tokens_cl100k, tokenize_terms,
+    AugmentationSignals, CawError, CawResult, CompletionRequest, CompletionResponse,
+    ConsolidationNote, ConsolidationSource, EmbeddingProvider, Locator, ModelAdapter,
+    ProvenanceStore, Range, RecallFragment, RecallThresholds, Retriever, ScoredStub, StubId,
+    StubStore, VectorIndex, candidate_list_fragment, count_tokens_cl100k, tokenize_terms,
 };
 use caw_eval::SessionEvaluator;
 use caw_ingest::{DocumentIdSet, IngestionPipeline};
@@ -260,6 +260,7 @@ where
         system: &str,
         user: &str,
         guidance: &[String],
+        signals: Option<&AugmentationSignals>,
     ) -> CawResult<CompletionResponse> {
         let caps = self.adapter.capabilities();
         debug!(
@@ -285,7 +286,7 @@ where
         // crowd out material relevant to the new query.
         if !self.loaded.is_empty() {
             self.decay_relevance_scores();
-            self.evict_stale_fragments(user);
+            self.evict_stale_fragments(user, signals);
         }
 
         let system_prompt = self.build_system_prompt(system);
@@ -293,7 +294,18 @@ where
         // Phase 1: Initial retrieval on the user query.
         // Many candidates clearing the threshold is a signal that the query is
         // too broad for confident augmentation — load nothing and let probes drive.
-        let initial_hits = self.retriever.search(user, self.config.max_candidates)?;
+        //
+        // For inventory queries the user's natural-language phrasing often doesn't
+        // share vocabulary with the file names and artifact paths we want to surface,
+        // so we append a small set of path-biasing terms before embedding. This is
+        // pure string manipulation — no extra model call.
+        let retrieval_query: std::borrow::Cow<str> =
+            if signals.map_or(false, |s| s.is_inventory_request) {
+                format!("{user} files paths artifacts names list").into()
+            } else {
+                user.into()
+            };
+        let initial_hits = self.retriever.search(&retrieval_query, self.config.max_candidates)?;
         let above_threshold = initial_hits
             .iter()
             .filter(|h| h.score >= self.config.thresholds.load)
@@ -437,7 +449,7 @@ where
             }
 
             self.process_annotations(&last_response.answer);
-            self.evict_stale_fragments(user);
+            self.evict_stale_fragments(user, signals);
 
             if self.loaded.len() == loaded_before {
                 debug!(
@@ -623,12 +635,15 @@ where
     /// unload threshold (hysteresis). Also enforces the token budget
     /// as a hard ceiling — if the workspace is over budget, evict the
     /// lowest-scoring fragments until it fits.
-    fn evict_stale_fragments(&mut self, query: &str) {
+    fn evict_stale_fragments(&mut self, query: &str, signals: Option<&AugmentationSignals>) {
         let unload_threshold = self.config.thresholds.unload;
         let budget = self.config.max_workspace_tokens;
+        let wants_latest = signals.map_or(false, |s| s.wants_latest_run_only);
 
-        // Collect (index, score) pairs sorted by score ascending
-        let mut scored: Vec<(usize, f32)> = self
+        // Collect (index, relevance_score, mtime) sorted eviction-first.
+        // Primary sort: relevance ascending. Secondary sort (when wants_latest_run_only):
+        // mtime ascending so older fragments are evicted before newer ones at equal relevance.
+        let mut scored: Vec<(usize, f32, u64)> = self
             .loaded
             .iter()
             .enumerate()
@@ -638,15 +653,19 @@ where
                     .get(&frag.stub_id)
                     .copied()
                     .unwrap_or(0.0);
-                (idx, score)
+                (idx, score, frag.mtime_unix_secs)
             })
             .collect();
-        scored.sort_by(|a, b| a.1.total_cmp(&b.1));
+        if wants_latest {
+            scored.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.2.cmp(&b.2)));
+        } else {
+            scored.sort_by(|a, b| a.1.total_cmp(&b.1));
+        }
 
         let mut to_evict = Vec::new();
         let mut tokens_after_eviction: usize = self.loaded.iter().map(|f| f.tokens).sum();
 
-        for (idx, score) in &scored {
+        for (idx, score, _mtime) in &scored {
             let below_threshold = *score < unload_threshold;
             let over_budget = tokens_after_eviction > budget;
 
@@ -741,6 +760,7 @@ where
                             locator: "full".to_string(),
                         },
                         tokens,
+                        mtime_unix_secs: 0,
                     }
                 }
                 None => match self.retriever.read_range(&stub_id, "full") {
@@ -819,6 +839,7 @@ where
                 locator: range.to_locator_string(),
             },
             tokens: token_estimate,
+            mtime_unix_secs: full_fragment.mtime_unix_secs,
         })
     }
 }

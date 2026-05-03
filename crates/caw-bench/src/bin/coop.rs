@@ -205,7 +205,7 @@ fn run_item_coop(
     let system = "Use the recalled workspace context to answer the question accurately \
                   and concisely.";
     orchestrator
-        .run_turn(system, &item.question, &[])
+        .run_turn(system, &item.question, &[], None)
         .context("run_turn failed")?;
 
     let loaded = orchestrator.loaded.clone();

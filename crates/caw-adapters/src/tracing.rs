@@ -219,6 +219,7 @@ mod tests {
                 content: "fragment text".to_string(),
                 locator: Locator::full("test.md"),
                 tokens: 3,
+                mtime_unix_secs: 0,
             }],
             workspace_guidance: Vec::new(),
         };

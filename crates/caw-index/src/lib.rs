@@ -150,6 +150,7 @@ where
                 locator: range.to_string(),
             },
             tokens,
+            mtime_unix_secs: stub.mtime_unix_secs,
         })
     }
 
@@ -341,6 +342,7 @@ impl Retriever for InMemoryIndex {
                 locator: range.to_string(),
             },
             tokens,
+            mtime_unix_secs: stub.mtime_unix_secs,
         })
     }
 }

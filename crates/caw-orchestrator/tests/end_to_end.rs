@@ -204,7 +204,7 @@ fn recall_loop_admits_fragment_and_tags_provenance() {
     // A query with vocabulary aligned to the auth doc. With disjoint vocabs
     // and bucket hashing, the cosine match should prefer auth over others.
     let user_query = "how does session token validation work in the authentication middleware";
-    let response = orchestrator.run_turn("", user_query, &[]).expect("run_turn");
+    let response = orchestrator.run_turn("", user_query, &[], None).expect("run_turn");
 
     // MockAdapter echoes the workspace via format_workspace — so if any
     // fragment was admitted, its provenance locator appears in the answer.

@@ -334,7 +334,7 @@ fn run_item_fresh(
         );
 
     let response = orchestrator
-        .run_turn(&cfg.system_prompt, &item.question, &[])
+        .run_turn(&cfg.system_prompt, &item.question, &[], None)
         .context("run_turn failed")?;
 
     let loaded = orchestrator.loaded.clone();
@@ -395,7 +395,7 @@ fn run_item_shared(
         );
 
     let response = orchestrator
-        .run_turn(&cfg.system_prompt, &item.question, &[])
+        .run_turn(&cfg.system_prompt, &item.question, &[], None)
         .context("run_turn failed")?;
 
     let loaded = orchestrator.loaded.clone();

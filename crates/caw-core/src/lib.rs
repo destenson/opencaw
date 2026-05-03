@@ -332,6 +332,7 @@ pub fn candidate_list_fragment(hits: &[ScoredStub], threshold: f32) -> RecallFra
             locator: "file-list".to_string(),
         },
         tokens: count_tokens_cl100k(&content),
+        mtime_unix_secs: 0,
     }
 }
 
@@ -341,6 +342,7 @@ pub struct RecallFragment {
     pub content: String,
     pub locator: Locator,
     pub tokens: usize,
+    pub mtime_unix_secs: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1139,6 +1141,7 @@ mod tests {
                 locator: locator.to_string(),
             },
             tokens: 0,
+            mtime_unix_secs: 0,
         }
     }
 

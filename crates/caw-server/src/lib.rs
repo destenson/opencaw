@@ -261,6 +261,7 @@ fn retrieve_fragments(state: &AppState, query: &str) -> Result<Vec<RecallFragmen
                 locator: "full".to_string(),
             },
             tokens,
+            mtime_unix_secs: stub.mtime_unix_secs,
         });
         used_tokens += tokens;
     }
