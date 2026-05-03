@@ -20,6 +20,11 @@ pub struct OllamaAdapter {
     /// orchestrator modes against the same input, since stochastic
     /// sampling otherwise dominates any framework-level signal.
     temperature: Option<f32>,
+    /// Context window size passed as `num_ctx` in the Ollama request options.
+    /// `None` lets Ollama use the model's default (typically 2048–32768).
+    /// Set explicitly to control VRAM usage — KV cache dominates loaded model
+    /// size, so capping at 4096 can cut a 32k-default model from 8 GB to ~2 GB.
+    num_ctx: Option<u32>,
     /// Cached result of querying `/api/show` to check whether the model's
     /// chat template handles a `system` role message. Mistral-family models
     /// often omit `{{ .System }}` from their template; sending a system
@@ -49,6 +54,7 @@ impl OllamaAdapter {
             client: Client::new(),
             runtime,
             temperature: None,
+            num_ctx: None,
             system_supported: std::sync::OnceLock::new(),
         }
     }
@@ -57,6 +63,13 @@ impl OllamaAdapter {
     /// greedy decoding.
     pub fn with_temperature(mut self, temperature: f32) -> Self {
         self.temperature = Some(temperature);
+        self
+    }
+
+    /// Cap the context window. Controls KV-cache VRAM usage — useful when
+    /// running many small models back-to-back in benchmarks.
+    pub fn with_num_ctx(mut self, num_ctx: u32) -> Self {
+        self.num_ctx = Some(num_ctx);
         self
     }
 
@@ -159,6 +172,8 @@ struct OllamaOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     num_predict: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_ctx: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -208,6 +223,7 @@ impl ModelAdapter for OllamaAdapter {
             options: OllamaOptions {
                 temperature: self.temperature,
                 num_predict: 4096,
+                num_ctx: self.num_ctx,
             },
         };
 
@@ -305,6 +321,7 @@ impl ModelAdapter for OllamaAdapter {
             options: OllamaOptions {
                 temperature: self.temperature,
                 num_predict: 4096,
+                num_ctx: self.num_ctx,
             },
         };
 

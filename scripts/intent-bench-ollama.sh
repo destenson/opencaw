@@ -7,6 +7,11 @@ OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
 OUTDIR="${OUTDIR:-}"
 OUTFILE="${OUTFILE:-}"
 TEMPERATURE="${TEMPERATURE:-0.0}"
+# Context window cap passed as num_ctx to the Ollama API. Classification prompts
+# fit in ~2k tokens; capping here prevents 32k-default models from allocating a
+# giant KV cache and blowing VRAM when running many candidates back to back.
+# Set to empty string to use each model's own default.
+NUM_CTX="${NUM_CTX:-4096}"
 RELEASE_FLAG="${RELEASE_FLAG:---release}"
 NAME_REGEX="${NAME_REGEX:-}"
 
@@ -120,6 +125,10 @@ cmd=(cargo run -p caw-bench --bin caw-bench-intent "${RELEASE_FLAG}" --
     --ollama-url "${OLLAMA_URL}"
     --temperature "${TEMPERATURE}"
     --out "${OUTFILE}")
+
+if [[ -n "${NUM_CTX}" ]]; then
+    cmd+=(--num-ctx "${NUM_CTX}")
+fi
 
 for model in "${models[@]}"; do
     cmd+=(--candidate "${model}")

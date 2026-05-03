@@ -33,6 +33,11 @@ pub struct AdapterSpec<'a> {
     /// ClaudeCodeAdapter ignores this — claude CLI doesn't expose a
     /// temperature flag in `--print` mode.
     pub temperature: Option<f32>,
+    /// Cap Ollama's context window (`num_ctx`). `None` uses the model default.
+    /// Cutting context to 4096 on 32k-default models can reduce loaded VRAM
+    /// from 8+ GB to ~2 GB, which matters when running many candidates back
+    /// to back on a single GPU.
+    pub num_ctx: Option<u32>,
 }
 
 pub fn build(
@@ -60,6 +65,9 @@ fn build_inner(
             let mut a = OllamaAdapter::new_with(spec.ollama_url, spec.model, runtime.clone());
             if let Some(t) = spec.temperature {
                 a = a.with_temperature(t);
+            }
+            if let Some(ctx) = spec.num_ctx {
+                a = a.with_num_ctx(ctx);
             }
             Box::new(a)
         }

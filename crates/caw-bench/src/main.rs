@@ -224,6 +224,7 @@ fn main() -> Result<()> {
             ollama_url: &cli.ollama_url,
             openai_url: &cli.openai_url,
             temperature: Some(cli.judge_temperature),
+            num_ctx: None,
         },
         &runtime,
     )?;
@@ -283,6 +284,7 @@ fn main() -> Result<()> {
                     ollama_url: &cli.ollama_url,
                     openai_url: &cli.openai_url,
                     temperature: Some(cli.temperature),
+                    num_ctx: None,
                 },
                 &runtime,
             ) {

@@ -35,6 +35,13 @@ struct Cli {
     #[arg(long, default_value = "0.0")]
     temperature: f32,
 
+    /// Cap the Ollama context window (num_ctx). Dramatically reduces VRAM for
+    /// models with large default contexts (e.g. 32k). Classification prompts
+    /// fit well within 4096 tokens; 2048 is sufficient for most cases.
+    /// Ignored for non-Ollama adapters.
+    #[arg(long)]
+    num_ctx: Option<u32>,
+
     /// Optional JSON output path.
     #[arg(long)]
     out: Option<PathBuf>,
@@ -86,6 +93,7 @@ fn main() -> Result<()> {
                 ollama_url: &cli.ollama_url,
                 openai_url: &cli.openai_url,
                 temperature: Some(cli.temperature),
+                num_ctx: cli.num_ctx,
             },
             &runtime,
         )
