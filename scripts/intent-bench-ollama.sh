@@ -14,6 +14,7 @@ TEMPERATURE="${TEMPERATURE:-0.0}"
 NUM_CTX="${NUM_CTX:-4096}"
 RELEASE_FLAG="${RELEASE_FLAG:---release}"
 NAME_REGEX="${NAME_REGEX:-}"
+ENSEMBLE="${ENSEMBLE:-3}"
 
 if ! command -v ollama >/dev/null 2>&1; then
     echo "missing ollama in PATH" >&2
@@ -95,9 +96,9 @@ else
         [[ "${model}" == *aseio* ]] || \
         [[ "${model}" == *moondream* ]] || \
         [[ "${model}" == *tinyllama* ]] || \
-        [[ "${model}" == *llava* ]] || \
         [[ "${model}" == *vision* ]] || \
         [[ "${model}" == *cloud* ]] && continue
+        # [[ "${model}" == *llava* ]] || \
 
         if model_supports_completion "${model}"; then
             models+=("${model}")
@@ -141,6 +142,32 @@ for model in "${models[@]}"; do
 done
 
 # Ensemble of top-3 models runs by default (--ensemble 0 to disable).
+if [[ "${ENSEMBLE}" != "3" ]]; then
+    case "${ENSEMBLE}" in
+        max)
+            cmd+=(--ensemble "${#models[@]}")
+            ;;
+        half)
+            half=$(( (${#models[@]} + 1) / 2 ))
+            cmd+=(--ensemble "${half}")
+            ;;
+        third)
+            third=$(( (${#models[@]} + 2) / 3 ))
+            cmd+=(--ensemble "${third}")
+            ;;
+        fourth|quarter)
+            fourth=$(( (${#models[@]} + 3) / 4 ))
+            cmd+=(--ensemble "${fourth}")
+            ;;
+        ''|*[!0-9]*)
+            echo "invalid ENSEMBLE value: ${ENSEMBLE}" >&2
+            exit 1
+            ;;
+        *)
+            cmd+=(--ensemble "${ENSEMBLE}")
+            ;;
+    esac
+fi
 
 echo "selected ${#models[@]} model(s):" >&2
 for model in "${models[@]}"; do
