@@ -162,12 +162,25 @@ cargo run -p caw-bench --bin caw-bench-intent --release -- \
   --candidate tinyllama:1.1b \
   --candidate llama3.2:3b \
   --out intent-report.json
+
+# Or discover local small Ollama models automatically and benchmark them
+./scripts/intent-bench-ollama.sh
 ```
 
 The JSON report includes overall exact-match rate, per-field accuracy, and
 per-tag exact-match rates so you can spot models that are strong on one
 classification family (for example inventory or comparison) even if they
 aren't the best overall.
+
+`scripts/intent-bench-ollama.sh` discovers local models from `ollama list`,
+keeps only local models at or below `MAX_GB` (default `6`), deduplicates
+aliases that share the same model ID, and passes the resulting set to
+`caw-bench-intent` as repeated `--candidate` flags. Useful knobs:
+
+- `MAX_GB=3 ./scripts/intent-bench-ollama.sh` to only test very small models.
+- `LIMIT=8 ./scripts/intent-bench-ollama.sh` to cap how many discovered models run.
+- `NAME_REGEX='^(qwen2|tinyllama|llama3\\.2|granite4)' ./scripts/intent-bench-ollama.sh` to narrow by model name.
+- `./scripts/intent-bench-ollama.sh qwen2:0.5b tinyllama:1.1b llama3.2:3b` to bypass discovery and run an explicit set.
 
 ## Caveats
 

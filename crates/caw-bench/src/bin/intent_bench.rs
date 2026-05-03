@@ -7,6 +7,7 @@ use caw_bench::adapter_factory::{self, AdapterKind, AdapterSpec};
 use caw_bench::intent::{IntentBenchCase, default_cases, empty_field_scores, score_case};
 use caw_core::{CompletionRequest, ModelAdapter, QueryIntent};
 use serde::Serialize;
+use std::io::{self, Write};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -97,10 +98,60 @@ fn main() -> Result<()> {
     let json = serde_json::to_string_pretty(&report)?;
     if let Some(path) = cli.out {
         std::fs::write(&path, json).with_context(|| format!("write {}", path.display()))?;
+        print_summary(&report, Some(path.as_path()), &mut io::stdout())?;
     } else {
         println!("{json}");
+        print_summary(&report, None, &mut io::stderr())?;
     }
     Ok(())
+}
+
+fn print_summary(
+    report: &IntentBenchReport,
+    out_path: Option<&std::path::Path>,
+    writer: &mut dyn Write,
+) -> Result<()> {
+    let mut summaries = report.summaries.iter().collect::<Vec<_>>();
+    summaries.sort_by(|left, right| {
+        right
+            .exact_match_rate
+            .partial_cmp(&left.exact_match_rate)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.model.cmp(&right.model))
+    });
+
+    writeln!(writer)?;
+    writeln!(writer, "intent bench summary")?;
+    if let Some(path) = out_path {
+        writeln!(writer, "report: {}", path.display())?;
+    }
+    writeln!(writer, "cases: {}", report.cases)?;
+
+    for summary in summaries {
+        writeln!(
+            writer,
+            concat!(
+                "{}: exact={:.1}% parse_failures={} ",
+                "next_step={:.1}% actions={:.1}% status={:.1}% ",
+                "inventory={:.1}% results={:.1}% grounded={:.1}%"
+            ),
+            summary.model,
+            summary.exact_match_rate * 100.0,
+            summary.parse_failures,
+            percent(summary, "is_next_step_request"),
+            percent(summary, "wants_recommended_actions"),
+            percent(summary, "is_status_request"),
+            percent(summary, "is_inventory_request"),
+            percent(summary, "is_results_request"),
+            percent(summary, "needs_grounded_evidence_only"),
+        )?;
+    }
+
+    Ok(())
+}
+
+fn percent(summary: &CandidateSummary, field: &str) -> f32 {
+    summary.field_accuracy.get(field).copied().unwrap_or(0.0) * 100.0
 }
 
 fn run_candidate(
