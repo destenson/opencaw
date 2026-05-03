@@ -47,6 +47,9 @@ struct CandidateCaseResult {
     tags: Vec<String>,
     predicted: Option<QueryIntent>,
     error: Option<String>,
+    /// Raw model response, included only when exact_match is false or a parse error occurred.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw_response: Option<String>,
     exact_match: bool,
     correct_fields: usize,
     total_fields: usize,
@@ -256,7 +259,7 @@ fn run_candidate(
 
     for case in cases {
         match classify_case(adapter, case) {
-            Ok(predicted) => {
+            Ok((predicted, raw)) => {
                 let score = score_case(&case.expected, &predicted);
                 if score.exact_match {
                     exact_matches += 1;
@@ -282,12 +285,13 @@ fn run_candidate(
                     tags: case.tags.iter().map(|tag| (*tag).to_string()).collect(),
                     predicted: Some(predicted),
                     error: None,
+                    raw_response: if score.exact_match { None } else { Some(raw) },
                     exact_match: score.exact_match,
                     correct_fields: score.correct_fields,
                     total_fields: score.total_fields,
                 });
             }
-            Err(error) => {
+            Err((error, raw)) => {
                 parse_failures += 1;
                 for entry in field_scores.values_mut() {
                     entry.total += 1;
@@ -302,6 +306,7 @@ fn run_candidate(
                     tags: case.tags.iter().map(|tag| (*tag).to_string()).collect(),
                     predicted: None,
                     error: Some(error.to_string()),
+                    raw_response: Some(raw),
                     exact_match: false,
                     correct_fields: 0,
                     total_fields: field_scores.len(),
@@ -343,13 +348,22 @@ fn run_candidate(
     })
 }
 
-fn classify_case(adapter: &dyn ModelAdapter, case: &IntentBenchCase) -> Result<QueryIntent> {
-    let response = adapter.complete(CompletionRequest {
-        system: QueryIntent::classifier_system_prompt().to_string(),
-        user: QueryIntent::classifier_user_prompt(case.query),
-        workspace_fragments: Vec::new(),
-        workspace_guidance: Vec::new(),
-    })?;
+fn classify_case(
+    adapter: &dyn ModelAdapter,
+    case: &IntentBenchCase,
+) -> Result<(QueryIntent, String), (anyhow::Error, String)> {
+    let response = adapter
+        .complete(CompletionRequest {
+            system: QueryIntent::classifier_system_prompt().to_string(),
+            user: QueryIntent::classifier_user_prompt(case.query),
+            workspace_fragments: Vec::new(),
+            workspace_guidance: Vec::new(),
+        })
+        .map_err(|e| (anyhow::anyhow!(e), String::new()))?;
+    let raw = response.answer.clone();
     QueryIntent::from_classifier_response(&response.answer)
-        .map_err(|e| anyhow::anyhow!("invalid classifier response for {}: {e}", case.id))
+        .map(|intent| (intent, raw.clone()))
+        .map_err(|e| {
+            (anyhow::anyhow!("invalid classifier response for {}: {e}", case.id), raw)
+        })
 }
