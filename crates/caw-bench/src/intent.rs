@@ -241,6 +241,9 @@ pub fn default_cases() -> Vec<IntentBenchCase> {
                 ..Default::default()
             },
         },
+        // TODO: add more bench cases with more varied intent combinations, e.g. 
+        // non-grounded questions, next-step questions that also ask for numeric
+        // values ("what's the next step and how long will it take?"), etc.
     ]
 }
 
