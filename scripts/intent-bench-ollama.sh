@@ -96,9 +96,9 @@ else
         [[ "${model}" == *aseio* ]] || \
         [[ "${model}" == *moondream* ]] || \
         [[ "${model}" == *tinyllama* ]] || \
+        [[ "${model}" == *llava* ]] || \
         [[ "${model}" == *vision* ]] || \
         [[ "${model}" == *cloud* ]] && continue
-        # [[ "${model}" == *llava* ]] || \
 
         if model_supports_completion "${model}"; then
             models+=("${model}")
