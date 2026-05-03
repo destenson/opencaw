@@ -202,6 +202,9 @@ fn collect_tag_winners(
             .iter()
             .map(|summary| summary.tag_exact_match_rate.get(&tag).copied().unwrap_or(0.0))
             .fold(-1.0f32, f32::max);
+        if best_score <= 0.0 {
+            continue;
+        }
         let mut best_models = summaries
             .iter()
             .filter_map(|summary| {
