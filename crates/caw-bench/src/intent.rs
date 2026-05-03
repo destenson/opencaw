@@ -294,23 +294,25 @@ pub fn score_case(
     }
 }
 
+pub const KNOWN_FIELDS: &[&str] = &[
+    "is_inventory_request",
+    "is_results_request",
+    "is_status_request",
+    "is_next_step_request",
+    "wants_exact_names_or_paths",
+    "wants_numeric_values",
+    "wants_latest_run_only",
+    "wants_comparison",
+    "wants_explanation",
+    "wants_completion_state",
+    "wants_recommended_actions",
+    "needs_grounded_evidence_only",
+    "abstain",
+];
+
 pub fn empty_field_scores() -> BTreeMap<&'static str, IntentFieldScore> {
-    [
-        "is_inventory_request",
-        "is_results_request",
-        "is_status_request",
-        "is_next_step_request",
-        "wants_exact_names_or_paths",
-        "wants_numeric_values",
-        "wants_latest_run_only",
-        "wants_comparison",
-        "wants_explanation",
-        "wants_completion_state",
-        "wants_recommended_actions",
-        "needs_grounded_evidence_only",
-        "abstain",
-    ]
-    .into_iter()
-    .map(|name| (name, IntentFieldScore::default()))
-    .collect()
+    KNOWN_FIELDS
+        .iter()
+        .map(|name| (*name, IntentFieldScore::default()))
+        .collect()
 }

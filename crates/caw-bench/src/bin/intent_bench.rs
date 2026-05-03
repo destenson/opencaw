@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use caw_bench::adapter_factory::{self, AdapterKind, AdapterSpec};
 use caw_bench::intent::{
-    IntentBenchCase, IntentFieldScore, default_cases, empty_field_scores, score_case,
+    IntentBenchCase, IntentFieldScore, KNOWN_FIELDS, default_cases, empty_field_scores, score_case,
 };
 use caw_core::{CompletionRequest, ModelAdapter, QueryIntent};
 use serde::Serialize;
@@ -47,6 +47,11 @@ struct Cli {
     /// Optional JSON output path.
     #[arg(long)]
     out: Option<PathBuf>,
+
+    /// After benchmarking all individual candidates, also run an ensemble that
+    /// majority-votes across all of them and adds the result to the leaderboard.
+    #[arg(long, default_value_t = false)]
+    ensemble: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -106,6 +111,10 @@ fn main() -> Result<()> {
         )
         .with_context(|| format!("build adapter for intent candidate {}", model))?;
         summaries.push(run_candidate(model, adapter.as_ref(), &cases)?);
+    }
+
+    if cli.ensemble && summaries.len() > 1 {
+        summaries.push(run_ensemble(&summaries, &cases));
     }
 
     let report = IntentBenchReport {
@@ -367,6 +376,108 @@ fn run_candidate(
         parse_failures,
         cases: case_results,
     })
+}
+
+/// Build an ensemble summary by majority-voting across all individual summaries.
+/// No models are re-invoked — votes come from predictions already collected.
+fn run_ensemble(
+    summaries: &[CandidateSummary],
+    cases: &[IntentBenchCase],
+) -> CandidateSummary {
+    use caw_core::QueryIntent;
+
+    let label = format!(
+        "ensemble({})",
+        summaries.iter().map(|s| s.model.as_str()).collect::<Vec<_>>().join("+")
+    );
+
+    // All known fields are considered "emitted" in the ensemble result because
+    // majority_vote produces an explicit true/false for each field.
+    let all_fields: HashSet<String> = KNOWN_FIELDS.iter().map(|s| s.to_string()).collect();
+
+    let mut exact_matches = 0usize;
+    let mut field_scores = empty_field_scores();
+    let mut tag_hits: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    let mut case_results = Vec::new();
+    let mut total_tp = 0usize;
+    let mut total_fp = 0usize;
+    let mut total_fn = 0usize;
+
+    for (case_idx, case) in cases.iter().enumerate() {
+        let votes: Vec<QueryIntent> = summaries
+            .iter()
+            .filter_map(|s| s.cases.get(case_idx)?.predicted.clone())
+            .collect();
+
+        let (merged, is_all_failed) = if votes.is_empty() {
+            (QueryIntent::default(), true)
+        } else {
+            (QueryIntent::majority_vote(&votes), false)
+        };
+
+        let score = score_case(&case.expected, &merged, &all_fields);
+
+        if score.exact_match {
+            exact_matches += 1;
+        }
+        total_tp += score.tp;
+        total_fp += score.fp;
+        total_fn += score.fn_count;
+
+        for (field, outcome) in &score.fields {
+            if let Some(entry) = field_scores.get_mut(field) {
+                entry.record(*outcome);
+            }
+        }
+        for tag in case.tags {
+            let entry = tag_hits.entry((*tag).to_string()).or_insert((0, 0));
+            entry.1 += 1;
+            if score.exact_match {
+                entry.0 += 1;
+            }
+        }
+
+        case_results.push(CandidateCaseResult {
+            case_id: case.id.to_string(),
+            query: case.query.to_string(),
+            tags: case.tags.iter().map(|t| (*t).to_string()).collect(),
+            predicted: if is_all_failed { None } else { Some(merged) },
+            error: if is_all_failed { Some("all models failed".to_string()) } else { None },
+            raw_response: None,
+            exact_match: score.exact_match,
+            tp: score.tp,
+            fp: score.fp,
+            tn: score.tn,
+            fn_count: score.fn_count,
+        });
+    }
+
+    let (micro_precision, micro_recall, micro_f1) = micro_metrics(total_tp, total_fp, total_fn);
+
+    let field_scores_serializable = field_scores
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+
+    let tag_exact_match_rate = tag_hits
+        .into_iter()
+        .map(|(tag, (hits, total))| {
+            let rate = if total == 0 { 0.0 } else { hits as f32 / total as f32 };
+            (tag, rate)
+        })
+        .collect();
+
+    CandidateSummary {
+        model: label,
+        exact_match_rate: exact_matches as f32 / cases.len() as f32,
+        micro_precision,
+        micro_recall,
+        micro_f1,
+        field_scores: field_scores_serializable,
+        tag_exact_match_rate,
+        parse_failures: 0,
+        cases: case_results,
+    }
 }
 
 fn classify_case(

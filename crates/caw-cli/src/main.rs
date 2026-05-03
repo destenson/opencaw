@@ -85,7 +85,11 @@ struct Cli {
     /// Small model(s) used for query-intent classification. Repeat the flag to
     /// enable an ensemble: each model is run independently and the results are
     /// merged by majority vote, filtering spurious false positives.
-    #[arg(long, default_value = "llama3.2:3b", num_args = 1..)]
+    #[arg(
+        long,
+        default_values = ["granite4:micro", "huihui_ai/jan-nano-abliterated:latest", "llama3.2:3b"],
+        num_args = 1..
+    )]
     intent_model: Vec<String>,
 
     /// Disable the query-intent classifier and skip intent-guidance injection.
