@@ -280,8 +280,8 @@ where
             return self.adapter.complete(CompletionRequest {
                 system: system.to_string(),
                 user: user.to_string(),
-                workspace_fragments: Vec::new(),
                 workspace_guidance: guidance.to_vec(),
+                ..Default::default()
             });
         }
 
@@ -669,16 +669,16 @@ where
         let mut to_evict = Vec::new();
         let mut tokens_after_eviction: usize = self.loaded.iter().map(|f| f.tokens).sum();
 
-        for (idx, score, _mtime) in &scored {
-            let below_threshold = *score < unload_threshold;
+        for (idx, score, _mtime) in scored {
+            let below_threshold = score < unload_threshold;
             let over_budget = tokens_after_eviction > budget;
 
             if !below_threshold && !over_budget {
                 break;
             }
 
-            to_evict.push(*idx);
-            tokens_after_eviction -= self.loaded[*idx].tokens;
+            to_evict.push(idx);
+            tokens_after_eviction -= self.loaded[idx].tokens;
         }
 
         // Remove in reverse index order to preserve indices

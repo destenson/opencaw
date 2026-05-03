@@ -45,6 +45,7 @@ impl std::fmt::Debug for ClaudeCodeAdapter {
 
 /// Builder for ClaudeCodeAdapter — all configuration is optional,
 /// defaults produce a minimal no-tools sonnet adapter.
+#[derive(Debug, Clone, Default)]
 pub struct ClaudeCodeAdapterBuilder {
     model: String,
     allowed_tools: Vec<String>,
@@ -94,10 +95,8 @@ impl ClaudeCodeAdapter {
     pub fn builder() -> ClaudeCodeAdapterBuilder {
         ClaudeCodeAdapterBuilder {
             model: "sonnet".to_string(),
-            allowed_tools: Vec::new(),
-            max_budget_usd: None,
-            add_dirs: Vec::new(),
             effort: "low".to_string(),
+            ..Default::default()
         }
     }
 

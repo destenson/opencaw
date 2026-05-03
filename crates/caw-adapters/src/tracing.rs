@@ -221,7 +221,7 @@ mod tests {
                 tokens: 3,
                 mtime_unix_secs: 0,
             }],
-            workspace_guidance: Vec::new(),
+            ..Default::default()
         };
         let resp = adapter.complete(req).unwrap();
         assert!(resp.answer.contains("hello"));

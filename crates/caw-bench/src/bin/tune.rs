@@ -124,6 +124,7 @@ struct CoopModeSummary {
 
 // ── Per-model aggregation ─────────────────────────────────────────────────────
 
+#[derive(Debug, Default)]
 struct IntentModelStats {
     scores: Vec<f32>,
     precisions: Vec<Option<f32>>,
@@ -133,12 +134,7 @@ struct IntentModelStats {
 
 impl IntentModelStats {
     fn new() -> Self {
-        Self {
-            scores: Vec::new(),
-            precisions: Vec::new(),
-            recalls: Vec::new(),
-            parse_failure_rates: Vec::new(),
-        }
+        Self::default()
     }
 
     fn add(

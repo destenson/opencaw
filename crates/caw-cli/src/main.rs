@@ -482,8 +482,7 @@ fn classify_query_intent(adapter: &dyn ModelAdapter, query: &str) -> Result<Quer
     let response = adapter.complete(CompletionRequest {
         system: QueryIntent::augmentation_system_prompt().to_string(),
         user: QueryIntent::augmentation_user_prompt(query),
-        workspace_fragments: Vec::new(),
-        workspace_guidance: Vec::new(),
+        ..Default::default()
     })?;
 
     QueryIntent::from_classifier_response(&response.answer)

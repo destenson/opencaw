@@ -81,8 +81,7 @@ impl Summarizer for LlmSummarizer {
         let resp: CompletionResponse = self.adapter.complete(CompletionRequest {
             system,
             user,
-            workspace_fragments: Vec::new(),
-            workspace_guidance: Vec::new(),
+            ..Default::default()
         })?;
 
         let answer = resp.answer.trim().to_string();

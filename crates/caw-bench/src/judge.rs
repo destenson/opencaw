@@ -35,8 +35,7 @@ pub fn judge_answer(
         .complete(CompletionRequest {
             system,
             user,
-            workspace_fragments: Vec::new(),
-            workspace_guidance: Vec::new(),
+            ..Default::default()
         })
         .context("judge model request failed")?;
 

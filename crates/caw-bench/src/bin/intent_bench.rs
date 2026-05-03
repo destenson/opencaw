@@ -535,8 +535,7 @@ fn classify_case(
         .complete(CompletionRequest {
             system,
             user,
-            workspace_fragments: Vec::new(),
-            workspace_guidance: Vec::new(),
+            ..Default::default()
         })
         .map_err(|e| (anyhow::anyhow!(e), String::new()))?;
     let raw = response.answer.clone();
