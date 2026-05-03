@@ -85,11 +85,15 @@ if [[ "$#" -gt 0 ]]; then
 else
     while IFS= read -r model; do
         [[ -n "${model}" ]] || continue
+        # if model contains 'prompter', ignore it
+        [[ "${model}" == *prompter* ]] && continue
+
         if model_supports_completion "${model}"; then
             models+=("${model}")
         else
             echo "skipping non-completion model ${model}" >&2
         fi
+        
     done < <(discover_models)
 fi
 
