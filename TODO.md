@@ -98,3 +98,4 @@ orchestrator runs at full capability unconditionally.
 ## Other
 
 - [ ] detect git/repo references in prompts and link to stubs with git status (modified/unmodified), git blame info (author, commit message, date), branch information, and/or git log data, as needed.
+- [ ] reconsider parse failures in small models & see if there may be a better way to use them to accomplish the classification goal without strict JSON parsing. The current approach is to look for JSON in the raw output, but that may be brittle. For example, if the model outputs "is_inventory_request: true" without JSON formatting, we could still detect that with a regex or simple string search, and it would be more robust to minor formatting variations.
