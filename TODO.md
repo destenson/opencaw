@@ -1,4 +1,4 @@
-# TODO — Honest Status
+# TODO
 
 Cross-reference: design doc is `context-as-workspace.md`, scope boundaries are in `SCOPE.md`.
 
@@ -94,3 +94,7 @@ orchestrator runs at full capability unconditionally.
 
 - [ ] **Over-decomposed workspace**: 12 crates for the current codebase size. `caw-provenance`, `caw-eval`, `caw-scheduler` could be modules within larger crates. Not blocking but adds friction. Do not restructure without explicit approval.
 - [x] **End-to-end integration test**: `crates/caw-orchestrator/tests/end_to_end.rs` wires ingest → embed → index → retrieve → schedule → complete → provenance through `MockAdapter` and a deterministic hash embedder. Offline, no API keys. Primary smoke test for API-surface breakage.
+
+## Other
+
+- [ ] detect git/repo references in prompts and link to stubs with git status (modified/unmodified), git blame info (author, commit message, date), branch information, and/or git log data, as needed.

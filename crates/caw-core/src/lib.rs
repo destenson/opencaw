@@ -432,7 +432,11 @@ impl QueryIntent {
         let json = extract_json_object(raw).ok_or_else(|| {
             CawError::InvalidInput("classifier did not return a JSON object".into())
         })?;
-        let mut parsed: Self = serde_json::from_str(json)
+        // Parse via Value first so duplicate keys (e.g. "confidence":1.0,"confidence":1.0 from
+        // some models) are silently collapsed to the last value rather than rejected.
+        let value: serde_json::Value = serde_json::from_str(json)
+            .map_err(|e| CawError::InvalidInput(format!("invalid classifier JSON: {e}")))?;
+        let mut parsed: Self = serde_json::from_value(value)
             .map_err(|e| CawError::InvalidInput(format!("invalid classifier JSON: {e}")))?;
         if !parsed.confidence.is_finite() {
             parsed.confidence = 0.0;
