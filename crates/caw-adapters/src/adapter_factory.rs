@@ -52,9 +52,9 @@ impl AdapterKind {
     /// mid-tier model for judging).
     pub fn default_model(self, role: ModelRole) -> &'static str {
         match (self, role) {
-            (AdapterKind::Ollama, ModelRole::Answer) => "huihui_ai/phi4-reasoning-abliterated:3.8b",
-            (AdapterKind::Ollama, ModelRole::Judge) => "huihui_ai/phi4-reasoning-abliterated:3.8b",
-            (AdapterKind::Ollama, ModelRole::Classify) => "llama3.2:3b",
+            (AdapterKind::Ollama, ModelRole::Answer) => "hf.co/Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-GGUF:Q6_K",
+            (AdapterKind::Ollama, ModelRole::Judge) => "qwen3.5:9b",
+            (AdapterKind::Ollama, ModelRole::Classify) => "granite4:micro",
             (AdapterKind::Vllm, _) => "",
             (AdapterKind::ClaudeCode, ModelRole::Answer) => "sonnet",
             (AdapterKind::ClaudeCode, ModelRole::Judge) => "haiku",
@@ -123,17 +123,16 @@ fn build_inner(
                 Ok(key) => RequestHeaders::bearer(key),
                 Err(_) => RequestHeaders::new(),
             };
-            // vLLM and other OpenAI-protocol servers serving instruct models
-            // qualify for marker-emission instructions per the same logic as
-            // OllamaAdapter — flag hidden_reasoning so the orchestrator
-            // injects probe/note prompts.
+            // Cooperative probe/annotation injection is off by default — models
+            // that can't follow the protocol emit markers as literal text.
+            // Enable supports_hidden_reasoning here after verifying with caw-bench-coop.
             let mut a = OpenAiCompatibleAdapter::new_with(
                 spec.openai_url,
                 spec.model,
                 headers,
                 ModelCapabilities {
                     supports_tool_calls: false,
-                    supports_hidden_reasoning: true,
+                    supports_hidden_reasoning: false,
                     supports_visible_reasoning: false,
                 },
                 runtime.clone(),
