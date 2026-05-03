@@ -112,13 +112,7 @@ fn print_summary(
     writer: &mut dyn Write,
 ) -> Result<()> {
     let mut summaries = report.summaries.iter().collect::<Vec<_>>();
-    summaries.sort_by(|left, right| {
-        right
-            .exact_match_rate
-            .partial_cmp(&left.exact_match_rate)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.model.cmp(&right.model))
-    });
+    summaries.sort_by(compare_summary);
 
     writeln!(writer)?;
     writeln!(writer, "intent bench summary")?;
@@ -126,15 +120,18 @@ fn print_summary(
         writeln!(writer, "report: {}", path.display())?;
     }
     writeln!(writer, "cases: {}", report.cases)?;
+    writeln!(writer)?;
+    writeln!(writer, "leaderboard")?;
 
-    for summary in summaries {
+    for (index, summary) in summaries.iter().take(3).enumerate() {
         writeln!(
             writer,
             concat!(
-                "{}: exact={:.1}% parse_failures={} ",
+                "{}. {} exact={:.1}% parse_failures={} ",
                 "next_step={:.1}% actions={:.1}% status={:.1}% ",
                 "inventory={:.1}% results={:.1}% grounded={:.1}%"
             ),
+            index + 1,
             summary.model,
             summary.exact_match_rate * 100.0,
             summary.parse_failures,
@@ -147,7 +144,96 @@ fn print_summary(
         )?;
     }
 
+    let tag_winners = collect_tag_winners(&summaries);
+    if !tag_winners.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "tag winners")?;
+        for (tag, winners) in tag_winners {
+            writeln!(writer, "{}: {}", tag, winners.join(", "))?;
+        }
+    }
+
+    writeln!(writer)?;
+    writeln!(writer, "all models")?;
+    for summary in summaries {
+        writeln!(writer, "- {}", format_model_line(summary))?;
+    }
+
     Ok(())
+}
+
+fn compare_summary(left: &&CandidateSummary, right: &&CandidateSummary) -> std::cmp::Ordering {
+    right
+        .exact_match_rate
+        .partial_cmp(&left.exact_match_rate)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| left.parse_failures.cmp(&right.parse_failures))
+        .then_with(|| {
+            right
+                .field_accuracy
+                .get("needs_grounded_evidence_only")
+                .copied()
+                .unwrap_or(0.0)
+                .partial_cmp(
+                    &left
+                        .field_accuracy
+                        .get("needs_grounded_evidence_only")
+                        .copied()
+                        .unwrap_or(0.0),
+                )
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .then_with(|| left.model.cmp(&right.model))
+}
+
+fn collect_tag_winners(
+    summaries: &[&CandidateSummary],
+) -> Vec<(String, Vec<String>)> {
+    let mut tags = summaries
+        .iter()
+        .flat_map(|summary| summary.tag_exact_match_rate.keys().cloned())
+        .collect::<Vec<_>>();
+    tags.sort();
+    tags.dedup();
+
+    let mut winners = Vec::new();
+    for tag in tags {
+        let best_score = summaries
+            .iter()
+            .map(|summary| summary.tag_exact_match_rate.get(&tag).copied().unwrap_or(0.0))
+            .fold(-1.0f32, f32::max);
+        let mut best_models = summaries
+            .iter()
+            .filter_map(|summary| {
+                let score = summary.tag_exact_match_rate.get(&tag).copied().unwrap_or(0.0);
+                ((score - best_score).abs() < f32::EPSILON)
+                    .then(|| format!("{} ({:.1}%)", summary.model, score * 100.0))
+            })
+            .collect::<Vec<_>>();
+        best_models.sort();
+        winners.push((tag, best_models));
+    }
+
+    winners
+}
+
+fn format_model_line(summary: &CandidateSummary) -> String {
+    format!(
+        concat!(
+            "{}: exact={:.1}% parse_failures={} ",
+            "next_step={:.1}% actions={:.1}% status={:.1}% ",
+            "inventory={:.1}% results={:.1}% grounded={:.1}%"
+        ),
+        summary.model,
+        summary.exact_match_rate * 100.0,
+        summary.parse_failures,
+        percent(summary, "is_next_step_request"),
+        percent(summary, "wants_recommended_actions"),
+        percent(summary, "is_status_request"),
+        percent(summary, "is_inventory_request"),
+        percent(summary, "is_results_request"),
+        percent(summary, "needs_grounded_evidence_only"),
+    )
 }
 
 fn percent(summary: &CandidateSummary, field: &str) -> f32 {
