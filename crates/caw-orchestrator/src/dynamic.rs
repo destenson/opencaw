@@ -287,6 +287,27 @@ where
             candidate_list_fragment(&initial_hits, list_threshold)
         });
 
+        // Session turn recall: embed the query against vector_index and load any
+        // current-session turns above threshold. These are not in the corpus retriever,
+        // so they need a separate pass. This runs regardless of the ambiguity gate
+        // because session history is always small and never contributes to the gate count.
+        if !self.session_content.is_empty() {
+            if let Ok(embeddings) = self.embedder.embed_query(vec![user]) {
+                if let Some(embedding) = embeddings.first() {
+                    let session_hits: Vec<(StubId, f32)> = self
+                        .vector_index
+                        .search(embedding, self.config.max_candidates)
+                        .into_iter()
+                        .filter(|(id, _)| self.session_content.contains_key(id))
+                        .collect();
+                    if !session_hits.is_empty() {
+                        debug!(hits = session_hits.len(), "session turn initial recall");
+                        self.load_fragments(session_hits)?;
+                    }
+                }
+            }
+        }
+
         // When the gate fires, retain initial_hits for the post-completion
         // mentioned-files pass. When it doesn't, consume them into load_fragments.
         let candidate_initial_hits: Option<Vec<ScoredStub>>;
