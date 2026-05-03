@@ -5,7 +5,8 @@ use std::path::PathBuf;
 
 use caw_bench::adapter_factory::{self, AdapterKind, AdapterSpec};
 use caw_bench::intent::{
-    IntentBenchCase, IntentFieldScore, KNOWN_FIELDS, default_cases, empty_field_scores, score_case,
+    AUGMENTATION_FIELDS, IntentBenchCase, IntentFieldScore, KNOWN_FIELDS, default_cases,
+    empty_augmentation_field_scores, empty_field_scores, score_augmentation_case, score_case,
 };
 use caw_core::{CompletionRequest, ModelAdapter, QueryIntent};
 use serde::Serialize;
@@ -43,6 +44,14 @@ struct Cli {
     /// Ignored for non-Ollama adapters.
     #[arg(long)]
     num_ctx: Option<u32>,
+
+    /// Use the simplified 5-field augmentation prompt instead of the full 13-field
+    /// prompt. Scores only the augmentation fields (is_inventory_request,
+    /// is_results_request, is_status_request, is_next_step_request,
+    /// wants_latest_run_only). Useful for evaluating production-path accuracy
+    /// since small models perform better on the narrower task.
+    #[arg(long, default_value_t = true)]
+    augmentation_prompt: bool,
 
     /// Optional JSON output path.
     #[arg(long)]
@@ -111,7 +120,7 @@ fn main() -> Result<()> {
             &runtime,
         )
         .with_context(|| format!("build adapter for intent candidate {}", model))?;
-        summaries.push(run_candidate(model, adapter.as_ref(), &cases)?);
+        summaries.push(run_candidate(model, adapter.as_ref(), &cases, cli.augmentation_prompt)?);
     }
 
     if cli.ensemble > 0 && summaries.len() > 1 {
@@ -282,25 +291,37 @@ fn run_candidate(
     model: &str,
     adapter: &dyn ModelAdapter,
     cases: &[IntentBenchCase],
+    augmentation_prompt: bool,
 ) -> Result<CandidateSummary> {
     let mut exact_matches = 0usize;
     let mut parse_failures = 0usize;
-    let mut field_scores = empty_field_scores();
+    let mut field_scores = if augmentation_prompt {
+        empty_augmentation_field_scores()
+    } else {
+        empty_field_scores()
+    };
     let mut tag_hits: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     let mut case_results = Vec::new();
     let mut total_tp = 0usize;
     let mut total_fp = 0usize;
     let mut total_fn = 0usize;
 
+    let do_score = |exp: &QueryIntent, pred: &QueryIntent, keys: &HashSet<String>| {
+        if augmentation_prompt {
+            score_augmentation_case(exp, pred, keys)
+        } else {
+            score_case(exp, pred, keys)
+        }
+    };
+
     for case in cases {
-        let (score, predicted, raw, is_parse_failure) = match classify_case(adapter, case) {
+        let (score, predicted, raw, is_parse_failure) = match classify_case(adapter, case, augmentation_prompt) {
             Ok((predicted, emitted_keys, raw)) => {
-                let score = score_case(&case.expected, &predicted, &emitted_keys);
+                let score = do_score(&case.expected, &predicted, &emitted_keys);
                 (score, Some(predicted), raw, false)
             }
             Err((_, raw)) => {
-                // Parse failure: treat as all-absent output — FN for every expected-true field.
-                let score = score_case(&case.expected, &QueryIntent::default(), &HashSet::new());
+                let score = do_score(&case.expected, &QueryIntent::default(), &HashSet::new());
                 (score, None, raw, true)
             }
         };
@@ -490,11 +511,17 @@ fn run_ensemble(
 fn classify_case(
     adapter: &dyn ModelAdapter,
     case: &IntentBenchCase,
+    augmentation_prompt: bool,
 ) -> Result<(QueryIntent, HashSet<String>, String), (anyhow::Error, String)> {
+    let (system, user) = if augmentation_prompt {
+        (QueryIntent::augmentation_system_prompt().to_string(), QueryIntent::augmentation_user_prompt(case.query))
+    } else {
+        (QueryIntent::classifier_system_prompt().to_string(), QueryIntent::classifier_user_prompt(case.query))
+    };
     let response = adapter
         .complete(CompletionRequest {
-            system: QueryIntent::classifier_system_prompt().to_string(),
-            user: QueryIntent::classifier_user_prompt(case.query),
+            system,
+            user,
             workspace_fragments: Vec::new(),
             workspace_guidance: Vec::new(),
         })

@@ -297,6 +297,15 @@ pub fn score_case(
     }
 }
 
+/// Fields that drive context workspace loading decisions (augmentation signals).
+pub const AUGMENTATION_FIELDS: &[&str] = &[
+    "is_inventory_request",
+    "is_results_request",
+    "is_status_request",
+    "is_next_step_request",
+    "wants_latest_run_only",
+];
+
 pub const KNOWN_FIELDS: &[&str] = &[
     "is_inventory_request",
     "is_results_request",
@@ -312,6 +321,52 @@ pub const KNOWN_FIELDS: &[&str] = &[
     "needs_grounded_evidence_only",
     "abstain",
 ];
+
+/// Score only the 5 augmentation fields. Used when benchmarking with the
+/// simplified augmentation prompt, where guidance fields are not classified.
+pub fn score_augmentation_case(
+    expected: &QueryIntent,
+    predicted: &QueryIntent,
+    emitted_keys: &HashSet<String>,
+) -> IntentCaseScore {
+    let classify = |name: &str, exp: bool, pred: bool| -> FieldOutcome {
+        let effective = if emitted_keys.contains(name) { pred } else { false };
+        match (exp, effective) {
+            (true, true) => FieldOutcome::TP,
+            (false, true) => FieldOutcome::FP,
+            (false, false) => FieldOutcome::TN,
+            (true, false) => FieldOutcome::FN,
+        }
+    };
+
+    let mut fields = BTreeMap::new();
+    fields.insert("is_inventory_request", classify("is_inventory_request", expected.is_inventory_request, predicted.is_inventory_request));
+    fields.insert("is_results_request", classify("is_results_request", expected.is_results_request, predicted.is_results_request));
+    fields.insert("is_status_request", classify("is_status_request", expected.is_status_request, predicted.is_status_request));
+    fields.insert("is_next_step_request", classify("is_next_step_request", expected.is_next_step_request, predicted.is_next_step_request));
+    fields.insert("wants_latest_run_only", classify("wants_latest_run_only", expected.wants_latest_run_only, predicted.wants_latest_run_only));
+
+    let tp = fields.values().filter(|o| **o == FieldOutcome::TP).count();
+    let fp = fields.values().filter(|o| **o == FieldOutcome::FP).count();
+    let tn = fields.values().filter(|o| **o == FieldOutcome::TN).count();
+    let fn_count = fields.values().filter(|o| **o == FieldOutcome::FN).count();
+
+    IntentCaseScore {
+        exact_match: fp == 0 && fn_count == 0,
+        tp,
+        fp,
+        tn,
+        fn_count,
+        fields,
+    }
+}
+
+pub fn empty_augmentation_field_scores() -> BTreeMap<&'static str, IntentFieldScore> {
+    AUGMENTATION_FIELDS
+        .iter()
+        .map(|name| (*name, IntentFieldScore::default()))
+        .collect()
+}
 
 pub fn empty_field_scores() -> BTreeMap<&'static str, IntentFieldScore> {
     KNOWN_FIELDS

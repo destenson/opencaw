@@ -379,6 +379,32 @@ pub struct ModelCapabilities {
     pub supports_visible_reasoning: bool,
 }
 
+/// Signals that drive what to proactively load into the context workspace.
+/// This is the actionable output of intent classification — the orchestrator
+/// uses these to decide what to fetch before invoking the answer model.
+/// Guidance-only signals (how to phrase the answer) live separately in QueryIntent.
+#[derive(Debug, Clone, Default)]
+pub struct AugmentationSignals {
+    pub is_inventory_request: bool,
+    pub is_results_request: bool,
+    pub is_status_request: bool,
+    pub is_next_step_request: bool,
+    pub wants_latest_run_only: bool,
+    /// Model-defined augmentation hints from extra fields (e.g. "needs_git_status").
+    pub extra_hints: Vec<String>,
+}
+
+impl AugmentationSignals {
+    pub fn is_empty(&self) -> bool {
+        !self.is_inventory_request
+            && !self.is_results_request
+            && !self.is_status_request
+            && !self.is_next_step_request
+            && !self.wants_latest_run_only
+            && self.extra_hints.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct QueryIntent {
@@ -403,6 +429,50 @@ pub struct QueryIntent {
 }
 
 impl QueryIntent {
+    /// Extract the context workspace augmentation signals. These drive what to
+    /// proactively load before answering — independent of how the answer is phrased.
+    pub fn augmentation_signals(&self) -> AugmentationSignals {
+        AugmentationSignals {
+            is_inventory_request: self.is_inventory_request,
+            is_results_request: self.is_results_request,
+            is_status_request: self.is_status_request,
+            is_next_step_request: self.is_next_step_request,
+            wants_latest_run_only: self.wants_latest_run_only,
+            extra_hints: self
+                .extra
+                .iter()
+                .filter_map(|(k, v)| {
+                    matches!(v, serde_json::Value::Bool(true)).then(|| k.clone())
+                })
+                .collect(),
+        }
+    }
+
+    /// Simplified system prompt that only asks for context augmentation signals.
+    /// 5 fields instead of 13 — better suited for small models because the task
+    /// maps directly to "what should I fetch" rather than mixing retrieval signals
+    /// with answer-formatting hints.
+    pub fn augmentation_system_prompt() -> &'static str {
+        concat!(
+            "You are a context-augmentation classifier. ",
+            "Given a user query, identify what types of information should be loaded into the context workspace before answering. ",
+            "Return exactly one JSON object — no prose, no markdown fences, no explanation.\n\n",
+            "- is_inventory_request: the query asks WHAT EXISTS — artifacts, files, or a list of runs. Example: 'what benchmarks have been run?'\n",
+            "- is_results_request: the query asks for METRIC VALUES or data from something that ran — numbers, scores, timings. Example: 'what throughput numbers were reported?'\n",
+            "- is_status_request: the query asks about PROGRESS or COMPLETION STATE — what is done, pending, or in-flight. Example: 'is benchmarking finished?'\n",
+            "- is_next_step_request: the query asks what to DO NEXT. Example: 'what should I work on?'\n",
+            "- wants_latest_run_only: the query is scoped to the most recent run or timestamp.\n\n",
+            "Schema: {\"is_inventory_request\":bool,\"is_results_request\":bool,\"is_status_request\":bool,\"is_next_step_request\":bool,\"wants_latest_run_only\":bool}"
+        )
+    }
+
+    pub fn augmentation_user_prompt(query: &str) -> String {
+        format!("Classify the user's query for context augmentation.\n\nUser query:\n{query}\n")
+    }
+
+    /// Full 13-field system prompt covering both augmentation and guidance signals.
+    /// Used for benchmarking alignment/conformity. Production use should prefer
+    /// augmentation_system_prompt() for small models.
     pub fn classifier_system_prompt() -> &'static str {
         concat!(
             "You are a query-intent classifier for retrieval planning. ",

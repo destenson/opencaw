@@ -468,8 +468,8 @@ fn build_intent_adapter(adapter_name: &str, model: &str) -> Result<Box<dyn Model
 
 fn classify_query_intent(adapter: &dyn ModelAdapter, query: &str) -> Result<QueryIntent> {
     let response = adapter.complete(CompletionRequest {
-        system: QueryIntent::classifier_system_prompt().to_string(),
-        user: QueryIntent::classifier_user_prompt(query),
+        system: QueryIntent::augmentation_system_prompt().to_string(),
+        user: QueryIntent::augmentation_user_prompt(query),
         workspace_fragments: Vec::new(),
         workspace_guidance: Vec::new(),
     })?;
