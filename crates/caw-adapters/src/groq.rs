@@ -120,14 +120,22 @@ impl ModelAdapter for GroqAdapter {
         };
 
         let response = self.runtime.block_on(async {
-            self.client
+            let http_resp = self.client
                 .post("https://api.groq.com/openai/v1/chat/completions")
                 .header("Authorization", format!("Bearer {}", self.api_key))
                 .header("Content-Type", "application/json")
                 .json(&groq_req)
                 .send()
                 .await
-                .map_err(|e| CawError::Adapter(format!("Request failed: {}", e)))?
+                .map_err(|e| CawError::Adapter(format!("Request failed: {}", e)))?;
+
+            if !http_resp.status().is_success() {
+                let status = http_resp.status();
+                let body = http_resp.text().await.unwrap_or_default();
+                return Err(CawError::Adapter(format!("Groq API error {status}: {body}")));
+            }
+
+            http_resp
                 .json::<GroqResponse>()
                 .await
                 .map_err(|e| CawError::Adapter(format!("Failed to parse response: {}", e)))

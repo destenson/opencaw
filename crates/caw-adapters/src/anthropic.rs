@@ -111,7 +111,7 @@ impl ModelAdapter for AnthropicAdapter {
         };
 
         let response = self.runtime.block_on(async {
-            self.client
+            let http_resp = self.client
                 .post("https://api.anthropic.com/v1/messages")
                 .header("x-api-key", &self.api_key)
                 .header("anthropic-version", "2023-06-01")
@@ -119,7 +119,15 @@ impl ModelAdapter for AnthropicAdapter {
                 .json(&anthropic_req)
                 .send()
                 .await
-                .map_err(|e| CawError::Adapter(format!("Request failed: {}", e)))?
+                .map_err(|e| CawError::Adapter(format!("Request failed: {}", e)))?;
+
+            if !http_resp.status().is_success() {
+                let status = http_resp.status();
+                let body = http_resp.text().await.unwrap_or_default();
+                return Err(CawError::Adapter(format!("Anthropic API error {status}: {body}")));
+            }
+
+            http_resp
                 .json::<AnthropicResponse>()
                 .await
                 .map_err(|e| CawError::Adapter(format!("Failed to parse response: {}", e)))
