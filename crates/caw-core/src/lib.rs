@@ -384,11 +384,13 @@ pub struct ModelCapabilities {
 pub struct QueryIntent {
     pub is_inventory_request: bool,
     pub is_results_request: bool,
+    pub is_status_request: bool,
     pub wants_exact_names_or_paths: bool,
     pub wants_numeric_values: bool,
     pub wants_latest_run_only: bool,
     pub wants_comparison: bool,
     pub wants_explanation: bool,
+    pub wants_completion_state: bool,
     pub needs_grounded_evidence_only: bool,
     pub abstain: bool,
     pub confidence: f32,
@@ -400,10 +402,10 @@ impl QueryIntent {
             "You are a query-intent classifier for context planning. ",
             "Return exactly one JSON object and no surrounding prose or markdown. ",
             "Use this schema with booleans plus a confidence float in [0,1]: ",
-            "{\"is_inventory_request\":bool,\"is_results_request\":bool,",
+            "{\"is_inventory_request\":bool,\"is_results_request\":bool,\"is_status_request\":bool,",
             "\"wants_exact_names_or_paths\":bool,\"wants_numeric_values\":bool,",
             "\"wants_latest_run_only\":bool,\"wants_comparison\":bool,",
-            "\"wants_explanation\":bool,\"needs_grounded_evidence_only\":bool,",
+            "\"wants_explanation\":bool,\"wants_completion_state\":bool,\"needs_grounded_evidence_only\":bool,",
             "\"abstain\":bool,\"confidence\":number}. ",
             "Mark abstain=true when the query is ambiguous or you are not confident enough to route retrieval."
         )
@@ -443,6 +445,11 @@ impl QueryIntent {
                 "For result-oriented questions, report only metrics and values explicitly present in recalled evidence.".to_string(),
             );
         }
+        if self.is_status_request {
+            lines.push(
+                "For status questions, distinguish clearly between completed, pending, and unknown work based on recalled evidence.".to_string(),
+            );
+        }
         if self.wants_exact_names_or_paths {
             lines.push(
                 "Prefer precise artifact names, file names, and paths over paraphrases.".to_string(),
@@ -468,9 +475,14 @@ impl QueryIntent {
                 "Separate direct evidence from inference when explaining causes or tradeoffs.".to_string(),
             );
         }
+        if self.wants_completion_state {
+            lines.push(
+                "State explicitly whether each relevant task or artifact is completed, still pending, or not evidenced; if completion cannot be determined, say what evidence is needed to decide it.".to_string(),
+            );
+        }
         if self.needs_grounded_evidence_only {
             lines.push(
-                "If recalled context lacks direct evidence, say which artifact or file is still needed instead of guessing.".to_string(),
+                "If recalled context lacks direct evidence, do not guess; state what evidence, artifact, or file is needed to fulfill the request.".to_string(),
             );
         }
         lines
@@ -1046,6 +1058,7 @@ mod tests {
             workspace_guidance: QueryIntent {
                 is_results_request: true,
                 wants_numeric_values: true,
+                needs_grounded_evidence_only: true,
                 confidence: 0.9,
                 ..Default::default()
             }
@@ -1055,6 +1068,29 @@ mod tests {
         let formatted = request.format_workspace(ProvenanceFormat::Bracketed);
         assert!(formatted.contains("report only metrics and values explicitly present"));
         assert!(formatted.contains("Prefer exact numeric values and units"));
+        assert!(formatted.contains("state what evidence, artifact, or file is needed to fulfill the request"));
+    }
+
+    #[test]
+    fn query_intent_status_guidance_is_added_to_workspace() {
+        let request = CompletionRequest {
+            system: String::new(),
+            user: "is benchmarking all completed?".to_string(),
+            workspace_fragments: vec![sample_fragment("TODO.md", "full", "- benchmark harness: done")],
+            workspace_guidance: QueryIntent {
+                is_status_request: true,
+                wants_completion_state: true,
+                needs_grounded_evidence_only: true,
+                confidence: 0.93,
+                ..Default::default()
+            }
+            .guidance_lines(),
+        };
+
+        let formatted = request.format_workspace(ProvenanceFormat::Bracketed);
+        assert!(formatted.contains("For status questions, distinguish clearly between completed, pending, and unknown work"));
+        assert!(formatted.contains("State explicitly whether each relevant task or artifact is completed"));
+        assert!(formatted.contains("say what evidence is needed to decide it"));
     }
 }
 

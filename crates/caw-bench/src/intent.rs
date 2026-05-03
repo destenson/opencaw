@@ -91,6 +91,44 @@ pub fn default_cases() -> Vec<IntentBenchCase> {
             },
         },
         IntentBenchCase {
+            id: "benchmarking_completed",
+            query: "is benchmarking all completed?",
+            tags: &["status", "completion", "grounded"],
+            expected: QueryIntent {
+                is_status_request: true,
+                wants_completion_state: true,
+                needs_grounded_evidence_only: true,
+                confidence: 1.0,
+                ..Default::default()
+            },
+        },
+        IntentBenchCase {
+            id: "benchmarking_pending",
+            query: "what benchmarking work is still pending?",
+            tags: &["status", "completion", "inventory", "grounded"],
+            expected: QueryIntent {
+                is_inventory_request: true,
+                is_status_request: true,
+                wants_completion_state: true,
+                needs_grounded_evidence_only: true,
+                confidence: 1.0,
+                ..Default::default()
+            },
+        },
+        IntentBenchCase {
+            id: "benchmarking_done_list",
+            query: "which benchmarking tasks are done already?",
+            tags: &["status", "completion", "inventory", "grounded"],
+            expected: QueryIntent {
+                is_inventory_request: true,
+                is_status_request: true,
+                wants_completion_state: true,
+                needs_grounded_evidence_only: true,
+                confidence: 1.0,
+                ..Default::default()
+            },
+        },
+        IntentBenchCase {
             id: "summarize_runs",
             query: "summarize the benchmark runs we have so far",
             tags: &["inventory", "results"],
@@ -142,6 +180,10 @@ pub fn score_case(expected: &QueryIntent, predicted: &QueryIntent) -> IntentCase
         expected.is_results_request == predicted.is_results_request,
     );
     fields.insert(
+        "is_status_request",
+        expected.is_status_request == predicted.is_status_request,
+    );
+    fields.insert(
         "wants_exact_names_or_paths",
         expected.wants_exact_names_or_paths == predicted.wants_exact_names_or_paths,
     );
@@ -160,6 +202,10 @@ pub fn score_case(expected: &QueryIntent, predicted: &QueryIntent) -> IntentCase
     fields.insert(
         "wants_explanation",
         expected.wants_explanation == predicted.wants_explanation,
+    );
+    fields.insert(
+        "wants_completion_state",
+        expected.wants_completion_state == predicted.wants_completion_state,
     );
     fields.insert(
         "needs_grounded_evidence_only",
@@ -182,11 +228,13 @@ pub fn empty_field_scores() -> BTreeMap<&'static str, IntentFieldScore> {
     [
         "is_inventory_request",
         "is_results_request",
+        "is_status_request",
         "wants_exact_names_or_paths",
         "wants_numeric_values",
         "wants_latest_run_only",
         "wants_comparison",
         "wants_explanation",
+        "wants_completion_state",
         "needs_grounded_evidence_only",
         "abstain",
     ]
