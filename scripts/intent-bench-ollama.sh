@@ -90,8 +90,8 @@ if [[ "$#" -gt 0 ]]; then
 else
     while IFS= read -r model; do
         [[ -n "${model}" ]] || continue
-        # if model contains 'prompter', ignore it
-        [[ "${model}" == *prompter* ]] && continue
+        # if model contains 'prompter' 'aseio', 'moondream', or 'tinyllama', ignore it
+        [[ "${model}" == *prompter* ]] || [[ "${model}" == *aseio* ]] || [[ "${model}" == *moondream* ]] || [[ "${model}" == *tinyllama* ]] && continue
 
         if model_supports_completion "${model}"; then
             models+=("${model}")
