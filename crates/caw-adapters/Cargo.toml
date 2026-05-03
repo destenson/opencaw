@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+cli = ["dep:clap"]
+
 [dependencies]
 caw-core = { workspace = true }
 reqwest = { version = "0.13", features = ["json", "stream"] }
@@ -13,6 +16,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+anyhow.workspace = true
+clap = { version = "4", features = ["derive"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"

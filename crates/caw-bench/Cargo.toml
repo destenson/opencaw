@@ -37,7 +37,7 @@ tokio = { workspace = true }
 toml = "0.8"
 sha2 = "0.11"
 caw-core = { path = "../caw-core" }
-caw-adapters = { path = "../caw-adapters" }
+caw-adapters = { path = "../caw-adapters", features = ["cli"] }
 caw-ingest = { path = "../caw-ingest" }
 caw-index = { path = "../caw-index", features = ["candle", "onnx"] }
 caw-orchestrator = { path = "../caw-orchestrator" }

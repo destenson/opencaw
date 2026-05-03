@@ -3,6 +3,7 @@ use caw_core::{
     ProvenanceFormat,
 };
 
+pub mod adapter_factory;
 mod anthropic;
 mod claude_code;
 mod groq;

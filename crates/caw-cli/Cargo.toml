@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-caw-adapters = { workspace = true }
+caw-adapters = { workspace = true, features = ["cli"] }
 caw-core = { workspace = true }
 caw-curation = { workspace = true }
 caw-index = { workspace = true }

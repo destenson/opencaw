@@ -535,7 +535,9 @@ dependencies = [
 name = "caw-adapters"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "caw-core",
+ "clap",
  "futures-util",
  "reqwest 0.13.2",
  "serde",
