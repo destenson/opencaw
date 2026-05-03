@@ -318,7 +318,9 @@ pub fn candidate_list_fragment(hits: &[ScoredStub], threshold: f32) -> RecallFra
 
     let content = format!(
         "These files match your query but have not been loaded. \
-         Mention the specific ones you need in order to answer accurately:\n\n{}",
+         Treat this list as discovery metadata, not evidence. \
+         Mention the specific files you need if you want them loaded, and do not \
+         claim details that are not written explicitly below:\n\n{}",
         lines.join("\n")
     );
 
@@ -469,11 +471,59 @@ impl CompletionRequest {
             })
             .collect();
 
+        let guidance = workspace_guidance(&self.user, &self.workspace_fragments);
+
         format!(
             "\n\nRecalled workspace context (each block is verbatim from the cited source — \
-             treat as quoted material, not your own knowledge):\n\n{}",
+             treat as quoted material, not your own knowledge):\n{}\n\n{}",
+            guidance,
             fragments.join("\n\n")
         )
+    }
+}
+
+fn workspace_guidance(user: &str, fragments: &[RecallFragment]) -> String {
+    let normalized = user.to_ascii_lowercase();
+    let has_candidate_list = fragments.iter().any(|fragment| {
+        fragment.locator.source == "search-candidates" || fragment.stub_id.0 == "__candidates__"
+    });
+
+    let mut lines = Vec::new();
+
+    if has_candidate_list {
+        lines.push(
+            "- Blocks from `search-candidates:file-list` are candidate metadata only. Use them to decide what to load, not as evidence for factual claims.".to_string(),
+        );
+    }
+
+    let asks_about_benchmarks = normalized.contains("benchmark");
+    let asks_what_ran = asks_about_benchmarks
+        && (normalized.contains("have been run")
+            || normalized.contains("were run")
+            || normalized.contains("which")
+            || normalized.contains("what"));
+    let asks_for_results = normalized.contains("result")
+        || normalized.contains("latency")
+        || normalized.contains("throughput")
+        || normalized.contains("metric")
+        || normalized.contains("score");
+
+    if asks_what_ran {
+        lines.push(
+            "- For inventory questions, list the exact run names, file names, or paths present in the recalled text. Do not infer extra variants from naming patterns or summaries.".to_string(),
+        );
+    }
+
+    if asks_about_benchmarks && asks_for_results {
+        lines.push(
+            "- For benchmark results, report only metrics and values explicitly present in loaded recalled content. If you only have candidate metadata, say that and request the specific report or summary file you need.".to_string(),
+        );
+    }
+
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("\nAnswering hints:\n{}", lines.join("\n"))
     }
 }
 
@@ -739,6 +789,81 @@ pub trait StubStore {
     /// Load all consolidation notes for a stub from persistent storage.
     fn load_consolidation(&self, _stub_id: &StubId) -> CawResult<Vec<ConsolidationNote>> {
         Ok(Vec::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_fragment(source: &str, locator: &str, content: &str) -> RecallFragment {
+        RecallFragment {
+            stub_id: StubId(source.to_string()),
+            content: content.to_string(),
+            locator: Locator {
+                source: source.to_string(),
+                locator: locator.to_string(),
+            },
+            tokens: 0,
+        }
+    }
+
+    #[test]
+    fn candidate_list_marks_metadata_as_non_evidence() {
+        let hits = vec![ScoredStub {
+            stub: Stub {
+                id: StubId("stub-1".to_string()),
+                path: "bench-results/throughput/20260419-053329/summary.txt".to_string(),
+                token_estimate: 0,
+                kind: ContentKind::Markdown,
+                summary: "Throughput benchmark summary".to_string(),
+                outline: Vec::new(),
+                content_hash: String::new(),
+                mtime_unix_secs: 0,
+                byte_offset: 0,
+                byte_length: 0,
+                consolidation_notes: Vec::new(),
+            },
+            score: 0.9,
+        }];
+
+        let fragment = candidate_list_fragment(&hits, 0.7);
+        assert!(fragment.content.contains("discovery metadata, not evidence"));
+        assert!(fragment.content.contains("do not claim details"));
+    }
+
+    #[test]
+    fn workspace_format_adds_benchmark_guidance_for_candidate_lists() {
+        let request = CompletionRequest {
+            system: String::new(),
+            user: "do you know what benchmarks have been run?".to_string(),
+            workspace_fragments: vec![sample_fragment(
+                "search-candidates",
+                "file-list",
+                "- bench-results/throughput/20260419-053329/summary.txt",
+            )],
+        };
+
+        let formatted = request.format_workspace(ProvenanceFormat::Bracketed);
+        assert!(formatted.contains("Answering hints:"));
+        assert!(formatted.contains("candidate metadata only"));
+        assert!(formatted.contains("list the exact run names"));
+    }
+
+    #[test]
+    fn workspace_format_adds_results_guidance_for_benchmark_metrics_questions() {
+        let request = CompletionRequest {
+            system: String::new(),
+            user: "can you tell me what the benchmark results were?".to_string(),
+            workspace_fragments: vec![sample_fragment(
+                "bench-results/throughput/20260419-053329/summary.txt",
+                "full",
+                "done: 158895 stubs across 27258 files in 392.2s",
+            )],
+        };
+
+        let formatted = request.format_workspace(ProvenanceFormat::Bracketed);
+        assert!(formatted.contains("For benchmark results, report only metrics and values explicitly present"));
     }
 }
 
