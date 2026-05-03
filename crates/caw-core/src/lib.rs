@@ -444,6 +444,16 @@ impl CompletionRequest {
     /// Each fragment is wrapped with source attribution so the model treats
     /// recalled content as quoted material, not its own knowledge.
     pub fn format_workspace(&self, format: ProvenanceFormat) -> String {
+        self.format_workspace_with_guidance(format, &[])
+    }
+
+    /// Format workspace fragments with optional extra guidance supplied by an
+    /// upstream intent classifier or caller-owned policy.
+    pub fn format_workspace_with_guidance(
+        &self,
+        format: ProvenanceFormat,
+        extra_guidance: &[&str],
+    ) -> String {
         if self.workspace_fragments.is_empty() {
             return String::new();
         }
@@ -471,7 +481,7 @@ impl CompletionRequest {
             })
             .collect();
 
-        let guidance = workspace_guidance(&self.user, &self.workspace_fragments);
+        let guidance = workspace_guidance(&self.workspace_fragments, extra_guidance);
 
         format!(
             "\n\nRecalled workspace context (each block is verbatim from the cited source — \
@@ -482,8 +492,7 @@ impl CompletionRequest {
     }
 }
 
-fn workspace_guidance(user: &str, fragments: &[RecallFragment]) -> String {
-    let normalized = user.to_ascii_lowercase();
+fn workspace_guidance(fragments: &[RecallFragment], extra_guidance: &[&str]) -> String {
     let has_candidate_list = fragments.iter().any(|fragment| {
         fragment.locator.source == "search-candidates" || fragment.stub_id.0 == "__candidates__"
     });
@@ -496,28 +505,11 @@ fn workspace_guidance(user: &str, fragments: &[RecallFragment]) -> String {
         );
     }
 
-    let asks_about_benchmarks = normalized.contains("benchmark");
-    let asks_what_ran = asks_about_benchmarks
-        && (normalized.contains("have been run")
-            || normalized.contains("were run")
-            || normalized.contains("which")
-            || normalized.contains("what"));
-    let asks_for_results = normalized.contains("result")
-        || normalized.contains("latency")
-        || normalized.contains("throughput")
-        || normalized.contains("metric")
-        || normalized.contains("score");
-
-    if asks_what_ran {
-        lines.push(
-            "- For inventory questions, list the exact run names, file names, or paths present in the recalled text. Do not infer extra variants from naming patterns or summaries.".to_string(),
-        );
-    }
-
-    if asks_about_benchmarks && asks_for_results {
-        lines.push(
-            "- For benchmark results, report only metrics and values explicitly present in loaded recalled content. If you only have candidate metadata, say that and request the specific report or summary file you need.".to_string(),
-        );
+    for guidance in extra_guidance {
+        let trimmed = guidance.trim();
+        if !trimmed.is_empty() {
+            lines.push(format!("- {trimmed}"));
+        }
     }
 
     if lines.is_empty() {
@@ -833,7 +825,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_format_adds_benchmark_guidance_for_candidate_lists() {
+    fn workspace_format_marks_candidate_lists_as_metadata() {
         let request = CompletionRequest {
             system: String::new(),
             user: "do you know what benchmarks have been run?".to_string(),
@@ -847,11 +839,10 @@ mod tests {
         let formatted = request.format_workspace(ProvenanceFormat::Bracketed);
         assert!(formatted.contains("Answering hints:"));
         assert!(formatted.contains("candidate metadata only"));
-        assert!(formatted.contains("list the exact run names"));
     }
 
     #[test]
-    fn workspace_format_adds_results_guidance_for_benchmark_metrics_questions() {
+    fn workspace_format_includes_explicit_extra_guidance() {
         let request = CompletionRequest {
             system: String::new(),
             user: "can you tell me what the benchmark results were?".to_string(),
@@ -862,8 +853,15 @@ mod tests {
             )],
         };
 
-        let formatted = request.format_workspace(ProvenanceFormat::Bracketed);
-        assert!(formatted.contains("For benchmark results, report only metrics and values explicitly present"));
+        let formatted = request.format_workspace_with_guidance(
+            ProvenanceFormat::Bracketed,
+            &[
+                "For inventory questions, list exact run names or paths present in recalled text.",
+                "For result questions, report only values explicitly present in loaded evidence.",
+            ],
+        );
+        assert!(formatted.contains("list exact run names or paths present in recalled text"));
+        assert!(formatted.contains("report only values explicitly present in loaded evidence"));
     }
 }
 
