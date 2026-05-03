@@ -124,7 +124,7 @@ fn main() -> Result<()> {
     }
 
     if cli.ensemble > 0 && summaries.len() > 1 {
-        summaries.push(run_ensemble(&summaries, &cases, cli.ensemble));
+        summaries.push(run_ensemble(&summaries, &cases, cli.ensemble, cli.augmentation_prompt));
     }
 
     let report = IntentBenchReport {
@@ -406,6 +406,7 @@ fn run_ensemble(
     summaries: &[CandidateSummary],
     cases: &[IntentBenchCase],
     size: usize,
+    augmentation_prompt: bool
 ) -> CandidateSummary {
     use caw_core::QueryIntent;
 
@@ -421,7 +422,8 @@ fn run_ensemble(
 
     // All known fields are considered "emitted" in the ensemble result because
     // majority_vote produces an explicit true/false for each field.
-    let all_fields: HashSet<String> = KNOWN_FIELDS.iter().map(|s| s.to_string()).collect();
+    let all_fields: HashSet<String> = if augmentation_prompt { KNOWN_FIELDS.iter().map(|s| s.to_string()).collect() }
+    else { AUGMENTATION_FIELDS.iter().map(|s| s.to_string()).collect() };
 
     let mut exact_matches = 0usize;
     let mut field_scores = empty_field_scores();
