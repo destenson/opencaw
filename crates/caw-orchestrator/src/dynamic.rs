@@ -2,13 +2,13 @@ use crate::consolidation::{ConsolidationSynthesizer, MechanicalConsolidation};
 use crate::degradation::DegradationMonitor;
 use crate::session::{self, SessionFile};
 use caw_core::{
-    count_tokens_cl100k, CawError, CawResult, CompletionRequest, CompletionResponse,
-    ConsolidationNote, ConsolidationSource, EmbeddingProvider, Locator, ModelAdapter,
-    ProvenanceStore, Range, RecallFragment, RecallThresholds, Retriever, ScoredStub, StubId,
-    StubStore, VectorIndex, candidate_list_fragment, tokenize_terms,
+    CawError, CawResult, CompletionRequest, CompletionResponse, ConsolidationNote,
+    ConsolidationSource, EmbeddingProvider, Locator, ModelAdapter, ProvenanceStore, Range,
+    RecallFragment, RecallThresholds, Retriever, ScoredStub, StubId, StubStore, VectorIndex,
+    candidate_list_fragment, count_tokens_cl100k, tokenize_terms,
 };
 use caw_eval::SessionEvaluator;
-use caw_ingest::{IngestionPipeline, DocumentIdSet};
+use caw_ingest::{DocumentIdSet, IngestionPipeline};
 use caw_transform::{extract_annotations, extract_probes, extract_thinking_steps, strip_markers};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -179,12 +179,17 @@ where
     /// Previous runs' session files in the same directory are ingested
     /// read-only at startup so prior exchanges are immediately retrievable.
     pub fn with_session(mut self, session_dir: &Path) -> CawResult<Self> {
-        std::fs::create_dir_all(session_dir)
-            .map_err(|e| caw_core::CawError::Io(e.to_string()))?;
+        std::fs::create_dir_all(session_dir).map_err(|e| caw_core::CawError::Io(e.to_string()))?;
         let pipeline = IngestionPipeline::new();
         let file_name = format!("session-{}.md", session::timestamp_str());
         let file_path = session_dir.join(file_name);
-        let loaded = SessionFile::load_previous(session_dir, &file_path, &pipeline, &mut self.retriever, &DocumentIdSet::new())?;
+        let loaded = SessionFile::load_previous(
+            session_dir,
+            &file_path,
+            &pipeline,
+            &mut self.retriever,
+            &DocumentIdSet::new(),
+        )?;
         debug!(dir = %session_dir.display(), stubs = loaded, "loaded prior session history");
         self.session = Some(SessionFile::create(file_path)?);
         Ok(self)
@@ -250,7 +255,12 @@ where
     ///
     /// `guidance` is appended to every completion request as `workspace_guidance`
     /// (used by the intent classifier in the CLI to inject query-specific hints).
-    pub fn run_turn(&mut self, system: &str, user: &str, guidance: &[String]) -> CawResult<CompletionResponse> {
+    pub fn run_turn(
+        &mut self,
+        system: &str,
+        user: &str,
+        guidance: &[String],
+    ) -> CawResult<CompletionResponse> {
         let caps = self.adapter.capabilities();
         debug!(
             model = %self.adapter.model_name(),
@@ -389,7 +399,10 @@ where
                 .map(|h| (h.stub.id.clone(), h.score))
                 .collect();
             if !mentioned.is_empty() {
-                debug!(count = mentioned.len(), "loading files mentioned in response to candidate list");
+                debug!(
+                    count = mentioned.len(),
+                    "loading files mentioned in response to candidate list"
+                );
                 self.load_fragments(mentioned)?;
                 last_response = self.adapter.complete(CompletionRequest {
                     system: system_prompt.clone(),
@@ -403,7 +416,11 @@ where
         // Phase 2: Iterative recall refinement
         for i in 0..self.config.max_recall_iterations {
             let loaded_before = self.loaded.len();
-            debug!(iteration = i + 1, loaded = loaded_before, "refinement iteration start");
+            debug!(
+                iteration = i + 1,
+                loaded = loaded_before,
+                "refinement iteration start"
+            );
 
             self.decay_relevance_scores();
             self.refresh_relevance_scores(user, &last_response.answer);
@@ -423,7 +440,10 @@ where
             self.evict_stale_fragments(user);
 
             if self.loaded.len() == loaded_before {
-                debug!(iterations = i + 1, "refinement converged — no new admissions");
+                debug!(
+                    iterations = i + 1,
+                    "refinement converged — no new admissions"
+                );
                 break;
             }
 
@@ -504,7 +524,9 @@ where
 
             let embeddings = embed_result?;
             if let Some(embedding) = embeddings.first() {
-                let hits = self.vector_index.search(embedding, self.config.max_candidates);
+                let hits = self
+                    .vector_index
+                    .search(embedding, self.config.max_candidates);
                 self.load_fragments(hits)?;
             }
         }
@@ -526,7 +548,9 @@ where
             }
 
             let loaded_before = self.loaded.len();
-            let hits = self.retriever.search(&probe.content, self.config.max_candidates)?;
+            let hits = self
+                .retriever
+                .search(&probe.content, self.config.max_candidates)?;
             self.load_fragments(
                 hits.into_iter()
                     .map(|hit| (hit.stub.id, hit.score))
@@ -688,13 +712,21 @@ where
             }
 
             if score < self.config.thresholds.load {
-                trace!(score, threshold = self.config.thresholds.load, "candidate below threshold — skipped");
+                trace!(
+                    score,
+                    threshold = self.config.thresholds.load,
+                    "candidate below threshold — skipped"
+                );
                 continue;
             }
 
             let current_tokens: usize = self.loaded.iter().map(|f| f.tokens).sum();
             if current_tokens >= self.config.max_workspace_tokens {
-                debug!(current_tokens, max = self.config.max_workspace_tokens, "workspace budget full — stopping");
+                debug!(
+                    current_tokens,
+                    max = self.config.max_workspace_tokens,
+                    "workspace budget full — stopping"
+                );
                 break;
             }
 
@@ -712,7 +744,28 @@ where
                     }
                 }
                 None => match self.retriever.read_range(&stub_id, "full") {
-                    Ok(f) => f,
+                    Ok(mut f) => {
+                        // If there are persisted consolidation notes for this stub
+                        // (written on prior evictions), prepend them so the model
+                        // can see what was previously learned — not just the raw content.
+                        if let Some(store) = &self.store {
+                            if let Ok(notes) = store.load_consolidation(&stub_id) {
+                                if !notes.is_empty() {
+                                    let notes_block = notes
+                                        .iter()
+                                        .map(|n| format!("- {}", n.content))
+                                        .collect::<Vec<_>>()
+                                        .join("\n");
+                                    f.content = format!(
+                                        "[Prior session notes for this source:\n{}\n]\n\n{}",
+                                        notes_block, f.content
+                                    );
+                                    f.tokens = count_tokens_cl100k(&f.content);
+                                }
+                            }
+                        }
+                        f
+                    }
                     // The source file changed since the index was built. Skip this
                     // candidate — treating it as a miss is correct and matches the
                     // documented intent of StaleStub.
