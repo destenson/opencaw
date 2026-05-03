@@ -124,22 +124,11 @@ where
         let hits = self.index.search(&query_embedding, top_k);
 
         let mut results = Vec::new();
-        let hit_count = hits.len();
         for (stub_id, score) in hits {
             match self.store.get_stub(&stub_id) {
                 Ok(stub) => results.push(ScoredStub { stub, score }),
-                Err(e) => {
-                    eprintln!("diag: get_stub({:?}) score={:.3} -> err: {:?}", stub_id.0, score, e);
-                    continue;
-                }
+                Err(_) => continue,
             }
-        }
-        if results.is_empty() && hit_count > 0 {
-            eprintln!("diag: {} HNSW hits, all get_stub failed → 0 search results", hit_count);
-        } else {
-            eprintln!("diag: {} HNSW hits → {} valid results (top score={:.3})",
-                hit_count, results.len(),
-                results.first().map(|r| r.score).unwrap_or(0.0));
         }
 
         Ok(results)

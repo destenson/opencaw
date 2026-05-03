@@ -520,7 +520,10 @@ impl StubStore for SqliteStubStore {
                 return Err(CawError::StaleStub { path });
             }
         };
-        if current_mtime != Some(stored_mtime) {
+        // stored_mtime == 0 means the indexer didn't record an mtime (e.g.
+        // in-memory bench corpora written to a tempdir). Skip the staleness
+        // check in that case rather than flagging every stub as stale.
+        if stored_mtime != 0 && current_mtime != Some(stored_mtime) {
             let _ = self.mark_path_stale(&path);
             if let Some(q) = &self.reindex_queue {
                 q.enqueue(&path);

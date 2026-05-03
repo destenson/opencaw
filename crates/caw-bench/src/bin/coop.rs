@@ -215,12 +215,6 @@ fn run_item_coop(
         .cooperation_metrics();
 
     let loaded_paths: Vec<String> = loaded.iter().map(|f| f.locator.source.clone()).collect();
-    eprintln!(
-        "      diag: loaded={} expected={:?} got={:?}",
-        loaded_paths.len(),
-        item.expected_paths,
-        &loaded_paths[..loaded_paths.len().min(3)],
-    );
     let recall_at_k = recall_at_k(&loaded_paths, &item.expected_paths);
 
     Ok(ItemOutcome {
