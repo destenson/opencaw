@@ -42,12 +42,15 @@ impl SessionFile {
     }
 
     /// Ingest all `.md` files in `session_dir` except `current_path` into `retriever`.
-    /// Returns the number of stubs inserted.
+    /// Files whose `(path, mtime)` appears in `already_indexed` are skipped — their stubs
+    /// are already in the store and the HNSW was built from `all_embeddings()` at startup.
+    /// Returns the number of stubs inserted (0 for already-indexed files).
     pub fn load_previous<R: Retriever>(
         session_dir: &Path,
         current_path: &Path,
         pipeline: &IngestionPipeline,
         retriever: &mut R,
+        already_indexed: &std::collections::HashSet<(String, u64)>,
     ) -> CawResult<usize> {
         let entries = match std::fs::read_dir(session_dir) {
             Ok(e) => e,
@@ -65,6 +68,19 @@ impl SessionFile {
             }
             if p == current_path {
                 continue;
+            }
+            if !already_indexed.is_empty() {
+                let path_str = p.to_string_lossy().into_owned();
+                let mtime = std::fs::metadata(&p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                if already_indexed.contains(&(path_str, mtime)) {
+                    debug!(file = %p.display(), "skipping already-indexed session file");
+                    continue;
+                }
             }
             match load_session_file(&p, pipeline, retriever) {
                 Ok(n) => {

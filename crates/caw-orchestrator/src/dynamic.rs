@@ -145,7 +145,7 @@ where
         let pipeline = IngestionPipeline::new();
         let file_name = format!("session-{}.md", session::timestamp_str());
         let file_path = session_dir.join(file_name);
-        let loaded = SessionFile::load_previous(session_dir, &file_path, &pipeline, &mut self.retriever)?;
+        let loaded = SessionFile::load_previous(session_dir, &file_path, &pipeline, &mut self.retriever, &std::collections::HashSet::new())?;
         debug!(dir = %session_dir.display(), stubs = loaded, "loaded prior session history");
         self.session = Some(SessionFile::create(file_path)?);
         Ok(self)

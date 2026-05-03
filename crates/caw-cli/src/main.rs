@@ -310,6 +310,7 @@ fn main() -> Result<()> {
         cli.max_tokens,
         cli.session_dir.as_deref(),
         cli.amnesia,
+        &already_indexed,
     )
 }
 
@@ -424,6 +425,7 @@ fn run_interactive(
     context_budget: usize,
     session_dir: Option<&std::path::Path>,
     amnesia: bool,
+    already_indexed: &std::collections::HashSet<(String, u64)>,
 ) -> Result<()> {
     use caw_transform::{extract_probes, extract_thinking_steps};
     use std::collections::{HashMap, HashSet};
@@ -443,7 +445,7 @@ fn run_interactive(
         let pipeline = caw_ingest::IngestionPipeline::new();
         let file_name = format!("session-{}.md", caw_orchestrator::session::timestamp_str());
         let current_path = sdir.join(&file_name);
-        match SessionFile::load_previous(sdir, &current_path, &pipeline, &mut retriever) {
+        match SessionFile::load_previous(sdir, &current_path, &pipeline, &mut retriever, &already_indexed) {
             Ok(n) => eprintln!("[session] loaded {n} stubs from previous sessions"),
             Err(e) => eprintln!("[session] warning: {e}"),
         }
