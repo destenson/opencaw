@@ -420,13 +420,20 @@ fn run_ensemble(
         pool.iter().map(|s| s.model.as_str()).collect::<Vec<_>>().join("+")
     );
 
-    // All known fields are considered "emitted" in the ensemble result because
+    // All scored fields are treated as "emitted" in the ensemble result because
     // majority_vote produces an explicit true/false for each field.
-    let all_fields: HashSet<String> = if augmentation_prompt { KNOWN_FIELDS.iter().map(|s| s.to_string()).collect() }
-    else { AUGMENTATION_FIELDS.iter().map(|s| s.to_string()).collect() };
+    let all_fields: HashSet<String> = if augmentation_prompt {
+        AUGMENTATION_FIELDS.iter().map(|s| s.to_string()).collect()
+    } else {
+        KNOWN_FIELDS.iter().map(|s| s.to_string()).collect()
+    };
 
     let mut exact_matches = 0usize;
-    let mut field_scores = empty_field_scores();
+    let mut field_scores = if augmentation_prompt {
+        empty_augmentation_field_scores()
+    } else {
+        empty_field_scores()
+    };
     let mut tag_hits: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     let mut case_results = Vec::new();
     let mut total_tp = 0usize;
@@ -445,7 +452,11 @@ fn run_ensemble(
             (QueryIntent::majority_vote(&votes), false)
         };
 
-        let score = score_case(&case.expected, &merged, &all_fields);
+        let score = if augmentation_prompt {
+            score_augmentation_case(&case.expected, &merged, &all_fields)
+        } else {
+            score_case(&case.expected, &merged, &all_fields)
+        };
 
         if score.exact_match {
             exact_matches += 1;
