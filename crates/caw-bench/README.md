@@ -197,3 +197,8 @@ aliases that share the same model ID, and passes the resulting set to
 - The 30 hand-authored opencaw Q&A pairs are mostly single-fact lookups.
   They exercise retrieval@k but rarely force multi-pass refinement —
   useful as a baseline, not as a stress test.
+
+## TODO
+
+- Update the qa json, since the codebase has evolved since these were written.
+- Add more multi-hop questions that require iterative retrieval + reasoning.
