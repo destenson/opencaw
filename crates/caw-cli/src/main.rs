@@ -95,7 +95,7 @@ struct Cli {
     /// merged by majority vote, filtering spurious false positives.
     #[arg(
         long,
-        default_values = ["granite4:micro", "huihui_ai/jan-nano-abliterated:latest", "llama3.2:3b"],
+        default_values = ["granite4:micro", "huihui_ai/jan-nano-abliterated:latest", "huihui_ai/deepseek-r1-abliterated:latest"],
         num_args = 1..
     )]
     intent_model: Vec<String>,
