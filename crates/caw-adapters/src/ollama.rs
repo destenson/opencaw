@@ -25,6 +25,13 @@ pub struct OllamaAdapter {
     /// Set explicitly to control VRAM usage — KV cache dominates loaded model
     /// size, so capping at 4096 can cut a 32k-default model from 8 GB to ~2 GB.
     num_ctx: Option<u32>,
+    /// Whether to signal the orchestrator that this model reliably follows the
+    /// cooperative probe/annotation protocol (emitting `<probe>` and `<note>`
+    /// markers when instructed). Defaults to false — the orchestrator degrades
+    /// to single-shot retrieval rather than injecting instructions that weaker
+    /// models will echo as literal text. Enable only for models you've verified
+    /// follow the protocol (e.g. via caw-bench-coop).
+    cooperative_probes: bool,
     /// Cached result of querying `/api/show` to check whether the model's
     /// chat template handles a `system` role message. Mistral-family models
     /// often omit `{{ .System }}` from their template; sending a system
@@ -55,6 +62,7 @@ impl OllamaAdapter {
             runtime,
             temperature: None,
             num_ctx: None,
+            cooperative_probes: false,
             system_supported: std::sync::OnceLock::new(),
         }
     }
@@ -70,6 +78,16 @@ impl OllamaAdapter {
     /// running many small models back-to-back in benchmarks.
     pub fn with_num_ctx(mut self, num_ctx: u32) -> Self {
         self.num_ctx = Some(num_ctx);
+        self
+    }
+
+    /// Enable cooperative probe/annotation mode for this model. Only set this
+    /// after verifying (e.g. via caw-bench-coop) that the model reliably emits
+    /// `<probe>` and `<note>` markers when instructed. Without this the
+    /// orchestrator uses single-shot retrieval, which avoids confusing literal
+    /// marker text in responses from models that can't follow the protocol.
+    pub fn with_cooperative_probes(mut self, enabled: bool) -> Self {
+        self.cooperative_probes = enabled;
         self
     }
 
@@ -91,6 +109,10 @@ impl OllamaAdapter {
 
     pub fn phi4_reasoning_3_8b(runtime: Arc<Runtime>) -> Self {
         Self::local("huihui_ai/phi4-reasoning-abliterated:3.8b", runtime)
+    }
+
+    pub fn granite4_micro(runtime: Arc<Runtime>) -> Self {
+        Self::local("granite4:micro", runtime)
     }
 
     /// Build the messages array, folding the system content into the first
@@ -195,17 +217,13 @@ impl ModelAdapter for OllamaAdapter {
     }
 
     fn capabilities(&self) -> ModelCapabilities {
-        // TODO: query Ollama's /api/models endpoint to get actual capabilities per model. For now we hardcode based on known behavior of popular models:
-        // hidden_reasoning is overloaded here to mean "follows
-        // marker-emission instructions in its final answer" — the gate the
-        // orchestrator uses to decide whether to inject probe/note prompts.
-        // Modern instruct models (qwen2.5, llama3.2, mistral-instruct) all
-        // qualify; without this flag the orchestrator silently degrades to
-        // single-shot retrieval. Visible reasoning still gates the
-        // <think>-block parsing path and is detected by model name.
         ModelCapabilities {
             supports_tool_calls: false,
-            supports_hidden_reasoning: true,
+            // cooperative_probes gates probe/annotation injection. Default false —
+            // models that can't follow the protocol emit markers as literal text.
+            // Enable per-model after verifying with caw-bench-coop.
+            supports_hidden_reasoning: self.cooperative_probes,
+            // Visible reasoning gates <think>-block parsing; detected by model name.
             supports_visible_reasoning: self.model.contains("deepseek")
                 || self.model.contains("qwen"),
         }

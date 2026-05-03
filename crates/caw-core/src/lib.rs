@@ -5,7 +5,7 @@ pub mod tokenizer;
 
 pub use provenance::tokenize_terms;
 pub use reindex::{ChannelReindexQueue, NoopReindexQueue, ReindexQueue, ReindexReceiver};
-pub use tokenizer::count_tokens_cl100k;
+pub use tokenizer::{count_tokens_cl100k, extract_token_range};
 
 use std::collections::{HashMap, HashSet};
 
@@ -209,16 +209,7 @@ impl Range {
 
             Self::Heading { path } => extract_heading_section(content, path),
 
-            Self::Tokens { start, count } => {
-                let tokens: Vec<&str> = content.split_whitespace().collect();
-                tokens
-                    .iter()
-                    .skip(*start)
-                    .take(*count)
-                    .copied()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            }
+            Self::Tokens { start, count } => extract_token_range(content, *start, *count),
 
             Self::Custom(_) => content.to_string(),
         }

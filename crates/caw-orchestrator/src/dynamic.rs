@@ -208,10 +208,14 @@ where
         let inject = match self.config.cooperation_mode {
             CooperationMode::Cooperative => true,
             CooperationMode::Transparent => false,
-            // Auto: inject only for models with visible reasoning traces,
-            // where probes/annotations are useful mid-trace signals.
-            // Non-reasoning models confuse the instructions with output format.
-            CooperationMode::Auto => self.adapter.capabilities().supports_visible_reasoning,
+            // Auto: inject when the adapter reports either visible reasoning
+            // (thinking-trace models — probes are mid-trace signals) or hidden
+            // reasoning (models verified to follow the cooperative protocol via
+            // caw-bench-coop). Both paths are opt-in per adapter.
+            CooperationMode::Auto => {
+                let caps = self.adapter.capabilities();
+                caps.supports_visible_reasoning || caps.supports_hidden_reasoning
+            }
         };
         if !inject {
             return base.to_string();
