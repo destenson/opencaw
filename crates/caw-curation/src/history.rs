@@ -87,8 +87,22 @@ impl HistorySummarizer for LlmHistorySummarizer<'_> {
         );
 
         let req = CompletionRequest {
-            system: "You are a conversation summarizer. Output only the summary, \
-                     nothing else."
+            // The summary is injected at the top of the context window when a
+            // new session or context-reset continues an earlier conversation.
+            // The model receiving it has no access to the original turns, so
+            // the summary must be self-contained: enough to reconstruct what
+            // was decided, what is still open, and what the user was trying to
+            // accomplish — not just a description of topics discussed.
+            system: "Produce a dense, factual summary of the conversation \
+                     history below. The summary will be injected as prior-session \
+                     context for a future assistant turn; the original history will \
+                     not be available. Preserve: (1) the current task and any \
+                     unresolved questions, (2) decisions or conclusions reached, \
+                     (3) specific names, paths, numbers, or identifiers that were \
+                     referenced, (4) any explicit user preferences or constraints \
+                     stated. Omit: exploratory reasoning that was abandoned, \
+                     verbose restatements of tool output that was already acted on. \
+                     Output the summary only — no preamble, no labels."
                 .to_string(),
             user: prompt,
             workspace_fragments: vec![],

@@ -69,10 +69,17 @@ impl ToolOutputCompressor for LlmToolOutputCompressor<'_> {
         );
 
         let req = CompletionRequest {
-            system: "You summarize tool outputs. Format: \
-                     \"[tool: NAME] brief summary of findings. \
-                     Full results available via recall.\"\n\
-                     Output only the summary line."
+            // The summary replaces the full tool output inline in the context
+            // window. The full output is stored for recall, so the summary
+            // must preserve the signal a reader needs to decide whether to
+            // recall — not a generic description. Prioritize: concrete counts,
+            // error/warning totals, key identifiers found or not found, and
+            // the actionable outcome.
+            system: "Summarize the tool output below. Focus on the actionable \
+                     result: what was found or not found, counts that matter, \
+                     errors or warnings, and any specific identifiers (file paths, \
+                     function names, values) that are likely to be referenced next. \
+                     Be terse — a few sentences at most. Output the summary only."
                 .to_string(),
             user: prompt,
             workspace_fragments: vec![],
