@@ -10,18 +10,69 @@ pub struct IntentBenchCase {
     pub expected: QueryIntent,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum FieldOutcome {
+    TP,
+    FP,
+    TN,
+    FN,
+}
+
+impl FieldOutcome {
+    pub fn is_correct(self) -> bool {
+        matches!(self, FieldOutcome::TP | FieldOutcome::TN)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct IntentFieldScore {
-    pub correct: usize,
-    pub total: usize,
+    pub tp: usize,
+    pub fp: usize,
+    pub tn: usize,
+    pub fn_count: usize,
+}
+
+impl IntentFieldScore {
+    pub fn precision(&self) -> f32 {
+        let denom = (self.tp + self.fp) as f32;
+        if denom == 0.0 { 0.0 } else { self.tp as f32 / denom }
+    }
+
+    pub fn recall(&self) -> f32 {
+        let denom = (self.tp + self.fn_count) as f32;
+        if denom == 0.0 { 0.0 } else { self.tp as f32 / denom }
+    }
+
+    pub fn f1(&self) -> f32 {
+        let p = self.precision();
+        let r = self.recall();
+        let denom = p + r;
+        if denom == 0.0 { 0.0 } else { 2.0 * p * r / denom }
+    }
+
+    pub fn accuracy(&self) -> f32 {
+        let total = (self.tp + self.fp + self.tn + self.fn_count) as f32;
+        if total == 0.0 { 0.0 } else { (self.tp + self.tn) as f32 / total }
+    }
+
+    pub fn record(&mut self, outcome: FieldOutcome) {
+        match outcome {
+            FieldOutcome::TP => self.tp += 1,
+            FieldOutcome::FP => self.fp += 1,
+            FieldOutcome::TN => self.tn += 1,
+            FieldOutcome::FN => self.fn_count += 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct IntentCaseScore {
     pub exact_match: bool,
-    pub correct_fields: usize,
-    pub total_fields: usize,
-    pub fields: BTreeMap<&'static str, bool>,
+    pub tp: usize,
+    pub fp: usize,
+    pub tn: usize,
+    pub fn_count: usize,
+    pub fields: BTreeMap<&'static str, FieldOutcome>,
 }
 
 pub fn default_cases() -> Vec<IntentBenchCase> {
@@ -177,14 +228,14 @@ pub fn default_cases() -> Vec<IntentBenchCase> {
                 ..Default::default()
             },
         },
+        // "what changed" asks WHAT, not WHY — wants_explanation requires WHY/HOW.
         IntentBenchCase {
             id: "config_diff_explain",
             query: "what changed between the minimal and default sweep configs?",
-            tags: &["comparison", "explanation", "inventory"],
+            tags: &["comparison", "inventory"],
             expected: QueryIntent {
                 is_inventory_request: true,
                 wants_comparison: true,
-                wants_explanation: true,
                 needs_grounded_evidence_only: true,
                 confidence: Some(1.0),
                 ..Default::default()
@@ -196,44 +247,49 @@ pub fn default_cases() -> Vec<IntentBenchCase> {
 /// Score one classification result.
 ///
 /// `emitted_keys` is the set of field names the model actually included in its JSON.
-/// A field absent from `emitted_keys` is treated as an intentional false (sparse output),
-/// so it only counts as wrong when the expected value is true.
+/// An absent field is treated as an intentional false (sparse output is valid):
+/// absent + expected=false → TN, absent + expected=true → FN.
 pub fn score_case(
     expected: &QueryIntent,
     predicted: &QueryIntent,
     emitted_keys: &HashSet<String>,
 ) -> IntentCaseScore {
-    let score_bool = |name: &str, exp: bool, pred: bool| -> bool {
-        if !emitted_keys.contains(name) {
-            // Absent field: correct only if we didn't expect true.
-            !exp
-        } else {
-            exp == pred
+    let classify = |name: &str, exp: bool, pred: bool| -> FieldOutcome {
+        let effective = if emitted_keys.contains(name) { pred } else { false };
+        match (exp, effective) {
+            (true, true) => FieldOutcome::TP,
+            (false, true) => FieldOutcome::FP,
+            (false, false) => FieldOutcome::TN,
+            (true, false) => FieldOutcome::FN,
         }
     };
 
     let mut fields = BTreeMap::new();
-    fields.insert("is_inventory_request", score_bool("is_inventory_request", expected.is_inventory_request, predicted.is_inventory_request));
-    fields.insert("is_results_request", score_bool("is_results_request", expected.is_results_request, predicted.is_results_request));
-    fields.insert("is_status_request", score_bool("is_status_request", expected.is_status_request, predicted.is_status_request));
-    fields.insert("is_next_step_request", score_bool("is_next_step_request", expected.is_next_step_request, predicted.is_next_step_request));
-    fields.insert("wants_exact_names_or_paths", score_bool("wants_exact_names_or_paths", expected.wants_exact_names_or_paths, predicted.wants_exact_names_or_paths));
-    fields.insert("wants_numeric_values", score_bool("wants_numeric_values", expected.wants_numeric_values, predicted.wants_numeric_values));
-    fields.insert("wants_latest_run_only", score_bool("wants_latest_run_only", expected.wants_latest_run_only, predicted.wants_latest_run_only));
-    fields.insert("wants_comparison", score_bool("wants_comparison", expected.wants_comparison, predicted.wants_comparison));
-    fields.insert("wants_explanation", score_bool("wants_explanation", expected.wants_explanation, predicted.wants_explanation));
-    fields.insert("wants_completion_state", score_bool("wants_completion_state", expected.wants_completion_state, predicted.wants_completion_state));
-    fields.insert("wants_recommended_actions", score_bool("wants_recommended_actions", expected.wants_recommended_actions, predicted.wants_recommended_actions));
-    fields.insert("needs_grounded_evidence_only", score_bool("needs_grounded_evidence_only", expected.needs_grounded_evidence_only, predicted.needs_grounded_evidence_only));
-    fields.insert("abstain", score_bool("abstain", expected.abstain, predicted.abstain));
+    fields.insert("is_inventory_request", classify("is_inventory_request", expected.is_inventory_request, predicted.is_inventory_request));
+    fields.insert("is_results_request", classify("is_results_request", expected.is_results_request, predicted.is_results_request));
+    fields.insert("is_status_request", classify("is_status_request", expected.is_status_request, predicted.is_status_request));
+    fields.insert("is_next_step_request", classify("is_next_step_request", expected.is_next_step_request, predicted.is_next_step_request));
+    fields.insert("wants_exact_names_or_paths", classify("wants_exact_names_or_paths", expected.wants_exact_names_or_paths, predicted.wants_exact_names_or_paths));
+    fields.insert("wants_numeric_values", classify("wants_numeric_values", expected.wants_numeric_values, predicted.wants_numeric_values));
+    fields.insert("wants_latest_run_only", classify("wants_latest_run_only", expected.wants_latest_run_only, predicted.wants_latest_run_only));
+    fields.insert("wants_comparison", classify("wants_comparison", expected.wants_comparison, predicted.wants_comparison));
+    fields.insert("wants_explanation", classify("wants_explanation", expected.wants_explanation, predicted.wants_explanation));
+    fields.insert("wants_completion_state", classify("wants_completion_state", expected.wants_completion_state, predicted.wants_completion_state));
+    fields.insert("wants_recommended_actions", classify("wants_recommended_actions", expected.wants_recommended_actions, predicted.wants_recommended_actions));
+    fields.insert("needs_grounded_evidence_only", classify("needs_grounded_evidence_only", expected.needs_grounded_evidence_only, predicted.needs_grounded_evidence_only));
+    fields.insert("abstain", classify("abstain", expected.abstain, predicted.abstain));
 
-    let correct_fields = fields.values().filter(|ok| **ok).count();
-    let total_fields = fields.len();
+    let tp = fields.values().filter(|o| **o == FieldOutcome::TP).count();
+    let fp = fields.values().filter(|o| **o == FieldOutcome::FP).count();
+    let tn = fields.values().filter(|o| **o == FieldOutcome::TN).count();
+    let fn_count = fields.values().filter(|o| **o == FieldOutcome::FN).count();
 
     IntentCaseScore {
-        exact_match: correct_fields == total_fields,
-        correct_fields,
-        total_fields,
+        exact_match: fp == 0 && fn_count == 0,
+        tp,
+        fp,
+        tn,
+        fn_count,
         fields,
     }
 }
@@ -255,14 +311,6 @@ pub fn empty_field_scores() -> BTreeMap<&'static str, IntentFieldScore> {
         "abstain",
     ]
     .into_iter()
-    .map(|name| {
-        (
-            name,
-            IntentFieldScore {
-                correct: 0,
-                total: 0,
-            },
-        )
-    })
+    .map(|name| (name, IntentFieldScore::default()))
     .collect()
 }

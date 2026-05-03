@@ -1,12 +1,13 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 use caw_bench::adapter_factory::{self, AdapterKind, AdapterSpec};
-use caw_bench::intent::{IntentBenchCase, default_cases, empty_field_scores, score_case};
+use caw_bench::intent::{
+    IntentBenchCase, IntentFieldScore, default_cases, empty_field_scores, score_case,
+};
 use caw_core::{CompletionRequest, ModelAdapter, QueryIntent};
-use std::collections::HashSet;
 use serde::Serialize;
 use std::io::{self, Write};
 
@@ -59,15 +60,20 @@ struct CandidateCaseResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     raw_response: Option<String>,
     exact_match: bool,
-    correct_fields: usize,
-    total_fields: usize,
+    tp: usize,
+    fp: usize,
+    tn: usize,
+    fn_count: usize,
 }
 
 #[derive(Debug, Serialize)]
 struct CandidateSummary {
     model: String,
     exact_match_rate: f32,
-    field_accuracy: BTreeMap<String, f32>,
+    micro_precision: f32,
+    micro_recall: f32,
+    micro_f1: f32,
+    field_scores: BTreeMap<String, IntentFieldScore>,
     tag_exact_match_rate: BTreeMap<String, f32>,
     parse_failures: usize,
     cases: Vec<CandidateCaseResult>,
@@ -139,20 +145,20 @@ fn print_summary(
         writeln!(
             writer,
             concat!(
-                "{}. {} exact={:.1}% parse_failures={} ",
-                "next_step={:.1}% actions={:.1}% status={:.1}% ",
-                "inventory={:.1}% results={:.1}% grounded={:.1}%"
+                "{}. {} exact={:.1}% f1={:.3} parse_failures={} ",
+                "next_step_f1={:.3} status_f1={:.3} ",
+                "inventory_f1={:.3} results_f1={:.3} grounded_f1={:.3}"
             ),
             index + 1,
             summary.model,
             summary.exact_match_rate * 100.0,
+            summary.micro_f1,
             summary.parse_failures,
-            percent(summary, "is_next_step_request"),
-            percent(summary, "wants_recommended_actions"),
-            percent(summary, "is_status_request"),
-            percent(summary, "is_inventory_request"),
-            percent(summary, "is_results_request"),
-            percent(summary, "needs_grounded_evidence_only"),
+            field_f1(summary, "is_next_step_request"),
+            field_f1(summary, "is_status_request"),
+            field_f1(summary, "is_inventory_request"),
+            field_f1(summary, "is_results_request"),
+            field_f1(summary, "needs_grounded_evidence_only"),
         )?;
     }
 
@@ -176,31 +182,14 @@ fn print_summary(
 
 fn compare_summary(left: &&CandidateSummary, right: &&CandidateSummary) -> std::cmp::Ordering {
     right
-        .exact_match_rate
-        .partial_cmp(&left.exact_match_rate)
+        .micro_f1
+        .partial_cmp(&left.micro_f1)
         .unwrap_or(std::cmp::Ordering::Equal)
         .then_with(|| left.parse_failures.cmp(&right.parse_failures))
-        .then_with(|| {
-            right
-                .field_accuracy
-                .get("needs_grounded_evidence_only")
-                .copied()
-                .unwrap_or(0.0)
-                .partial_cmp(
-                    &left
-                        .field_accuracy
-                        .get("needs_grounded_evidence_only")
-                        .copied()
-                        .unwrap_or(0.0),
-                )
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
         .then_with(|| left.model.cmp(&right.model))
 }
 
-fn collect_tag_winners(
-    summaries: &[&CandidateSummary],
-) -> Vec<(String, Vec<String>)> {
+fn collect_tag_winners(summaries: &[&CandidateSummary]) -> Vec<(String, Vec<String>)> {
     let mut tags = summaries
         .iter()
         .flat_map(|summary| summary.tag_exact_match_rate.keys().cloned())
@@ -235,24 +224,48 @@ fn collect_tag_winners(
 fn format_model_line(summary: &CandidateSummary) -> String {
     format!(
         concat!(
-            "{}: exact={:.1}% parse_failures={} ",
-            "next_step={:.1}% actions={:.1}% status={:.1}% ",
-            "inventory={:.1}% results={:.1}% grounded={:.1}%"
+            "{}: exact={:.1}% f1={:.3} (P={:.3} R={:.3}) parse_failures={} ",
+            "inventory_f1={:.3} results_f1={:.3} status_f1={:.3} grounded_f1={:.3}"
         ),
         summary.model,
         summary.exact_match_rate * 100.0,
+        summary.micro_f1,
+        summary.micro_precision,
+        summary.micro_recall,
         summary.parse_failures,
-        percent(summary, "is_next_step_request"),
-        percent(summary, "wants_recommended_actions"),
-        percent(summary, "is_status_request"),
-        percent(summary, "is_inventory_request"),
-        percent(summary, "is_results_request"),
-        percent(summary, "needs_grounded_evidence_only"),
+        field_f1(summary, "is_inventory_request"),
+        field_f1(summary, "is_results_request"),
+        field_f1(summary, "is_status_request"),
+        field_f1(summary, "needs_grounded_evidence_only"),
     )
 }
 
-fn percent(summary: &CandidateSummary, field: &str) -> f32 {
-    summary.field_accuracy.get(field).copied().unwrap_or(0.0) * 100.0
+fn field_f1(summary: &CandidateSummary, field: &str) -> f32 {
+    summary
+        .field_scores
+        .get(field)
+        .map(|s| s.f1())
+        .unwrap_or(0.0)
+}
+
+fn micro_metrics(
+    total_tp: usize,
+    total_fp: usize,
+    total_fn: usize,
+) -> (f32, f32, f32) {
+    let precision = {
+        let d = (total_tp + total_fp) as f32;
+        if d == 0.0 { 0.0 } else { total_tp as f32 / d }
+    };
+    let recall = {
+        let d = (total_tp + total_fn) as f32;
+        if d == 0.0 { 0.0 } else { total_tp as f32 / d }
+    };
+    let f1 = {
+        let d = precision + recall;
+        if d == 0.0 { 0.0 } else { 2.0 * precision * recall / d }
+    };
+    (precision, recall, f1)
 }
 
 fn run_candidate(
@@ -265,92 +278,91 @@ fn run_candidate(
     let mut field_scores = empty_field_scores();
     let mut tag_hits: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     let mut case_results = Vec::new();
+    let mut total_tp = 0usize;
+    let mut total_fp = 0usize;
+    let mut total_fn = 0usize;
 
     for case in cases {
-        match classify_case(adapter, case) {
+        let (score, predicted, raw, is_parse_failure) = match classify_case(adapter, case) {
             Ok((predicted, emitted_keys, raw)) => {
                 let score = score_case(&case.expected, &predicted, &emitted_keys);
-                if score.exact_match {
-                    exact_matches += 1;
-                }
-                for (field, ok) in &score.fields {
-                    if let Some(entry) = field_scores.get_mut(field) {
-                        entry.total += 1;
-                        if *ok {
-                            entry.correct += 1;
-                        }
-                    }
-                }
-                for tag in case.tags {
-                    let entry = tag_hits.entry((*tag).to_string()).or_insert((0, 0));
-                    entry.1 += 1;
-                    if score.exact_match {
-                        entry.0 += 1;
-                    }
-                }
-                case_results.push(CandidateCaseResult {
-                    case_id: case.id.to_string(),
-                    query: case.query.to_string(),
-                    tags: case.tags.iter().map(|tag| (*tag).to_string()).collect(),
-                    predicted: Some(predicted),
-                    error: None,
-                    raw_response: if score.exact_match { None } else { Some(raw) },
-                    exact_match: score.exact_match,
-                    correct_fields: score.correct_fields,
-                    total_fields: score.total_fields,
-                });
+                (score, Some(predicted), raw, false)
             }
-            Err((error, raw)) => {
-                parse_failures += 1;
-                for entry in field_scores.values_mut() {
-                    entry.total += 1;
-                }
-                for tag in case.tags {
-                    let entry = tag_hits.entry((*tag).to_string()).or_insert((0, 0));
-                    entry.1 += 1;
-                }
-                case_results.push(CandidateCaseResult {
-                    case_id: case.id.to_string(),
-                    query: case.query.to_string(),
-                    tags: case.tags.iter().map(|tag| (*tag).to_string()).collect(),
-                    predicted: None,
-                    error: Some(error.to_string()),
-                    raw_response: Some(raw),
-                    exact_match: false,
-                    correct_fields: 0,
-                    total_fields: field_scores.len(),
-                });
+            Err((_, raw)) => {
+                // Parse failure: treat as all-absent output — FN for every expected-true field.
+                let score = score_case(&case.expected, &QueryIntent::default(), &HashSet::new());
+                (score, None, raw, true)
+            }
+        };
+
+        if is_parse_failure {
+            parse_failures += 1;
+        }
+        if score.exact_match {
+            exact_matches += 1;
+        }
+
+        total_tp += score.tp;
+        total_fp += score.fp;
+        total_fn += score.fn_count;
+
+        for (field, outcome) in &score.fields {
+            if let Some(entry) = field_scores.get_mut(field) {
+                entry.record(*outcome);
             }
         }
+
+        for tag in case.tags {
+            let entry = tag_hits.entry((*tag).to_string()).or_insert((0, 0));
+            entry.1 += 1;
+            if score.exact_match {
+                entry.0 += 1;
+            }
+        }
+
+        let error = if is_parse_failure {
+            Some(format!("parse failure for {}", case.id))
+        } else {
+            None
+        };
+
+        case_results.push(CandidateCaseResult {
+            case_id: case.id.to_string(),
+            query: case.query.to_string(),
+            tags: case.tags.iter().map(|tag| (*tag).to_string()).collect(),
+            predicted,
+            error,
+            raw_response: if score.exact_match { None } else { Some(raw) },
+            exact_match: score.exact_match,
+            tp: score.tp,
+            fp: score.fp,
+            tn: score.tn,
+            fn_count: score.fn_count,
+        });
     }
 
-    let field_accuracy = field_scores
+    let (micro_precision, micro_recall, micro_f1) = micro_metrics(total_tp, total_fp, total_fn);
+
+    let field_scores_serializable = field_scores
         .into_iter()
-        .map(|(field, score)| {
-            let accuracy = if score.total == 0 {
-                0.0
-            } else {
-                score.correct as f32 / score.total as f32
-            };
-            (field.to_string(), accuracy)
-        })
+        .map(|(k, v)| (k.to_string(), v))
         .collect();
+
     let tag_exact_match_rate = tag_hits
         .into_iter()
         .map(|(tag, (hits, total))| {
-            let accuracy = if total == 0 {
-                0.0
-            } else {
-                hits as f32 / total as f32
-            };
-            (tag, accuracy)
+            let rate = if total == 0 { 0.0 } else { hits as f32 / total as f32 };
+            (tag, rate)
         })
         .collect();
 
     Ok(CandidateSummary {
         model: model.to_string(),
         exact_match_rate: exact_matches as f32 / cases.len() as f32,
-        field_accuracy,
+        micro_precision,
+        micro_recall,
+        micro_f1,
+        field_scores: field_scores_serializable,
         tag_exact_match_rate,
         parse_failures,
         cases: case_results,
