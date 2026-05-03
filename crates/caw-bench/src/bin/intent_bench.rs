@@ -49,9 +49,10 @@ struct Cli {
     out: Option<PathBuf>,
 
     /// After benchmarking all individual candidates, also run an ensemble that
-    /// majority-votes across all of them and adds the result to the leaderboard.
-    #[arg(long, default_value_t = false)]
-    ensemble: bool,
+    /// majority-votes across the top N models (by micro-F1) and adds the result
+    /// to the leaderboard. Set to 0 to disable.
+    #[arg(long, default_value_t = 3)]
+    ensemble: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -113,8 +114,8 @@ fn main() -> Result<()> {
         summaries.push(run_candidate(model, adapter.as_ref(), &cases)?);
     }
 
-    if cli.ensemble && summaries.len() > 1 {
-        summaries.push(run_ensemble(&summaries, &cases));
+    if cli.ensemble > 0 && summaries.len() > 1 {
+        summaries.push(run_ensemble(&summaries, &cases, cli.ensemble));
     }
 
     let report = IntentBenchReport {
@@ -383,12 +384,18 @@ fn run_candidate(
 fn run_ensemble(
     summaries: &[CandidateSummary],
     cases: &[IntentBenchCase],
+    size: usize,
 ) -> CandidateSummary {
     use caw_core::QueryIntent;
 
+    let mut ranked: Vec<&CandidateSummary> = summaries.iter().collect();
+    ranked.sort_by(|a, b| b.micro_f1.partial_cmp(&a.micro_f1).unwrap_or(std::cmp::Ordering::Equal));
+    let pool: Vec<&CandidateSummary> = ranked.into_iter().take(size).collect();
+
     let label = format!(
-        "ensemble({})",
-        summaries.iter().map(|s| s.model.as_str()).collect::<Vec<_>>().join("+")
+        "ensemble-top{}({})",
+        pool.len(),
+        pool.iter().map(|s| s.model.as_str()).collect::<Vec<_>>().join("+")
     );
 
     // All known fields are considered "emitted" in the ensemble result because
@@ -404,7 +411,7 @@ fn run_ensemble(
     let mut total_fn = 0usize;
 
     for (case_idx, case) in cases.iter().enumerate() {
-        let votes: Vec<QueryIntent> = summaries
+        let votes: Vec<QueryIntent> = pool
             .iter()
             .filter_map(|s| s.cases.get(case_idx)?.predicted.clone())
             .collect();

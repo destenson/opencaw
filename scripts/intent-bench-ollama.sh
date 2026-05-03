@@ -134,9 +134,7 @@ for model in "${models[@]}"; do
     cmd+=(--candidate "${model}")
 done
 
-if [[ "${#models[@]}" -gt 1 ]]; then
-    cmd+=(--ensemble)
-fi
+# Ensemble of top-3 models runs by default (--ensemble 0 to disable).
 
 echo "selected ${#models[@]} model(s):" >&2
 for model in "${models[@]}"; do
