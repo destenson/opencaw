@@ -113,7 +113,7 @@ fn main() -> Result<()> {
             println!("Query: {}", query);
             println!("{}", "-".repeat(60));
 
-            let response = orchestrator.run_turn(system, query)?;
+            let response = orchestrator.run_turn(system, query, &[])?;
 
             let total_recalled: usize = orchestrator.loaded.iter().map(|f| f.tokens).sum();
             println!("\n[context — {} fragments, {} tok]", orchestrator.loaded.len(), total_recalled);

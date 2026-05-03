@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
 use caw_adapters::MockAdapter;
 use caw_core::{
-    CompletionRequest, EmbeddingProvider, Locator, ModelAdapter, RecallFragment, Retriever,
-    QueryIntent, ScoredStub, StubId, StubStore, Tokenizer, VectorIndex, WhitespaceTokenizer,
-    candidate_list_fragment, count_tokens_cl100k,
+    CompletionRequest, EmbeddingProvider, ModelAdapter, QueryIntent, StubStore, VectorIndex,
+    WhitespaceTokenizer, Tokenizer, provenance::InMemoryProvenanceStore,
 };
 use caw_curation::{
     ConversationTurn, CurationPipelineBuilder, ExtractiveHistorySummarizer,
@@ -14,13 +13,22 @@ use caw_index::{FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStu
 use caw_ingest::summarizer::LlmSummarizer;
 use caw_ingest::{DocumentIdSet, IngestionPipeline};
 use caw_orchestrator::consolidation::LlmConsolidation;
-use caw_orchestrator::dynamic::DynamicRecallConfig;
-use caw_orchestrator::session::SessionFile;
+use caw_orchestrator::dynamic::{DynamicRecallConfig, DynamicRecallOrchestrator};
 use clap::Parser;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::debug;
+
+/// Concrete orchestrator type used by the CLI.
+type CliOrchestrator = DynamicRecallOrchestrator<
+    SemanticRetriever<FastEmbedProvider, SqliteStubStore, HnswVectorIndex>,
+    LazyFastEmbedProvider,
+    HnswVectorIndex,
+    InMemoryProvenanceStore,
+    Box<dyn ModelAdapter>,
+    SqliteStubStore,
+>;
 
 /// Wraps FastEmbedProvider to defer model loading until the first embed call.
 /// Startup only loads the ONNX model when there are actually new files to embed
@@ -234,9 +242,6 @@ fn main() -> Result<()> {
 
     eprintln!("Ingesting files from: {}", cli.dir.display());
 
-    // Load (path, mtime) pairs already in the store so ingest_directory can
-    // skip reading unchanged files. A stat syscall per file is much cheaper
-    // than reading and hashing it.
     let already_indexed: DocumentIdSet = store
         .indexed_paths()
         .unwrap_or_default()
@@ -247,8 +252,6 @@ fn main() -> Result<()> {
         .ingest_directory(&cli.dir, !cli.gitignore, &already_indexed)
         .context("Failed to ingest directory")?;
 
-    // All files returned from ingest_directory are new or changed — unchanged
-    // files were skipped by the mtime check above.
     let ingested = documents.len();
     for (stub, _embed_text) in documents {
         let text = format!("{} {} {}", stub.path, stub.summary, stub.outline.join(" "));
@@ -262,11 +265,15 @@ fn main() -> Result<()> {
         }
     }
 
-    // Rebuild the HNSW index from all stored embeddings (cached + newly ingested).
     let all_emb = store
         .all_embeddings()
         .context("Failed to load embeddings")?;
     let total_indexed = all_emb.len();
+
+    // vector_index goes into the retriever (workspace search).
+    // trace_index goes into the orchestrator (thinking-trace and session recall).
+    // Both are populated from the same stored embeddings so either index can
+    // serve as a lookup for any stub in the corpus.
     let mut vector_index = HnswVectorIndex::new();
     let mut trace_index = HnswVectorIndex::new();
     for (id, emb) in all_emb {
@@ -279,7 +286,6 @@ fn main() -> Result<()> {
         total_indexed, ingested, skipped,
     );
 
-    // Check system prompt budget
     let budget = caw_curation::SystemPromptBudget::from_context_window(cli.max_tokens, 0.10);
     let budget_check = caw_curation::check_system_prompt(&cli.system, &budget);
     if budget_check.is_exceeded() {
@@ -289,7 +295,6 @@ fn main() -> Result<()> {
     }
 
     let retriever = SemanticRetriever::new(embedder, store, vector_index);
-
     let trace_embedder = LazyFastEmbedProvider::new();
 
     let config = DynamicRecallConfig {
@@ -319,20 +324,34 @@ fn main() -> Result<()> {
         ),
     }
 
-    // LLM consolidation is available for when the DynamicRecallOrchestrator is
-    // used directly (via with_consolidation_synthesizer). The manual recall loop
-    // below doesn't evict, so it doesn't fire yet.
-    let _consolidation: Option<LlmConsolidation> = if cli.llm_consolidation {
+    let provenance = InMemoryProvenanceStore::default();
+    let mut orchestrator: CliOrchestrator = DynamicRecallOrchestrator::new(
+        retriever,
+        trace_embedder,
+        trace_index,
+        provenance,
+        adapter,
+        config,
+    );
+
+    if cli.llm_consolidation {
         eprintln!(
             "Using LLM consolidation ({}) for eviction notes",
             cli.aux_model
         );
-        Some(LlmConsolidation::with_adapter(build_aux_adapter(
-            &cli.aux_model,
-        )))
-    } else {
-        None
-    };
+        orchestrator = orchestrator.with_consolidation_synthesizer(Box::new(
+            LlmConsolidation::with_adapter(build_aux_adapter(&cli.aux_model)),
+        ));
+    }
+
+    if !cli.amnesia {
+        if let Some(sdir) = cli.session_dir.as_deref() {
+            orchestrator = orchestrator
+                .with_session(sdir)
+                .context("Failed to set up session history")?;
+            eprintln!("[session] recording to {}", sdir.display());
+        }
+    }
 
     if cli.curate {
         eprintln!("Curation pipeline enabled (history summarization + tool output compression)");
@@ -343,21 +362,14 @@ fn main() -> Result<()> {
     eprintln!("Enter queries (Ctrl+D to exit):\n");
 
     run_interactive(
-        retriever,
-        trace_embedder,
-        trace_index,
-        adapter,
+        &mut orchestrator,
         intent_adapters,
         cli.intent_confidence,
         show_intent,
-        config,
         &cli.system,
         cli.curate,
         &cli.aux_model,
         cli.max_tokens,
-        cli.session_dir.as_deref(),
-        cli.amnesia,
-        &already_indexed,
     )
 }
 
@@ -481,61 +493,17 @@ fn classify_query_intent(adapter: &dyn ModelAdapter, query: &str) -> Result<Quer
 
 #[allow(clippy::too_many_arguments)]
 fn run_interactive(
-    mut retriever: SemanticRetriever<FastEmbedProvider, SqliteStubStore, HnswVectorIndex>,
-    mut trace_embedder: LazyFastEmbedProvider,
-    mut trace_index: HnswVectorIndex,
-    adapter: Box<dyn ModelAdapter>,
+    orchestrator: &mut CliOrchestrator,
     intent_adapters: Vec<Box<dyn ModelAdapter>>,
     intent_confidence: f32,
     show_intent: bool,
-    config: DynamicRecallConfig,
     system: &str,
     curate: bool,
     aux_model: &str,
     context_budget: usize,
-    session_dir: Option<&std::path::Path>,
-    amnesia: bool,
-    already_indexed: &DocumentIdSet,
 ) -> Result<()> {
-    use caw_transform::{extract_probes, extract_thinking_steps};
-    use std::collections::{HashMap, HashSet};
-
-    let mut loaded: Vec<RecallFragment> = Vec::new();
-    let mut loaded_ids: HashSet<StubId> = HashSet::new();
-    let mut relevance_scores: HashMap<StubId, f32> = HashMap::new();
-
-    // Session history: in-memory content map + dedicated vector index.
-    let mut session_index = HnswVectorIndex::new();
-    let mut session_content: HashMap<StubId, String> = HashMap::new();
-    let mut session_file: Option<SessionFile> = None;
-    let mut session_turn = 0usize;
-
-    if !amnesia && let Some(sdir) = session_dir {
-        std::fs::create_dir_all(sdir).ok();
-        let pipeline = caw_ingest::IngestionPipeline::new();
-        let file_name = format!("session-{}.md", caw_orchestrator::session::timestamp_str());
-        let current_path = sdir.join(&file_name);
-        match SessionFile::load_previous(
-            sdir,
-            &current_path,
-            &pipeline,
-            &mut retriever,
-            &already_indexed,
-        ) {
-            Ok(n) => eprintln!("[session] loaded {n} stubs from previous sessions"),
-            Err(e) => eprintln!("[session] warning: {e}"),
-        }
-        match SessionFile::create(current_path) {
-            Ok(sf) => {
-                eprintln!("[session] recording to {}", sdir.display());
-                session_file = Some(sf);
-            }
-            Err(e) => eprintln!("[session] warning: could not create session file: {e}"),
-        }
-    }
     let mut history: Vec<ConversationTurn> = Vec::new();
 
-    // Set up curation components
     let extractive_summarizer = ExtractiveHistorySummarizer;
     let hist_config = HistorySummarizerConfig::default();
     let llm_hist_summarizer;
@@ -585,25 +553,6 @@ fn run_interactive(
             continue;
         }
 
-        // Decay relevance of every loaded fragment and evict those that have
-        // fallen below the unload threshold. This prevents stale context from
-        // prior turns from crowding out content relevant to the current query.
-        let decay_rate = config.relevance_decay_rate;
-        let unload_threshold = config.thresholds.unload;
-        for score in relevance_scores.values_mut() {
-            *score *= decay_rate;
-        }
-        let evicted: HashSet<StubId> = relevance_scores
-            .iter()
-            .filter(|(_, s)| **s < unload_threshold)
-            .map(|(id, _)| id.clone())
-            .collect();
-        if !evicted.is_empty() {
-            relevance_scores.retain(|id, _| !evicted.contains(id));
-            loaded_ids.retain(|id| !evicted.contains(id));
-            loaded.retain(|f| !evicted.contains(&f.stub_id));
-        }
-
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -617,7 +566,6 @@ fn run_interactive(
             metadata: TurnMetadata::default(),
         });
 
-        // Run curation when history is long enough to benefit
         let effective_system = if curate && history.len() > 4 {
             let pipeline = CurationPipelineBuilder::with_context_budget(context_budget)
                 .history_summarizer(history_summarizer)
@@ -667,11 +615,9 @@ fn run_interactive(
                         .map(|v| (a.model_name().to_string(), v))
                 })
                 .collect();
-            if show_intent {
-                if votes.len() > 1 {
-                    for (name, v) in &votes {
-                        eprintln!("[intent {name}] {:?}", v);
-                    }
+            if show_intent && votes.len() > 1 {
+                for (name, v) in &votes {
+                    eprintln!("[intent {name}] {:?}", v);
                 }
             }
             if votes.is_empty() {
@@ -686,183 +632,15 @@ fn run_interactive(
                 Some(merged)
             }
         };
-        let query_guidance = query_intent
+        let guidance = query_intent
             .as_ref()
             .filter(|intent| intent.is_actionable(intent_confidence))
             .map(QueryIntent::guidance_lines)
             .unwrap_or_default();
 
-        let hits = retriever.search(query, config.max_candidates)?;
-        let above_threshold = hits
-            .iter()
-            .filter(|h| h.score >= config.thresholds.load)
-            .count();
-        // Count distinct file paths with any signal above the unload threshold.
-        // When that count exceeds max_initial_fragments, the query matches too
-        // many distinct sources to auto-load confidently — show a listing so
-        // the model can choose. This catches cases where one chunk scores high
-        // (and would be auto-loaded) but several other files are also relevant.
-        let distinct_above_unload = hits
-            .iter()
-            .filter(|h| h.score >= config.thresholds.unload)
-            .map(|h| h.stub.path.as_str())
-            .collect::<std::collections::HashSet<_>>()
-            .len();
-        let show_listing = above_threshold > config.max_initial_fragments
-            || distinct_above_unload > config.max_initial_fragments;
-        let candidate_fragment: Option<RecallFragment> = show_listing.then(|| {
-            let list_threshold = if above_threshold > config.max_initial_fragments {
-                config.thresholds.load
-            } else {
-                config.thresholds.unload
-            };
-            candidate_list_fragment(&hits, list_threshold)
-        });
-        if candidate_fragment.is_none() {
-            load_fragments(
-                &mut retriever,
-                &hits,
-                &mut loaded,
-                &mut loaded_ids,
-                &mut relevance_scores,
-                &config,
-            )?;
-        } else {
-            debug!(
-                above_threshold,
-                distinct_above_unload,
-                max_initial = config.max_initial_fragments,
-                "query matches multiple sources — surfacing candidate list"
-            );
-        }
-
-        // Session history search runs alongside workspace search.
-        if !session_content.is_empty() {
-            if let Ok(embeddings) = trace_embedder.embed_query(vec![query]) {
-                if let Some(emb) = embeddings.first() {
-                    let session_hits = session_index.search(emb, config.max_candidates);
-                    load_session_fragments(
-                        session_hits,
-                        &session_content,
-                        &mut loaded,
-                        &mut loaded_ids,
-                        &mut relevance_scores,
-                        &config,
-                    );
-                }
-            }
-        }
-
-        let mut initial_fragments = loaded.clone();
-        initial_fragments.extend(candidate_fragment);
-        let mut response = adapter.complete(CompletionRequest {
-            system: effective_system.clone(),
-            user: query.to_string(),
-            workspace_fragments: initial_fragments,
-            workspace_guidance: query_guidance.clone(),
-        })?;
-
-        // When the candidate list was shown, the model's response may mention
-        // specific files by path. Load those files and re-complete so the final
-        // answer is grounded in actual content rather than just summaries.
-        if above_threshold > config.max_initial_fragments {
-            // Check both the answer and the thinking trace — thinking models
-            // will mention files in the trace rather than (or in addition to)
-            // the visible answer.
-            let search_text = match &response.thinking {
-                Some(t) => format!("{}\n{}", t, response.answer),
-                None => response.answer.clone(),
-            };
-            let mut seen_paths = std::collections::HashSet::new();
-            let mentioned: Vec<ScoredStub> = hits
-                .iter()
-                .filter(|h| h.score >= config.thresholds.load)
-                .filter(|h| {
-                    let norm = h.stub.path.trim_start_matches("./");
-                    search_text.contains(norm) || search_text.contains(&h.stub.path)
-                })
-                .filter(|h| seen_paths.insert(h.stub.path.clone()))
-                .cloned()
-                .collect();
-            if !mentioned.is_empty() {
-                debug!(
-                    count = mentioned.len(),
-                    "loading files mentioned in response to candidate list"
-                );
-                load_fragments(
-                    &mut retriever,
-                    &mentioned,
-                    &mut loaded,
-                    &mut loaded_ids,
-                    &mut relevance_scores,
-                    &config,
-                )?;
-                response = adapter.complete(CompletionRequest {
-                    system: effective_system,
-                    user: query.to_string(),
-                    workspace_fragments: loaded.clone(),
-                    workspace_guidance: query_guidance.clone(),
-                })?;
-            }
-        }
-
-        if config.enable_probe_recall {
-            let probes = extract_probes(&response.answer);
-            for probe in probes {
-                let probe_hits = retriever.search(&probe.content, config.max_candidates)?;
-                load_fragments(
-                    &mut retriever,
-                    &probe_hits,
-                    &mut loaded,
-                    &mut loaded_ids,
-                    &mut relevance_scores,
-                    &config,
-                )?;
-            }
-        }
-
-        if config.enable_thinking_trace_recall && adapter.capabilities().supports_visible_reasoning
-        {
-            let steps = extract_thinking_steps(&response.answer);
-            for step in steps {
-                if step.content.len() < 20 {
-                    continue;
-                }
-                if let Ok(embeddings) = trace_embedder.embed_query(vec![&step.content])
-                    && let Some(emb) = embeddings.first()
-                {
-                    let index_hits = trace_index.search(emb, config.max_candidates);
-                    for (stub_id, score) in index_hits {
-                        if loaded_ids.contains(&stub_id) || score < config.thresholds.load {
-                            continue;
-                        }
-                        if let Ok(fragment) = retriever.read_range(&stub_id, "full") {
-                            let current_tokens: usize = loaded.iter().map(|f| f.tokens).sum();
-                            if current_tokens + fragment.tokens <= config.max_workspace_tokens {
-                                loaded_ids.insert(stub_id);
-                                loaded.push(fragment);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let response = orchestrator.run_turn(&effective_system, query, &guidance)?;
 
         println!("\n{}\n", response.answer);
-
-        // Record turn: write to disk for persistence, embed for future recall.
-        if let Some(ref mut sf) = session_file {
-            session_turn += 1;
-            if let Ok(text) = sf.write_turn(session_turn, query, &response.answer) {
-                let stub_id = StubId(format!("session-turn-{session_turn}"));
-                if let Ok(embeddings) = trace_embedder.embed_document(vec![text.as_str()]) {
-                    if let Some(emb) = embeddings.into_iter().next() {
-                        session_index.add(stub_id.clone(), emb);
-                        session_content.insert(stub_id, text);
-                    }
-                }
-            }
-        }
 
         history.push(ConversationTurn {
             role: TurnRole::Assistant,
@@ -872,88 +650,14 @@ fn run_interactive(
             metadata: TurnMetadata::default(),
         });
 
-        if !loaded.is_empty() {
+        if !orchestrator.loaded.is_empty() {
             eprintln!(
                 "[workspace: {} fragments, ~{} tokens]",
-                loaded.len(),
-                loaded.iter().map(|f| f.tokens).sum::<usize>()
+                orchestrator.loaded.len(),
+                orchestrator.loaded.iter().map(|f| f.tokens).sum::<usize>()
             );
         }
     }
 
-    Ok(())
-}
-
-fn load_session_fragments(
-    hits: Vec<(StubId, f32)>,
-    session_content: &std::collections::HashMap<StubId, String>,
-    loaded: &mut Vec<RecallFragment>,
-    loaded_ids: &mut std::collections::HashSet<StubId>,
-    relevance_scores: &mut std::collections::HashMap<StubId, f32>,
-    config: &DynamicRecallConfig,
-) {
-    for (stub_id, score) in hits {
-        if loaded_ids.contains(&stub_id) {
-            let entry = relevance_scores.entry(stub_id).or_insert(0.0);
-            *entry = entry.max(score);
-            continue;
-        }
-        if score < config.thresholds.load {
-            continue;
-        }
-        let current_tokens: usize = loaded.iter().map(|f| f.tokens).sum();
-        if current_tokens >= config.max_workspace_tokens {
-            break;
-        }
-        if let Some(content) = session_content.get(&stub_id) {
-            let tokens = count_tokens_cl100k(content);
-            if current_tokens + tokens <= config.max_workspace_tokens {
-                loaded_ids.insert(stub_id.clone());
-                relevance_scores.insert(stub_id.clone(), score);
-                loaded.push(RecallFragment {
-                    stub_id,
-                    content: content.clone(),
-                    locator: Locator {
-                        source: "session history".to_string(),
-                        locator: "full".to_string(),
-                    },
-                    tokens,
-                });
-            }
-        }
-    }
-}
-
-fn load_fragments(
-    retriever: &mut SemanticRetriever<FastEmbedProvider, SqliteStubStore, HnswVectorIndex>,
-    hits: &[caw_core::ScoredStub],
-    loaded: &mut Vec<caw_core::RecallFragment>,
-    loaded_ids: &mut std::collections::HashSet<caw_core::StubId>,
-    relevance_scores: &mut std::collections::HashMap<caw_core::StubId, f32>,
-    config: &DynamicRecallConfig,
-) -> Result<()> {
-    for hit in hits {
-        if loaded_ids.contains(&hit.stub.id) {
-            // Already in workspace — refresh its score so it isn't evicted
-            // prematurely when it's still relevant to the current query.
-            let entry = relevance_scores.entry(hit.stub.id.clone()).or_insert(0.0);
-            *entry = entry.max(hit.score);
-            continue;
-        }
-        if hit.score < config.thresholds.load {
-            continue;
-        }
-        let current_tokens: usize = loaded.iter().map(|f| f.tokens).sum();
-        if current_tokens >= config.max_workspace_tokens {
-            break;
-        }
-
-        let fragment = retriever.read_range(&hit.stub.id, "full")?;
-        if current_tokens + fragment.tokens <= config.max_workspace_tokens {
-            loaded_ids.insert(hit.stub.id.clone());
-            relevance_scores.insert(hit.stub.id.clone(), hit.score);
-            loaded.push(fragment);
-        }
-    }
     Ok(())
 }

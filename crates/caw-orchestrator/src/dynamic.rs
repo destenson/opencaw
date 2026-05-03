@@ -4,9 +4,10 @@ use crate::session::{self, SessionFile};
 use caw_core::{
     count_tokens_cl100k, CawResult, CompletionRequest, CompletionResponse, ConsolidationNote,
     ConsolidationSource, EmbeddingProvider, Locator, ModelAdapter, ProvenanceStore, Range,
-    RecallFragment, RecallThresholds, Retriever, StubId, StubStore, VectorIndex,
+    RecallFragment, RecallThresholds, Retriever, ScoredStub, StubId, StubStore, VectorIndex,
     candidate_list_fragment, tokenize_terms,
 };
+use caw_eval::SessionEvaluator;
 use caw_ingest::{IngestionPipeline, DocumentIdSet};
 use caw_transform::{extract_annotations, extract_probes, extract_thinking_steps, strip_markers};
 use std::collections::{HashMap, HashSet};
@@ -44,6 +45,9 @@ pub struct DynamicRecallOrchestrator<R, E, V, P, M, S = ()> {
     /// rather than going through the StubStore file-reading path.
     session_content: HashMap<StubId, String>,
     session_turn: usize,
+    /// Optional evaluator for collecting recall, eviction, probe, and annotation
+    /// metrics. When present, events are recorded automatically during run_turn.
+    pub evaluator: Option<SessionEvaluator>,
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +118,7 @@ where
             session: None,
             session_content: HashMap::new(),
             session_turn: 0,
+            evaluator: None,
         }
     }
 
@@ -133,6 +138,16 @@ where
     ) -> Self {
         self.consolidation_synthesizer = synthesizer;
         self
+    }
+
+    pub fn with_evaluator(mut self, evaluator: SessionEvaluator) -> Self {
+        self.evaluator = Some(evaluator);
+        self
+    }
+
+    /// Remove and return the evaluator so its accumulated metrics can be read.
+    pub fn take_evaluator(&mut self) -> Option<SessionEvaluator> {
+        self.evaluator.take()
     }
 
     /// Enable session history: write each turn to an append-only file in
@@ -206,7 +221,10 @@ where
     }
 
     /// Run a single conversational turn with iterative multi-pass recall.
-    pub fn run_turn(&mut self, system: &str, user: &str) -> CawResult<CompletionResponse> {
+    ///
+    /// `guidance` is appended to every completion request as `workspace_guidance`
+    /// (used by the intent classifier in the CLI to inject query-specific hints).
+    pub fn run_turn(&mut self, system: &str, user: &str, guidance: &[String]) -> CawResult<CompletionResponse> {
         let caps = self.adapter.capabilities();
         debug!(
             model = %self.adapter.model_name(),
@@ -222,8 +240,16 @@ where
                 system: system.to_string(),
                 user: user.to_string(),
                 workspace_fragments: Vec::new(),
-                workspace_guidance: Vec::new(),
+                workspace_guidance: guidance.to_vec(),
             });
+        }
+
+        // Cross-turn eviction: fragments from the previous turn decay once more
+        // before the new query runs initial retrieval, so stale context doesn't
+        // crowd out material relevant to the new query.
+        if !self.loaded.is_empty() {
+            self.decay_relevance_scores();
+            self.evict_stale_fragments(user);
         }
 
         let system_prompt = self.build_system_prompt(system);
@@ -261,6 +287,9 @@ where
             candidate_list_fragment(&initial_hits, list_threshold)
         });
 
+        // When the gate fires, retain initial_hits for the post-completion
+        // mentioned-files pass. When it doesn't, consume them into load_fragments.
+        let candidate_initial_hits: Option<Vec<ScoredStub>>;
         if candidate_fragment.is_none() {
             self.load_fragments(
                 initial_hits
@@ -268,6 +297,7 @@ where
                     .map(|hit| (hit.stub.id, hit.score))
                     .collect(),
             )?;
+            candidate_initial_hits = None;
         } else {
             debug!(
                 above_threshold,
@@ -275,6 +305,7 @@ where
                 max_initial = self.config.max_initial_fragments,
                 "query matches multiple sources — surfacing candidate list"
             );
+            candidate_initial_hits = Some(initial_hits);
         }
         debug!(loaded = self.loaded.len(), "initial query recall complete");
 
@@ -288,8 +319,39 @@ where
             system: system_prompt.clone(),
             user: user.to_string(),
             workspace_fragments: initial_fragments,
-            workspace_guidance: Vec::new(),
+            workspace_guidance: guidance.to_vec(),
         })?;
+
+        // When the candidate list was shown, check if the model's response
+        // mentions any candidate file paths explicitly. If so, load those files
+        // and re-complete so the final answer is grounded in actual content.
+        if let Some(ref hits) = candidate_initial_hits {
+            let search_text = match &last_response.thinking {
+                Some(t) => format!("{}\n{}", t, last_response.answer),
+                None => last_response.answer.clone(),
+            };
+            let mut seen_paths = std::collections::HashSet::new();
+            let mentioned: Vec<(StubId, f32)> = hits
+                .iter()
+                .filter(|h| h.score >= self.config.thresholds.load)
+                .filter(|h| {
+                    let norm = h.stub.path.trim_start_matches("./");
+                    search_text.contains(norm) || search_text.contains(&h.stub.path)
+                })
+                .filter(|h| seen_paths.insert(h.stub.path.clone()))
+                .map(|h| (h.stub.id.clone(), h.score))
+                .collect();
+            if !mentioned.is_empty() {
+                debug!(count = mentioned.len(), "loading files mentioned in response to candidate list");
+                self.load_fragments(mentioned)?;
+                last_response = self.adapter.complete(CompletionRequest {
+                    system: system_prompt.clone(),
+                    user: user.to_string(),
+                    workspace_fragments: self.loaded.clone(),
+                    workspace_guidance: guidance.to_vec(),
+                })?;
+            }
+        }
 
         // Phase 2: Iterative recall refinement
         for i in 0..self.config.max_recall_iterations {
@@ -335,7 +397,7 @@ where
                 system: enriched_system,
                 user: user.to_string(),
                 workspace_fragments: self.loaded.clone(),
-                workspace_guidance: Vec::new(),
+                workspace_guidance: guidance.to_vec(),
             })?;
         }
 
@@ -367,6 +429,10 @@ where
                 Err(e) => warn!(error = %e, "session turn write failed"),
             }
             self.session = Some(sf);
+        }
+
+        if let Some(eval) = &mut self.evaluator {
+            eval.record_turn(count_tokens_cl100k(&last_response.answer));
         }
 
         Ok(last_response)
@@ -412,12 +478,16 @@ where
                 }
             }
 
+            let loaded_before = self.loaded.len();
             let hits = self.retriever.search(&probe.content, self.config.max_candidates)?;
             self.load_fragments(
                 hits.into_iter()
                     .map(|hit| (hit.stub.id, hit.score))
                     .collect(),
             )?;
+            if let Some(eval) = &mut self.evaluator {
+                eval.record_probe(&probe.content, self.loaded.len() > loaded_before, 0.0);
+            }
         }
 
         Ok(())
@@ -428,6 +498,9 @@ where
     fn process_annotations(&mut self, output: &str) {
         let annotations = extract_annotations(output);
         for ann in annotations {
+            if let Some(eval) = &mut self.evaluator {
+                eval.record_annotation(&ann.stub_id, &ann.content);
+            }
             let note = ConsolidationNote {
                 content: ann.content,
                 source: ConsolidationSource::ModelAnnotation,
@@ -526,6 +599,10 @@ where
                 .remove(&fragment.stub_id)
                 .unwrap_or(0.0);
 
+            if let Some(eval) = &mut self.evaluator {
+                eval.record_eviction(&fragment.stub_id, self.session_turn);
+            }
+
             let existing_annotations = self.provenance.consolidation_notes_for(&fragment.stub_id);
 
             let content = self
@@ -591,16 +668,20 @@ where
             };
 
             if current_tokens + fragment.tokens <= self.config.max_workspace_tokens {
+                let fragment_tokens = fragment.tokens;
                 debug!(
                     path = %fragment.locator.source,
                     score,
-                    tokens = fragment.tokens,
+                    tokens = fragment_tokens,
                     "fragment admitted"
                 );
                 self.relevance_scores.insert(stub_id.clone(), score);
                 self.loaded_ids.insert(stub_id.clone());
                 self.provenance.record_with_context(fragment.clone(), "", 0);
                 self.loaded.push(fragment);
+                if let Some(eval) = &mut self.evaluator {
+                    eval.record_recall(&stub_id, score, fragment_tokens);
+                }
             } else {
                 debug!(
                     path = %fragment.locator.source,

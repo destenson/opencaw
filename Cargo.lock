@@ -659,6 +659,7 @@ version = "0.1.0"
 dependencies = [
  "caw-adapters",
  "caw-core",
+ "caw-eval",
  "caw-index",
  "caw-ingest",
  "caw-transform",
