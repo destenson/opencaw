@@ -134,6 +134,10 @@ for model in "${models[@]}"; do
     cmd+=(--candidate "${model}")
 done
 
+if [[ "${#models[@]}" -gt 1 ]]; then
+    cmd+=(--ensemble)
+fi
+
 echo "selected ${#models[@]} model(s):" >&2
 for model in "${models[@]}"; do
     echo "  ${model}" >&2
