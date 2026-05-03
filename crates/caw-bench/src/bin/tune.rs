@@ -74,6 +74,12 @@ struct IntentReport {
 struct IntentSummary {
     model: String,
     exact_match_rate: f32,
+    /// Present in reports generated after the TP/FP/TN/FN scoring rewrite.
+    /// Absent in older reports; falls back to exact_match_rate scoring when None.
+    #[serde(default)]
+    micro_precision: Option<f32>,
+    #[serde(default)]
+    micro_recall: Option<f32>,
     parse_failures: usize,
 }
 
@@ -95,6 +101,8 @@ struct SweepModeSummary {
 
 struct IntentModelStats {
     scores: Vec<f32>,
+    precisions: Vec<Option<f32>>,
+    recalls: Vec<Option<f32>>,
     parse_failure_rates: Vec<f32>,
 }
 
@@ -102,29 +110,29 @@ impl IntentModelStats {
     fn new() -> Self {
         Self {
             scores: Vec::new(),
+            precisions: Vec::new(),
+            recalls: Vec::new(),
             parse_failure_rates: Vec::new(),
         }
     }
 
-    fn add(&mut self, score: f32, parse_failures: usize, cases: usize) {
+    fn add(
+        &mut self,
+        score: f32,
+        precision: Option<f32>,
+        recall: Option<f32>,
+        parse_failures: usize,
+        cases: usize,
+    ) {
         self.scores.push(score);
+        self.precisions.push(precision);
+        self.recalls.push(recall);
         let pfr = if cases > 0 {
             parse_failures as f32 / cases as f32
         } else {
             1.0
         };
         self.parse_failure_rates.push(pfr);
-    }
-
-    fn mean_score(&self) -> f32 {
-        if self.scores.is_empty() {
-            return 0.0;
-        }
-        self.scores.iter().sum::<f32>() / self.scores.len() as f32
-    }
-
-    fn min_score(&self) -> f32 {
-        self.scores.iter().cloned().fold(f32::INFINITY, f32::min)
     }
 
     fn mean_parse_failure_rate(&self) -> f32 {
@@ -138,14 +146,46 @@ impl IntentModelStats {
         self.scores.len()
     }
 
-    /// Combined score weighting both mean performance and consistency (min).
-    /// Multiplied by reliability factor (1 - parse_failure_rate) so a model
-    /// that often fails to emit valid JSON ranks below one that always does.
+    /// F_β with β=0.5 weights precision twice as much as recall, penalising
+    /// false-positive guidance more than missed guidance. Averaged across runs.
+    /// Falls back to the (0.6·mean + 0.4·min) exact-match formula when
+    /// precision/recall data are absent (old report format).
+    fn f_half(&self) -> f32 {
+        let pr_pairs: Vec<(f32, f32)> = self
+            .precisions
+            .iter()
+            .zip(self.recalls.iter())
+            .filter_map(|(p, r)| p.zip(*r))
+            .collect();
+
+        if pr_pairs.is_empty() {
+            let mean = self.scores.iter().sum::<f32>() / self.scores.len().max(1) as f32;
+            let min = self.scores.iter().cloned().fold(f32::INFINITY, f32::min);
+            return 0.6 * mean + 0.4 * min;
+        }
+
+        let sum: f32 = pr_pairs
+            .iter()
+            .map(|(p, r)| {
+                let denom = 0.25 * p + r;
+                if denom == 0.0 { 0.0 } else { 1.25 * p * r / denom }
+            })
+            .sum();
+        sum / pr_pairs.len() as f32
+    }
+
+    fn mean_precision(&self) -> Option<f32> {
+        let vals: Vec<f32> = self.precisions.iter().filter_map(|v| *v).collect();
+        if vals.is_empty() { None } else { Some(vals.iter().sum::<f32>() / vals.len() as f32) }
+    }
+
+    fn mean_recall(&self) -> Option<f32> {
+        let vals: Vec<f32> = self.recalls.iter().filter_map(|v| *v).collect();
+        if vals.is_empty() { None } else { Some(vals.iter().sum::<f32>() / vals.len() as f32) }
+    }
+
     fn combined_score(&self) -> f32 {
-        let mean = self.mean_score();
-        let min = self.min_score();
-        let pfr = self.mean_parse_failure_rate();
-        (0.6 * mean + 0.4 * min) * (1.0 - pfr)
+        self.f_half() * (1.0 - self.mean_parse_failure_rate())
     }
 }
 
@@ -206,6 +246,8 @@ fn load_intent_stats(intent_dir: &Path) -> Result<BTreeMap<String, IntentModelSt
                 .or_insert_with(IntentModelStats::new)
                 .add(
                     summary.exact_match_rate,
+                    summary.micro_precision,
+                    summary.micro_recall,
                     summary.parse_failures,
                     report.cases,
                 );
@@ -257,8 +299,8 @@ fn load_sweep_stats(sweep_dir: &Path) -> Result<BTreeMap<String, SweepModelStats
 struct IntentWinner {
     model: String,
     combined_score: f32,
-    mean_score: f32,
-    min_score: f32,
+    mean_precision: Option<f32>,
+    mean_recall: Option<f32>,
     runs: usize,
     mean_parse_failure_rate: f32,
 }
@@ -283,8 +325,8 @@ fn pick_intent_winner(
         .map(|(model, s)| IntentWinner {
             model: model.clone(),
             combined_score: s.combined_score(),
-            mean_score: s.mean_score(),
-            min_score: s.min_score(),
+            mean_precision: s.mean_precision(),
+            mean_recall: s.mean_recall(),
             runs: s.runs(),
             mean_parse_failure_rate: s.mean_parse_failure_rate(),
         })
@@ -325,15 +367,18 @@ fn render_toml(
     // Classifier
     match intent_winner {
         Some(w) => {
+            let pr_note = match (w.mean_precision, w.mean_recall) {
+                (Some(p), Some(r)) => format!("  P={p:.3}  R={r:.3}"),
+                _ => String::new(),
+            };
             out.push_str(&format!(
-                "# Intent classifier — best local model by combined score\n\
-                 # (0.6 × mean_exact_match + 0.4 × min_exact_match) × (1 - parse_failure_rate)\n\
-                 # score={:.3}  mean={:.3}  min={:.3}  parse_fail={:.1}%  runs={}\n",
+                "# Intent classifier — best local model by precision-weighted F_0.5\n\
+                 # F_0.5 = 1.25 × P × R / (0.25 × P + R)  weighted by (1 - parse_failure_rate)\n\
+                 # score={:.3}{pr_note}  parse_fail={:.1}%  runs={}\n",
                 w.combined_score,
-                w.mean_score,
-                w.min_score,
                 w.mean_parse_failure_rate * 100.0,
-                w.runs
+                w.runs,
+                pr_note = pr_note,
             ));
             out.push_str(&format!("intent_model = {:?}\n\n", w.model));
         }
@@ -367,7 +412,7 @@ fn render_toml(
         out.push_str(
             "# ── Intent classifier leaderboard ──────────────────────────────────────────\n",
         );
-        out.push_str("# Rank  Score   Mean    Min     PFail%  Runs  Model\n");
+        out.push_str("# Rank  F_0.5  P      R      PFail%  Runs  Model\n");
         let mut ranked: Vec<_> = intent_stats
             .iter()
             .filter(|(_, s)| s.runs() >= min_runs)
@@ -378,12 +423,14 @@ fn render_toml(
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         for (i, (model, s)) in ranked.iter().enumerate() {
+            let p_str = s.mean_precision().map_or("  n/a".to_string(), |p| format!("{p:.3}"));
+            let r_str = s.mean_recall().map_or("  n/a".to_string(), |r| format!("{r:.3}"));
             out.push_str(&format!(
-                "# {:>4}   {:.3}   {:.3}   {:.3}   {:>5.1}%  {:>4}  {}\n",
+                "# {:>4}   {:.3}  {}  {}  {:>5.1}%  {:>4}  {}\n",
                 i + 1,
                 s.combined_score(),
-                s.mean_score(),
-                s.min_score(),
+                p_str,
+                r_str,
                 s.mean_parse_failure_rate() * 100.0,
                 s.runs(),
                 model
@@ -426,9 +473,13 @@ fn render_rust(intent_winner: Option<&IntentWinner>, sweep_winner: Option<&Sweep
 
     match intent_winner {
         Some(w) => {
+            let pr_note = match (w.mean_precision, w.mean_recall) {
+                (Some(p), Some(r)) => format!("  P={p:.3}  R={r:.3}"),
+                _ => String::new(),
+            };
             out.push_str(&format!(
-                "// Intent classifier: score={:.3}  mean={:.3}  min={:.3}  runs={}\n",
-                w.combined_score, w.mean_score, w.min_score, w.runs
+                "// Intent classifier: F_0.5={:.3}{}  runs={}\n",
+                w.combined_score, pr_note, w.runs
             ));
             out.push_str(&format!(
                 "pub const DEFAULT_INTENT_MODEL: &str = {:?};\n\n",
