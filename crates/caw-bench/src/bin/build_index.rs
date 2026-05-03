@@ -29,7 +29,7 @@ use std::time::Instant;
 
 use caw_core::{EmbeddingProvider, Stub};
 use caw_index::{CandleEmbeddingProvider, OnnxEmbeddingProvider, OnnxVariant, SqliteStubStore};
-use caw_ingest::{IngestionPipeline, SourceDocument};
+use caw_ingest::{DocumentId, IngestionPipeline, SourceDocument};
 use clap::ValueEnum;
 use walkdir::WalkDir;
 
@@ -220,7 +220,7 @@ fn main() -> Result<()> {
     let mut store = SqliteStubStore::new(&out_str, dim)
         .with_context(|| format!("open sqlite store at {}", cli.out.display()))?;
 
-    let already: HashSet<(String, u64)> = store
+    let already: HashSet<DocumentId> = store
         .indexed_paths()
         .context("read existing index for resume")?
         .into_iter()

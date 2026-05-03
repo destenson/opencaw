@@ -2,6 +2,13 @@ pub mod chunking;
 pub mod summarizer;
 mod tree_sitter_outline;
 
+/// `(path, mtime_unix_secs)` pair identifying files by their name and modification time.
+pub type DocumentId = (String, u64);
+
+/// Set of `(path, mtime_unix_secs)` pairs identifying files already present
+/// in the index. Used to skip reading and re-embedding unchanged files at startup.
+pub type DocumentIdSet = std::collections::HashSet<DocumentId>;
+
 use caw_core::tokenizer::TiktokenTokenizer;
 use caw_core::{CawError, CawResult, ContentKind, Stub, StubId, Tokenizer, WhitespaceTokenizer};
 use chunking::{ChunkingConfig, chunk_document, chunk_summary};
@@ -226,7 +233,7 @@ impl IngestionPipeline {
         &self,
         root: &Path,
         skip_gitignore: bool,
-        already_indexed: &std::collections::HashSet<(String, u64)>,
+        already_indexed: &DocumentIdSet,
     ) -> CawResult<(Vec<(Stub, String)>, usize)> {
         // If a .cawignore file exists at the root, use it as the sole ignore
         // source instead of .gitignore. This lets the user include gitignored

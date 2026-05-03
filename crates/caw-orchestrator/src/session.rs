@@ -1,5 +1,5 @@
 use caw_core::{CawResult, ContentKind, Retriever};
-use caw_ingest::{IngestionPipeline, SourceDocument};
+use caw_ingest::{DocumentIdSet, IngestionPipeline, SourceDocument};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -22,9 +22,7 @@ impl SessionFile {
 
     /// Format the turn, append to the session file, and return the formatted text.
     pub fn write_turn(&mut self, turn: usize, user: &str, answer: &str) -> CawResult<String> {
-        let text = format!(
-            "## Turn {turn}\n\n[User]: {user}\n\n[Assistant]: {answer}\n\n---\n\n"
-        );
+        let text = format!("## Turn {turn}\n\n[User]: {user}\n\n[Assistant]: {answer}\n\n---\n\n");
         let file = self.file.get_or_insert(
             OpenOptions::new()
                 .create(true)
@@ -32,11 +30,9 @@ impl SessionFile {
                 .open(&self.path)
                 .map_err(|e| caw_core::CawError::Io(e.to_string()))?,
         );
-        file
-            .write_all(text.as_bytes())
+        file.write_all(text.as_bytes())
             .map_err(|e| caw_core::CawError::Io(e.to_string()))?;
-        file
-            .flush()
+        file.flush()
             .map_err(|e| caw_core::CawError::Io(e.to_string()))?;
         Ok(text)
     }
@@ -50,7 +46,7 @@ impl SessionFile {
         current_path: &Path,
         pipeline: &IngestionPipeline,
         retriever: &mut R,
-        already_indexed: &std::collections::HashSet<(String, u64)>,
+        already_indexed: &DocumentIdSet,
     ) -> CawResult<usize> {
         let entries = match std::fs::read_dir(session_dir) {
             Ok(e) => e,
@@ -99,8 +95,8 @@ fn load_session_file<R: Retriever>(
     pipeline: &IngestionPipeline,
     retriever: &mut R,
 ) -> CawResult<usize> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| caw_core::CawError::Io(e.to_string()))?;
+    let content =
+        std::fs::read_to_string(path).map_err(|e| caw_core::CawError::Io(e.to_string()))?;
     let mtime = std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
@@ -152,7 +148,20 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
         rem -= dy;
         y += 1;
     }
-    let months = [31u64, if is_leap(y) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let months = [
+        31u64,
+        if is_leap(y) { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut mo = 1u64;
     for &dm in &months {
         if rem < dm {
@@ -167,4 +176,3 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 fn is_leap(y: u64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
-

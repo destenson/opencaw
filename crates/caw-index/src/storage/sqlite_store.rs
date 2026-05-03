@@ -2,6 +2,7 @@ use caw_core::{
     CawError, CawResult, ConsolidationNote, ConsolidationSource, ReindexQueue, Stub, StubId,
     StubStore,
 };
+use caw_ingest::DocumentId;
 use rusqlite::{Connection, params};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
@@ -349,7 +350,7 @@ impl SqliteStubStore {
     /// resumable builders to skip files that have already been ingested
     /// without having to decode full stubs. Cheap — a single SELECT DISTINCT
     /// against the indexed `path` column.
-    pub fn indexed_paths(&self) -> CawResult<Vec<(String, u64)>> {
+    pub fn indexed_paths(&self) -> CawResult<Vec<DocumentId>> {
         // Exclude stale rows so the resumable builder reingests files whose
         // source changed since last index — otherwise the skip-already-indexed
         // fast path would keep stale stubs alive forever.

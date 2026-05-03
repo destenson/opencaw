@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use caw_adapters::MockAdapter;
 use caw_core::{
-    count_tokens_cl100k, CompletionRequest, EmbeddingProvider, Locator, ModelAdapter,
-    RecallFragment, Retriever, ScoredStub, StubId, StubStore, Tokenizer, VectorIndex,
-    WhitespaceTokenizer, candidate_list_fragment,
+    CompletionRequest, EmbeddingProvider, Locator, ModelAdapter, RecallFragment, Retriever,
+    ScoredStub, StubId, StubStore, Tokenizer, VectorIndex, WhitespaceTokenizer,
+    candidate_list_fragment, count_tokens_cl100k,
 };
 use caw_curation::{
     ConversationTurn, CurationPipelineBuilder, ExtractiveHistorySummarizer,
@@ -11,8 +11,8 @@ use caw_curation::{
     LlmToolOutputCompressor, ToolOutputCompressorConfig, TurnMetadata, TurnRole,
 };
 use caw_index::{FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
-use caw_ingest::IngestionPipeline;
 use caw_ingest::summarizer::LlmSummarizer;
+use caw_ingest::{DocumentIdSet, IngestionPipeline};
 use caw_orchestrator::consolidation::LlmConsolidation;
 use caw_orchestrator::dynamic::DynamicRecallConfig;
 use caw_orchestrator::session::SessionFile;
@@ -162,8 +162,7 @@ fn main() -> Result<()> {
         .init();
 
     eprintln!("Loading embedding model...");
-    let mut embedder = FastEmbedProvider::bge_small()
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let mut embedder = FastEmbedProvider::bge_small().map_err(|e| anyhow::anyhow!("{}", e))?;
     let dimension = embedder.dimension();
 
     let db_path = cli
@@ -212,7 +211,7 @@ fn main() -> Result<()> {
     // Load (path, mtime) pairs already in the store so ingest_directory can
     // skip reading unchanged files. A stat syscall per file is much cheaper
     // than reading and hashing it.
-    let already_indexed: std::collections::HashSet<(String, u64)> = store
+    let already_indexed: DocumentIdSet = store
         .indexed_paths()
         .unwrap_or_default()
         .into_iter()
@@ -238,7 +237,9 @@ fn main() -> Result<()> {
     }
 
     // Rebuild the HNSW index from all stored embeddings (cached + newly ingested).
-    let all_emb = store.all_embeddings().context("Failed to load embeddings")?;
+    let all_emb = store
+        .all_embeddings()
+        .context("Failed to load embeddings")?;
     let total_indexed = all_emb.len();
     let mut vector_index = HnswVectorIndex::new();
     let mut trace_index = HnswVectorIndex::new();
@@ -249,9 +250,7 @@ fn main() -> Result<()> {
 
     eprintln!(
         "Index ready: {} indexed ({} new, {} skipped).",
-        total_indexed,
-        ingested,
-        skipped,
+        total_indexed, ingested, skipped,
     );
 
     // Check system prompt budget
@@ -273,7 +272,8 @@ fn main() -> Result<()> {
         ..Default::default()
     };
 
-    let adapter: Box<dyn ModelAdapter> = build_completion_adapter(&cli.adapter, cli.model.as_deref())?;
+    let adapter: Box<dyn ModelAdapter> =
+        build_completion_adapter(&cli.adapter, cli.model.as_deref())?;
 
     eprintln!("Using adapter: {}", adapter.model_name());
 
@@ -321,7 +321,10 @@ fn build_aux_adapter(model: &str) -> Box<dyn ModelAdapter + Send + Sync> {
     }
 }
 
-fn build_completion_adapter(adapter_name: &str, model: Option<&str>) -> Result<Box<dyn ModelAdapter>> {
+fn build_completion_adapter(
+    adapter_name: &str,
+    model: Option<&str>,
+) -> Result<Box<dyn ModelAdapter>> {
     let adapter: Box<dyn ModelAdapter> = match adapter_name {
         "mock" => Box::new(MockAdapter::new("mock-local", true)),
         "anthropic" | "claude" => {
@@ -425,7 +428,7 @@ fn run_interactive(
     context_budget: usize,
     session_dir: Option<&std::path::Path>,
     amnesia: bool,
-    already_indexed: &std::collections::HashSet<(String, u64)>,
+    already_indexed: &DocumentIdSet,
 ) -> Result<()> {
     use caw_transform::{extract_probes, extract_thinking_steps};
     use std::collections::{HashMap, HashSet};
@@ -445,7 +448,13 @@ fn run_interactive(
         let pipeline = caw_ingest::IngestionPipeline::new();
         let file_name = format!("session-{}.md", caw_orchestrator::session::timestamp_str());
         let current_path = sdir.join(&file_name);
-        match SessionFile::load_previous(sdir, &current_path, &pipeline, &mut retriever, &already_indexed) {
+        match SessionFile::load_previous(
+            sdir,
+            &current_path,
+            &pipeline,
+            &mut retriever,
+            &already_indexed,
+        ) {
             Ok(n) => eprintln!("[session] loaded {n} stubs from previous sessions"),
             Err(e) => eprintln!("[session] warning: {e}"),
         }
@@ -607,7 +616,14 @@ fn run_interactive(
             candidate_list_fragment(&hits, list_threshold)
         });
         if candidate_fragment.is_none() {
-            load_fragments(&mut retriever, &hits, &mut loaded, &mut loaded_ids, &mut relevance_scores, &config)?;
+            load_fragments(
+                &mut retriever,
+                &hits,
+                &mut loaded,
+                &mut loaded_ids,
+                &mut relevance_scores,
+                &config,
+            )?;
         } else {
             debug!(
                 above_threshold,

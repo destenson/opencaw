@@ -7,7 +7,7 @@ use caw_core::{
     RecallFragment, RecallThresholds, Retriever, StubId, StubStore, VectorIndex,
     candidate_list_fragment, tokenize_terms,
 };
-use caw_ingest::IngestionPipeline;
+use caw_ingest::{IngestionPipeline, DocumentIdSet};
 use caw_transform::{extract_annotations, extract_probes, extract_thinking_steps, strip_markers};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -145,7 +145,7 @@ where
         let pipeline = IngestionPipeline::new();
         let file_name = format!("session-{}.md", session::timestamp_str());
         let file_path = session_dir.join(file_name);
-        let loaded = SessionFile::load_previous(session_dir, &file_path, &pipeline, &mut self.retriever, &std::collections::HashSet::new())?;
+        let loaded = SessionFile::load_previous(session_dir, &file_path, &pipeline, &mut self.retriever, &DocumentIdSet::new())?;
         debug!(dir = %session_dir.display(), stubs = loaded, "loaded prior session history");
         self.session = Some(SessionFile::create(file_path)?);
         Ok(self)
