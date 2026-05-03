@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use caw_bench::adapter_factory::{self, AdapterKind, AdapterSpec};
 use caw_bench::intent::{IntentBenchCase, default_cases, empty_field_scores, score_case};
 use caw_core::{CompletionRequest, ModelAdapter, QueryIntent};
+use std::collections::HashSet;
 use serde::Serialize;
 use std::io::{self, Write};
 
@@ -267,8 +268,8 @@ fn run_candidate(
 
     for case in cases {
         match classify_case(adapter, case) {
-            Ok((predicted, raw)) => {
-                let score = score_case(&case.expected, &predicted);
+            Ok((predicted, emitted_keys, raw)) => {
+                let score = score_case(&case.expected, &predicted, &emitted_keys);
                 if score.exact_match {
                     exact_matches += 1;
                 }
@@ -359,7 +360,7 @@ fn run_candidate(
 fn classify_case(
     adapter: &dyn ModelAdapter,
     case: &IntentBenchCase,
-) -> Result<(QueryIntent, String), (anyhow::Error, String)> {
+) -> Result<(QueryIntent, HashSet<String>, String), (anyhow::Error, String)> {
     let response = adapter
         .complete(CompletionRequest {
             system: QueryIntent::classifier_system_prompt().to_string(),
@@ -370,7 +371,7 @@ fn classify_case(
         .map_err(|e| (anyhow::anyhow!(e), String::new()))?;
     let raw = response.answer.clone();
     QueryIntent::from_classifier_response(&response.answer)
-        .map(|intent| (intent, raw.clone()))
+        .map(|(intent, keys)| (intent, keys, raw.clone()))
         .map_err(|e| {
             (anyhow::anyhow!("invalid classifier response for {}: {e}", case.id), raw)
         })

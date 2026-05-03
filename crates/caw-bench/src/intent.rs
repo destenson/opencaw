@@ -1,6 +1,6 @@
 use caw_core::QueryIntent;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct IntentBenchCase {
@@ -34,7 +34,7 @@ pub fn default_cases() -> Vec<IntentBenchCase> {
                 is_inventory_request: true,
                 wants_exact_names_or_paths: true,
                 needs_grounded_evidence_only: true,
-                confidence: 1.0,
+                confidence: Some(1.0),
                 ..Default::default()
             },
         },
@@ -46,7 +46,7 @@ pub fn default_cases() -> Vec<IntentBenchCase> {
                 is_results_request: true,
                 wants_numeric_values: true,
                 needs_grounded_evidence_only: true,
-                confidence: 1.0,
+                confidence: Some(1.0),
                 ..Default::default()
             },
         },
@@ -59,7 +59,7 @@ pub fn default_cases() -> Vec<IntentBenchCase> {
                 wants_exact_names_or_paths: true,
                 wants_latest_run_only: true,
                 needs_grounded_evidence_only: true,
-                confidence: 1.0,
+                confidence: Some(1.0),
                 ..Default::default()
             },
         },
@@ -73,7 +73,7 @@ pub fn default_cases() -> Vec<IntentBenchCase> {
                 wants_latest_run_only: true,
                 wants_comparison: true,
                 needs_grounded_evidence_only: true,
-                confidence: 1.0,
+                confidence: Some(1.0),
                 ..Default::default()
             },
         },
@@ -86,7 +86,7 @@ pub fn default_cases() -> Vec<IntentBenchCase> {
                 wants_comparison: true,
                 wants_explanation: true,
                 needs_grounded_evidence_only: true,
-                confidence: 1.0,
+                confidence: Some(1.0),
                 ..Default::default()
             },
         },
@@ -98,7 +98,7 @@ pub fn default_cases() -> Vec<IntentBenchCase> {
                 is_status_request: true,
                 wants_completion_state: true,
                 needs_grounded_evidence_only: true,
-                confidence: 1.0,
+                confidence: Some(1.0),
                 ..Default::default()
             },
         },
@@ -111,7 +111,7 @@ pub fn default_cases() -> Vec<IntentBenchCase> {
                 is_status_request: true,
                 wants_completion_state: true,
                 needs_grounded_evidence_only: true,
-                confidence: 1.0,
+                confidence: Some(1.0),
                 ..Default::default()
             },
         },
@@ -124,7 +124,7 @@ pub fn default_cases() -> Vec<IntentBenchCase> {
                 is_status_request: true,
                 wants_completion_state: true,
                 needs_grounded_evidence_only: true,
-                confidence: 1.0,
+                confidence: Some(1.0),
                 ..Default::default()
             },
         },
@@ -136,7 +136,7 @@ pub fn default_cases() -> Vec<IntentBenchCase> {
                 is_next_step_request: true,
                 wants_recommended_actions: true,
                 needs_grounded_evidence_only: true,
-                confidence: 1.0,
+                confidence: Some(1.0),
                 ..Default::default()
             },
         },
@@ -148,7 +148,7 @@ pub fn default_cases() -> Vec<IntentBenchCase> {
                 is_next_step_request: true,
                 wants_recommended_actions: true,
                 needs_grounded_evidence_only: true,
-                confidence: 1.0,
+                confidence: Some(1.0),
                 ..Default::default()
             },
         },
@@ -160,7 +160,7 @@ pub fn default_cases() -> Vec<IntentBenchCase> {
                 is_inventory_request: true,
                 is_results_request: true,
                 needs_grounded_evidence_only: true,
-                confidence: 1.0,
+                confidence: Some(1.0),
                 ..Default::default()
             },
         },
@@ -173,7 +173,7 @@ pub fn default_cases() -> Vec<IntentBenchCase> {
                 wants_exact_names_or_paths: true,
                 wants_numeric_values: true,
                 needs_grounded_evidence_only: true,
-                confidence: 1.0,
+                confidence: Some(1.0),
                 ..Default::default()
             },
         },
@@ -186,64 +186,46 @@ pub fn default_cases() -> Vec<IntentBenchCase> {
                 wants_comparison: true,
                 wants_explanation: true,
                 needs_grounded_evidence_only: true,
-                confidence: 1.0,
+                confidence: Some(1.0),
                 ..Default::default()
             },
         },
     ]
 }
 
-pub fn score_case(expected: &QueryIntent, predicted: &QueryIntent) -> IntentCaseScore {
+/// Score one classification result.
+///
+/// `emitted_keys` is the set of field names the model actually included in its JSON.
+/// A field absent from `emitted_keys` is treated as an intentional false (sparse output),
+/// so it only counts as wrong when the expected value is true.
+pub fn score_case(
+    expected: &QueryIntent,
+    predicted: &QueryIntent,
+    emitted_keys: &HashSet<String>,
+) -> IntentCaseScore {
+    let score_bool = |name: &str, exp: bool, pred: bool| -> bool {
+        if !emitted_keys.contains(name) {
+            // Absent field: correct only if we didn't expect true.
+            !exp
+        } else {
+            exp == pred
+        }
+    };
+
     let mut fields = BTreeMap::new();
-    fields.insert(
-        "is_inventory_request",
-        expected.is_inventory_request == predicted.is_inventory_request,
-    );
-    fields.insert(
-        "is_results_request",
-        expected.is_results_request == predicted.is_results_request,
-    );
-    fields.insert(
-        "is_status_request",
-        expected.is_status_request == predicted.is_status_request,
-    );
-    fields.insert(
-        "is_next_step_request",
-        expected.is_next_step_request == predicted.is_next_step_request,
-    );
-    fields.insert(
-        "wants_exact_names_or_paths",
-        expected.wants_exact_names_or_paths == predicted.wants_exact_names_or_paths,
-    );
-    fields.insert(
-        "wants_numeric_values",
-        expected.wants_numeric_values == predicted.wants_numeric_values,
-    );
-    fields.insert(
-        "wants_latest_run_only",
-        expected.wants_latest_run_only == predicted.wants_latest_run_only,
-    );
-    fields.insert(
-        "wants_comparison",
-        expected.wants_comparison == predicted.wants_comparison,
-    );
-    fields.insert(
-        "wants_explanation",
-        expected.wants_explanation == predicted.wants_explanation,
-    );
-    fields.insert(
-        "wants_completion_state",
-        expected.wants_completion_state == predicted.wants_completion_state,
-    );
-    fields.insert(
-        "wants_recommended_actions",
-        expected.wants_recommended_actions == predicted.wants_recommended_actions,
-    );
-    fields.insert(
-        "needs_grounded_evidence_only",
-        expected.needs_grounded_evidence_only == predicted.needs_grounded_evidence_only,
-    );
-    fields.insert("abstain", expected.abstain == predicted.abstain);
+    fields.insert("is_inventory_request", score_bool("is_inventory_request", expected.is_inventory_request, predicted.is_inventory_request));
+    fields.insert("is_results_request", score_bool("is_results_request", expected.is_results_request, predicted.is_results_request));
+    fields.insert("is_status_request", score_bool("is_status_request", expected.is_status_request, predicted.is_status_request));
+    fields.insert("is_next_step_request", score_bool("is_next_step_request", expected.is_next_step_request, predicted.is_next_step_request));
+    fields.insert("wants_exact_names_or_paths", score_bool("wants_exact_names_or_paths", expected.wants_exact_names_or_paths, predicted.wants_exact_names_or_paths));
+    fields.insert("wants_numeric_values", score_bool("wants_numeric_values", expected.wants_numeric_values, predicted.wants_numeric_values));
+    fields.insert("wants_latest_run_only", score_bool("wants_latest_run_only", expected.wants_latest_run_only, predicted.wants_latest_run_only));
+    fields.insert("wants_comparison", score_bool("wants_comparison", expected.wants_comparison, predicted.wants_comparison));
+    fields.insert("wants_explanation", score_bool("wants_explanation", expected.wants_explanation, predicted.wants_explanation));
+    fields.insert("wants_completion_state", score_bool("wants_completion_state", expected.wants_completion_state, predicted.wants_completion_state));
+    fields.insert("wants_recommended_actions", score_bool("wants_recommended_actions", expected.wants_recommended_actions, predicted.wants_recommended_actions));
+    fields.insert("needs_grounded_evidence_only", score_bool("needs_grounded_evidence_only", expected.needs_grounded_evidence_only, predicted.needs_grounded_evidence_only));
+    fields.insert("abstain", score_bool("abstain", expected.abstain, predicted.abstain));
 
     let correct_fields = fields.values().filter(|ok| **ok).count();
     let total_fields = fields.len();

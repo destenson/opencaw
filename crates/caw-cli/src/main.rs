@@ -461,6 +461,7 @@ fn classify_query_intent(adapter: &dyn ModelAdapter, query: &str) -> Result<Quer
     })?;
 
     QueryIntent::from_classifier_response(&response.answer)
+        .map(|(intent, _keys)| intent)
         .map_err(|e| anyhow::anyhow!("intent classifier returned invalid output: {e}"))
 }
 

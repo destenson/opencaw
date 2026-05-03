@@ -7,6 +7,8 @@ pub use provenance::tokenize_terms;
 pub use reindex::{ChannelReindexQueue, NoopReindexQueue, ReindexQueue, ReindexReceiver};
 pub use tokenizer::count_tokens_cl100k;
 
+use std::collections::{HashMap, HashSet};
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -393,7 +395,11 @@ pub struct QueryIntent {
     pub wants_recommended_actions: bool,
     pub needs_grounded_evidence_only: bool,
     pub abstain: bool,
-    pub confidence: f32,
+    pub confidence: Option<f32>,
+    /// Arbitrary extra signals emitted by the classifier beyond the fixed schema.
+    /// Bool-true values and non-empty strings are forwarded as guidance to the answer model.
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 impl QueryIntent {
@@ -428,21 +434,25 @@ impl QueryIntent {
         format!("Classify the user's query for retrieval planning.\n\nUser query:\n{query}\n")
     }
 
-    pub fn from_classifier_response(raw: &str) -> CawResult<Self> {
+    /// Parse a classifier response. Returns the intent and the set of top-level keys
+    /// the model actually emitted, so callers can distinguish "absent" from "false".
+    pub fn from_classifier_response(raw: &str) -> CawResult<(Self, HashSet<String>)> {
         let json = extract_json_object(raw).ok_or_else(|| {
             CawError::InvalidInput("classifier did not return a JSON object".into())
         })?;
-        // Parse via Value first so duplicate keys (e.g. "confidence":1.0,"confidence":1.0 from
-        // some models) are silently collapsed to the last value rather than rejected.
+        // Parse via Value first so duplicate keys are silently collapsed to the last value.
         let value: serde_json::Value = serde_json::from_str(json)
             .map_err(|e| CawError::InvalidInput(format!("invalid classifier JSON: {e}")))?;
+        let emitted_keys: HashSet<String> = value
+            .as_object()
+            .map(|obj| obj.keys().cloned().collect())
+            .unwrap_or_default();
         let mut parsed: Self = serde_json::from_value(value)
             .map_err(|e| CawError::InvalidInput(format!("invalid classifier JSON: {e}")))?;
-        if !parsed.confidence.is_finite() {
-            parsed.confidence = 0.0;
+        if let Some(c) = parsed.confidence {
+            parsed.confidence = Some(if c.is_finite() { c.clamp(0.0, 1.0) } else { 0.0 });
         }
-        parsed.confidence = parsed.confidence.clamp(0.0, 1.0);
-        Ok(parsed)
+        Ok((parsed, emitted_keys))
     }
 
     pub fn guidance_lines(&self) -> Vec<String> {
@@ -513,11 +523,22 @@ impl QueryIntent {
                 "If recalled context lacks direct evidence, do not guess; state what evidence, artifact, or file is needed to fulfill the request.".to_string(),
             );
         }
+        for (key, val) in &self.extra {
+            match val {
+                serde_json::Value::Bool(true) => {
+                    lines.push(format!("Additional context: {}.", key.replace('_', " ")));
+                }
+                serde_json::Value::String(s) if !s.is_empty() => {
+                    lines.push(s.clone());
+                }
+                _ => {}
+            }
+        }
         lines
     }
 
     pub fn is_actionable(&self, min_confidence: f32) -> bool {
-        !self.abstain && self.confidence >= min_confidence
+        !self.abstain && self.confidence.map_or(true, |c| c >= min_confidence)
     }
 }
 
@@ -1071,12 +1092,14 @@ mod tests {
 
     #[test]
     fn query_intent_parses_json_from_classifier_output() {
-        let parsed = QueryIntent::from_classifier_response(
+        let (parsed, keys) = QueryIntent::from_classifier_response(
             "```json\n{\"is_inventory_request\":true,\"confidence\":0.82}\n```",
         )
         .unwrap();
         assert!(parsed.is_inventory_request);
-        assert_eq!(parsed.confidence, 0.82);
+        assert_eq!(parsed.confidence, Some(0.82));
+        assert!(keys.contains("is_inventory_request"));
+        assert!(keys.contains("confidence"));
     }
 
     #[test]
@@ -1089,7 +1112,7 @@ mod tests {
                 is_results_request: true,
                 wants_numeric_values: true,
                 needs_grounded_evidence_only: true,
-                confidence: 0.9,
+                confidence: Some(0.9),
                 ..Default::default()
             }
             .guidance_lines(),
@@ -1119,7 +1142,7 @@ mod tests {
                 is_status_request: true,
                 wants_completion_state: true,
                 needs_grounded_evidence_only: true,
-                confidence: 0.93,
+                confidence: Some(0.93),
                 ..Default::default()
             }
             .guidance_lines(),
@@ -1150,7 +1173,7 @@ mod tests {
                 is_next_step_request: true,
                 wants_recommended_actions: true,
                 needs_grounded_evidence_only: true,
-                confidence: 0.88,
+                confidence: Some(0.88),
                 ..Default::default()
             }
             .guidance_lines(),
