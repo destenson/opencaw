@@ -75,10 +75,8 @@ pub fn is_looping(text: &str) -> bool {
     // Trigram diversity collapse
     if words.len() >= 30 {
         let total = words.len() - 2;
-        let unique: std::collections::HashSet<[&str; 3]> = words
-            .windows(3)
-            .map(|w| [w[0], w[1], w[2]])
-            .collect();
+        let unique: std::collections::HashSet<[&str; 3]> =
+            words.windows(3).map(|w| [w[0], w[1], w[2]]).collect();
         if unique.len() * 10 < total {
             return true;
         }
@@ -385,12 +383,14 @@ pub struct QueryIntent {
     pub is_inventory_request: bool,
     pub is_results_request: bool,
     pub is_status_request: bool,
+    pub is_next_step_request: bool,
     pub wants_exact_names_or_paths: bool,
     pub wants_numeric_values: bool,
     pub wants_latest_run_only: bool,
     pub wants_comparison: bool,
     pub wants_explanation: bool,
     pub wants_completion_state: bool,
+    pub wants_recommended_actions: bool,
     pub needs_grounded_evidence_only: bool,
     pub abstain: bool,
     pub confidence: f32,
@@ -402,24 +402,23 @@ impl QueryIntent {
             "You are a query-intent classifier for context planning. ",
             "Return exactly one JSON object and no surrounding prose or markdown. ",
             "Use this schema with booleans plus a confidence float in [0,1]: ",
-            "{\"is_inventory_request\":bool,\"is_results_request\":bool,\"is_status_request\":bool,",
+            "{\"is_inventory_request\":bool,\"is_results_request\":bool,\"is_status_request\":bool,\"is_next_step_request\":bool,",
             "\"wants_exact_names_or_paths\":bool,\"wants_numeric_values\":bool,",
             "\"wants_latest_run_only\":bool,\"wants_comparison\":bool,",
-            "\"wants_explanation\":bool,\"wants_completion_state\":bool,\"needs_grounded_evidence_only\":bool,",
+            "\"wants_explanation\":bool,\"wants_completion_state\":bool,\"wants_recommended_actions\":bool,\"needs_grounded_evidence_only\":bool,",
             "\"abstain\":bool,\"confidence\":number}. ",
             "Mark abstain=true when the query is ambiguous or you are not confident enough to route retrieval."
         )
     }
 
     pub fn classifier_user_prompt(query: &str) -> String {
-        format!(
-            "Classify the user's query for retrieval planning.\n\nUser query:\n{query}\n"
-        )
+        format!("Classify the user's query for retrieval planning.\n\nUser query:\n{query}\n")
     }
 
     pub fn from_classifier_response(raw: &str) -> CawResult<Self> {
-        let json = extract_json_object(raw)
-            .ok_or_else(|| CawError::InvalidInput("classifier did not return a JSON object".into()))?;
+        let json = extract_json_object(raw).ok_or_else(|| {
+            CawError::InvalidInput("classifier did not return a JSON object".into())
+        })?;
         let mut parsed: Self = serde_json::from_str(json)
             .map_err(|e| CawError::InvalidInput(format!("invalid classifier JSON: {e}")))?;
         if !parsed.confidence.is_finite() {
@@ -450,9 +449,15 @@ impl QueryIntent {
                 "For status questions, distinguish clearly between completed, pending, and unknown work based on recalled evidence.".to_string(),
             );
         }
+        if self.is_next_step_request {
+            lines.push(
+                "For next-step questions, recommend concrete next actions grounded in recalled evidence rather than generic advice.".to_string(),
+            );
+        }
         if self.wants_exact_names_or_paths {
             lines.push(
-                "Prefer precise artifact names, file names, and paths over paraphrases.".to_string(),
+                "Prefer precise artifact names, file names, and paths over paraphrases."
+                    .to_string(),
             );
         }
         if self.wants_numeric_values {
@@ -472,12 +477,18 @@ impl QueryIntent {
         }
         if self.wants_explanation {
             lines.push(
-                "Separate direct evidence from inference when explaining causes or tradeoffs.".to_string(),
+                "Separate direct evidence from inference when explaining causes or tradeoffs."
+                    .to_string(),
             );
         }
         if self.wants_completion_state {
             lines.push(
                 "State explicitly whether each relevant task or artifact is completed, still pending, or not evidenced; if completion cannot be determined, say what evidence is needed to decide it.".to_string(),
+            );
+        }
+        if self.wants_recommended_actions {
+            lines.push(
+                "When recommending next actions, tie each action to recalled evidence; if evidence is insufficient, say what planning or status evidence is needed before recommending a next step.".to_string(),
             );
         }
         if self.needs_grounded_evidence_only {
@@ -600,12 +611,10 @@ impl CompletionRequest {
             })
             .collect();
 
-        let inline_guidance: Vec<&str> = self
-            .workspace_guidance
-            .iter()
-            .map(String::as_str)
-            .collect();
-        let guidance = workspace_guidance(&self.workspace_fragments, &inline_guidance, extra_guidance);
+        let inline_guidance: Vec<&str> =
+            self.workspace_guidance.iter().map(String::as_str).collect();
+        let guidance =
+            workspace_guidance(&self.workspace_fragments, &inline_guidance, extra_guidance);
 
         format!(
             "\n\nRecalled workspace context (each block is verbatim from the cited source — \
@@ -993,7 +1002,11 @@ mod tests {
         }];
 
         let fragment = candidate_list_fragment(&hits, 0.7);
-        assert!(fragment.content.contains("discovery metadata, not evidence"));
+        assert!(
+            fragment
+                .content
+                .contains("discovery metadata, not evidence")
+        );
         assert!(fragment.content.contains("do not claim details"));
     }
 
@@ -1068,7 +1081,11 @@ mod tests {
         let formatted = request.format_workspace(ProvenanceFormat::Bracketed);
         assert!(formatted.contains("report only metrics and values explicitly present"));
         assert!(formatted.contains("Prefer exact numeric values and units"));
-        assert!(formatted.contains("state what evidence, artifact, or file is needed to fulfill the request"));
+        assert!(
+            formatted.contains(
+                "state what evidence, artifact, or file is needed to fulfill the request"
+            )
+        );
     }
 
     #[test]
@@ -1076,7 +1093,11 @@ mod tests {
         let request = CompletionRequest {
             system: String::new(),
             user: "is benchmarking all completed?".to_string(),
-            workspace_fragments: vec![sample_fragment("TODO.md", "full", "- benchmark harness: done")],
+            workspace_fragments: vec![sample_fragment(
+                "TODO.md",
+                "full",
+                "- benchmark harness: done",
+            )],
             workspace_guidance: QueryIntent {
                 is_status_request: true,
                 wants_completion_state: true,
@@ -1088,9 +1109,43 @@ mod tests {
         };
 
         let formatted = request.format_workspace(ProvenanceFormat::Bracketed);
-        assert!(formatted.contains("For status questions, distinguish clearly between completed, pending, and unknown work"));
-        assert!(formatted.contains("State explicitly whether each relevant task or artifact is completed"));
+        assert!(formatted.contains(
+            "For status questions, distinguish clearly between completed, pending, and unknown work"
+        ));
+        assert!(
+            formatted
+                .contains("State explicitly whether each relevant task or artifact is completed")
+        );
         assert!(formatted.contains("say what evidence is needed to decide it"));
+    }
+
+    #[test]
+    fn query_intent_next_step_guidance_is_added_to_workspace() {
+        let request = CompletionRequest {
+            system: String::new(),
+            user: "what's next?".to_string(),
+            workspace_fragments: vec![sample_fragment(
+                "TODO.md",
+                "full",
+                "- benchmark harness: done",
+            )],
+            workspace_guidance: QueryIntent {
+                is_next_step_request: true,
+                wants_recommended_actions: true,
+                needs_grounded_evidence_only: true,
+                confidence: 0.88,
+                ..Default::default()
+            }
+            .guidance_lines(),
+        };
+
+        let formatted = request.format_workspace(ProvenanceFormat::Bracketed);
+        assert!(formatted.contains(
+            "For next-step questions, recommend concrete next actions grounded in recalled evidence"
+        ));
+        assert!(formatted.contains(
+            "say what planning or status evidence is needed before recommending a next step"
+        ));
     }
 }
 
@@ -1103,10 +1158,16 @@ impl StubStore for () {
         Err(CawError::NotFound("no store configured".into()))
     }
     fn get_content(&self, id: &StubId) -> CawResult<String> {
-        Err(CawError::NotFound(format!("no store configured (stub {})", id.0)))
+        Err(CawError::NotFound(format!(
+            "no store configured (stub {})",
+            id.0
+        )))
     }
     fn get_stub(&self, id: &StubId) -> CawResult<Stub> {
-        Err(CawError::NotFound(format!("no store configured (stub {})", id.0)))
+        Err(CawError::NotFound(format!(
+            "no store configured (stub {})",
+            id.0
+        )))
     }
     fn get_by_content_hash(&self, _hash: &str) -> CawResult<Option<(Stub, Vec<f32>)>> {
         Ok(None)
