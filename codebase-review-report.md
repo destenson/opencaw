@@ -1,165 +1,226 @@
-# OpenCAW Codebase Review — 2026-05-01
+# OpenCAW Codebase Review
+
+**Date:** 2026-05-02
+**Branch:** try1
+**Reviewer:** codebase-review skill
+
+---
 
 ## Executive Summary
 
-OpenCAW is a well-structured Rust library in late-MVP state. The core recall pipeline — ingest, embed, retrieve, orchestrate, curate, evaluate — is implemented and the full workspace test suite passes cleanly, but the workspace still emits two dead-code warnings on a normal `cargo test --workspace`. The project's primary gaps are a missing calibration harness for model cooperation, mechanical-quality consolidation notes as the default, and no benchmark sweep data to back the library's threshold defaults. The most important next work is generating actual numbers from the benchmark harness that already exists, not adding new features.
+OpenCAW is a substantially complete v1 Rust library implementing thinking-trace-driven recall with eviction, consolidation, and context curation. The core loop — ingest → embed → retrieve → orchestrate → evict/consolidate — works end-to-end and is covered by a real integration test. The primary gap is that `caw-eval`'s `SessionEvaluator` is never wired into the orchestrator or CLI at runtime, meaning the measurement infrastructure that should drive threshold tuning is built but idle. The next action is wiring the evaluator into the orchestrator's `run_turn` loop so calibration numbers can be collected from actual runs.
 
 ---
 
-## Recent Activity (last 20 commits)
+## Implementation Status by Crate
 
-Entries below are based on the actual diffs at `HEAD`, not treated as verbatim truth from the commit subjects.
+### caw-core — Working
 
-1. `197ffe3` Remove `#[allow(dead_code)]` from `kind_for_path` and `RecallEvent`; warnings still remain in the test run
-2. `7a2c305` Make the reindex queue recover from poisoned locks, return tokenizer construction errors as `CawResult`, switch recall loading to scored `StubId` pairs, and move regexes to `LazyLock`
-3. `bcb06b4` Expand `SCOPE.md` and substantially rewrite the codebase review report
-4. `981eb39` Show crate/file/line in trace output
-5. `4c724c7` Add trace-level prompt/response logging to all adapters
-6. `c9b2070` Add tracing to orchestrator and Ollama streaming path
-7. `2dec7ea` cargo fmt
-8. `fc8788c` apply cargo clippy suggestions
-9. `09089fb` Refactor fixture_docs to use current mtime and improve metadata handling
-10. `aa48cb4` Purge "You are a helpful assistant."
-11. `eb334b9` Thinking-trace recall loop with Ollama streaming
-12. `7d236d3` Update dependencies in Cargo.toml files to use workspace references for caw-core
-13. `895f6ed` Add thinking field to CompletionResponse across adapters and implement split_thinking function
-14. `1f62ddf` Add Ollama demo with file ingestion and query orchestration
-15. `89ef01f` Enhance Groq demo with recall instrumentation and candidate visibility
-16. `c62bb9c` Reset orchestrator state before processing each query in Groq demo
-17. `c472947` Add Groq demo example and update dependencies in Cargo.toml
-18. `6e1b784` Fix semantic_demo example in project root
-19. `f6f217e` Add history externalization feature to context management framework
-20. `93b45be` Stale-stub detection on recall with reindex queue
+The shared type layer is solid. `CawError`, `Stub`, `RecallFragment`, `TokenBudget`, `ModelAdapter`, `EmbeddingProvider`, `StubStore`, `VectorIndex`, `Retriever`, and `BudgetScheduler` traits are all defined with appropriate defaults. `CompletionRequest::format_workspace` and `format_workspace_with_guidance` produce correct provenance-tagged output in both XML (Anthropic) and bracketed (OpenAI-protocol) formats.
 
-Recent work has focused on observability (tracing), adapter stability (Ollama streaming, ClaudeCode), and tightening mechanical quality around tokenizer construction and synchronization. The latest commit metadata slightly overstates the dead-code cleanup, so the review above treats the diff as authoritative. The caw-server v0 is still a functional proxy even though the README still describes it as scaffold-only.
+`QueryIntent` with `majority_vote`, `guidance_lines`, and `from_classifier_response` is well-implemented. The JSON extraction in `extract_json_object` correctly handles string escapes and nested objects.
 
----
+`AugmentationSignals` is defined and `QueryIntent::augmentation_signals()` produces it, but no caller outside of `caw-core`'s own tests calls `augmentation_signals()` — the orchestrator and CLI only use `guidance_lines()`. The augmentation-to-retrieval wiring described in TODO.md as an open item is genuinely absent.
 
-## Implementation Status
+Notable: `Range::apply` for `Range::Tokens` splits on whitespace rather than BPE tokens, which diverges from the type's name and from what cl100k-tokenized systems would expect. This is not a crash but produces wrong results for token-addressed retrieval.
 
-### Working
+10 unit tests, all passing.
 
-- **caw-core**: Complete. All shared types, traits, error types, tokenizer abstractions, provenance stores, scheduling interfaces, and the `CompletionRequest::format_workspace()` formatter with XML/bracketed dual-format support. `split_thinking()`, hysteresis types, `Range::apply()`, byte-range locators all present and functional. The recent tokenizer refactor now returns `CawResult` instead of panicking when bundled BPE data fails to load.
+### caw-ingest — Working
 
-- **caw-ingest**: Complete for v1 scope. SHA256 hashing, `TiktokenTokenizer` defaulting to cl100k, tree-sitter outlines for Rust/Python/JS/TS/Go with naive fallback, adaptive chunking with structural boundary detection, LLM and deterministic summarizers, parallel directory ingestion via rayon. `IngestionPipeline::ingest()` returns `(Stub, embed_text)` pairs with precomputed token counts to avoid double-tokenization.
+`IngestionPipeline` with cl100k tokenizer, tree-sitter outlines, adaptive chunking, and both deterministic and LLM summarizers is functional. `SourceDocument::from_path` is clean. `chunk_document` implements linear greedy chunking with structural boundary snapping.
 
-- **caw-index**: Complete. `SemanticRetriever`, `HybridRetriever` (0.6 semantic / 0.4 BM25), `HnswVectorIndex` (instant-distance), `FlatVectorIndex` (brute-force cosine). `SqliteStubStore` with WAL, batch inserts, consolidation persistence, stale-stub detection with `mtime` mismatch, and optional `ReindexQueue` integration. `BM25Index` with standard K1=1.2/B=0.75 IDF weighting. API embedding provider (OpenAI-shape). FastEmbed (BGE-small/BGE-base), Candle (CUDA), and ONNX providers behind feature flags.
+No dedicated unit tests. All coverage comes through the end-to-end integration test. `tree_sitter_outline.rs:12` has a bare `.expect("language version mismatch")` — this will panic at startup if the linked tree-sitter grammar ABI version disagrees with the tree-sitter runtime, with no way for the caller to recover.
 
-- **caw-transform**: Complete. `PromptTransformer` handles `[text](path)` markdown links and `@path` references. `extract_probes`, `extract_thinking_steps`, `extract_annotations` all functional. Tests cover the main paths.
+Ingestion is synchronous and batch-only. The background indexer with lazy fallback from the design doc (TODO.md item) is unimplemented. For the current CLI use pattern this is acceptable.
 
-- **caw-adapters**: Complete for all named targets. Anthropic (Claude Sonnet/Opus), Groq (Llama 70B/8B, Mixtral), Ollama (streaming + non-streaming, thinking-trace extraction), OpenAI-compatible (generic), ClaudeCode (local CLI), MockAdapter. All share a tokio runtime via `create_runtime()` and `new_with(runtime)` constructors. `TracingAdapter` wraps any adapter and writes JSONL request/response logs.
+### caw-index — Working
 
-- **caw-orchestrator**: Core `DynamicRecallOrchestrator` is complete. Multi-pass recall (up to `max_recall_iterations`), probe extraction, thinking-trace extraction, relevance decay per step, term-overlap refresh, budget-triggered eviction with consolidation notes, annotation parsing, degradation monitor integration. `DegradationMonitor` with per-component health, tiered fallback, and probe rate limiting is wired up and tested. The older `RecallOrchestrator` and `ProbeRecallOrchestrator` are also present but not actively used.
+`SemanticRetriever`, `HybridRetriever`, and `InMemoryIndex` all implement the `Retriever` trait. BM25 is integrated into `HybridRetriever` with min-max normalized fusion and configurable weights. `HnswVectorIndex` and `FlatVectorIndex` both implement `VectorIndex`.
 
-- **caw-curation**: Complete for v1 scope. `ExtractiveHistorySummarizer` and `LlmHistorySummarizer`, `ExtractiveToolOutputCompressor` and `LlmToolOutputCompressor`, `SystemPromptBudget` with configurable fraction and `check_budget()`/`check_system_prompt()`. `CurationPipeline` + builder compose all three into a single pass. History externalization (session files as recalled documents) implemented in `history.rs`.
+`SqliteStubStore` is production-quality: WAL mode, synchronous=NORMAL, prepared-statement batch inserts, staleness detection with reindex queue integration, and inline migration for schema changes. Content is stored as file byte ranges rather than duplicating text in the DB — a correct design decision.
 
-- **caw-eval**: Complete. `SessionEvaluator` with builder, recall@k/precision@k, false-recall heuristic (stub-summary vs content term overlap), hysteresis analysis with thrashing detection and threshold adjustment suggestions, context efficiency ratio, and cooperation metrics (probes/turn, annotations/turn, useful-probe %, annotation quality).
+The `SemanticRetriever::insert` signature silently ignores the `content: String` parameter from the `Retriever::insert` trait default (it recomputes embedding text from stub fields only). `HybridRetriever::insert` does use the content for BM25 indexing. The trait design gives callers no indication that content is used by one but not the other.
 
-- **caw-bench**: Substantive. Three workloads: `niah` (synthetic needle-in-haystack), `opencaw` (Q&A over repo docs), `sysdoc` (pre-built external corpus). `caw-bench-build-index` binary with pipelined GPU embedding (rayon producer + candle consumer), resumable via `(path, mtime)` skip logic, WAL batch inserts, length-bucketed sub-batches. `sweep.rs` binary for parameter sweeps. Per-item JSONL trace output. LLM judge for answer scoring. The harness is the instrument; calibration data from running it is the open gap.
+3 unit tests (SqliteStubStore staleness paths), all passing.
 
-- **caw-server**: Functional v0 proxy (README incorrectly describes it as "scaffold only"). Receives OpenAI-protocol requests, embeds the last user message, retrieves top-k fragments, splices them in with bracketed provenance, and proxies to an upstream server. Supports Flat or HNSW retriever at startup. `build_state`/`build_router` public for integration test mounting.
+### caw-adapters — Working
 
-- **caw-core/reindex**: `ChannelReindexQueue` with condvar-based blocking recv, dedup of pending paths, poison-tolerant lock recovery, and `run_worker` helper. `SqliteStubStore` notifies the queue on mtime-mismatch staleness and marks the row stale in DB for durability across restarts.
+All six adapters compile and implement `ModelAdapter`. The pattern of creating a shared `tokio::Runtime` and using `block_on` is intentional and documented in SCOPE.md — works for library use, would panic inside an existing async context.
 
-### Incomplete / Partial
+`OllamaAdapter::capabilities()` hardcodes `supports_hidden_reasoning: true` for all Ollama models with a TODO comment at line 198. This means all Ollama models get probe/note injection instructions even if they can't follow them. Querying `/api/show` at construction time would give the correct model metadata.
 
-- **caw-orchestrator/consolidation — LlmConsolidation not the default**: `LlmConsolidation` exists and works but `MechanicalConsolidation` remains the default in `DynamicRecallOrchestrator::new()`. The mechanical note format (`"Evicted (relevance decayed to 0.42) during query about '...'"`) records nothing about what the model actually learned. This is the verbatim gap the design doc called out. Acknowledged in `TODO.md` (`caw-orchestrator/src/consolidation.rs:16-33`).
+`AnthropicAdapter::capabilities` hardcodes `supports_visible_reasoning: false` for all Claude models. Combined with the orchestrator's gate at `build_system_prompt` (only injects cooperation instructions for visible-reasoning models), this means the full thinking-trace recall path is disabled for Anthropic models. Claude uses probes instead, which requires the model to emit `<probe>` markers explicitly.
 
-- **caw-transform — missing reference surfaces**: Fenced code blocks with `path=` attribute and bare-path regex matching are described in the design doc (section 3.1) but not implemented. Only `[text](path)` markdown links and `@path` are handled (`caw-transform/src/lib.rs:14-67`). This limits transformer usefulness in code-heavy workspaces.
+`ClaudeCodeAdapter::complete` at line 354 has `.expect("loop exits with final_result set on success path")`. The invariant is correct but `unreachable!()` would be clearer about the intent.
 
-- **caw-eval/SessionEvaluator — not integrated into orchestrator**: The evaluator is standalone and must be wired up manually by callers. The bench harness does its own accounting. There is no built-in instrumentation path from `DynamicRecallOrchestrator` to `SessionEvaluator`.
+2 unit tests (TracingAdapter), passing.
 
-- **caw-adapters/OllamaAdapter capabilities — name-based detection**: `ModelCapabilities` are hardcoded via string matching (`self.model.contains("deepseek") || self.model.contains("qwen")` for `supports_visible_reasoning`) at `caw-adapters/src/ollama.rs:127-129`. Ollama's `/api/models` endpoint is not queried. New model names silently get wrong capability flags, changing what cooperation instructions get injected.
+### caw-orchestrator — Working
 
-- **caw-bench sweep data**: The harness, sweep binary, and sysdoc QA file exist. Actual sweep runs with enough seeds to produce threshold-tuning recommendations have not been conducted. The library's defaults (load=0.7, unload=0.4, decay=0.8) are starting estimates. Notably, `RunnerConfig::default()` in `caw-bench/src/runner.rs:36-50` uses load=0.3 for bench runs, suggesting the library default of 0.7 is already known to be too restrictive for short-text corpora.
+`DynamicRecallOrchestrator` implements the full multi-pass loop: initial retrieval, ambiguity gate, candidate list injection, iterative thinking-trace/probe extraction, relevance decay, term-overlap refresh, budget-aware eviction, consolidation note generation, and session history. The implementation matches the design doc closely.
 
-### Missing / Not Yet Started
+`MechanicalConsolidation` (the default) generates informative but shallow notes. `LlmConsolidation` exists and degrades gracefully to mechanical on empty output but is not the default. SCOPE.md marks richer consolidation notes as "should have" and open.
 
-- **Background indexer with lazy fallback**: Ingestion is batch-only and synchronous. The `ReindexQueue` plumbing exists for staleness/reingestion signaling, but there is no persistent background worker or lazy-on-first-reference generation. Corpus must be fully ingested before the first query.
+Degradation monitoring is fully implemented: per-component health tracking, tiered fallback, and probe rate limiting. 9 unit tests cover all three tiers and recovery paths.
 
-- **Model cooperation calibration harness**: `CooperationMetrics` exists in `caw-eval`. The harness that drives per-model calibration runs — identifying whether each model reliably emits probes and annotations, and automating the choice between cooperative and transparent mode — does not exist.
+`reset_session` requires `P: Default`, which means any custom non-defaultable provenance store can't be reset via this method. Latent ergonomic constraint.
 
-- **Few-shot token cost utility**: Not implemented. Callers can use the `Tokenizer` trait directly. Low priority per SCOPE.md.
+`caw-orchestrator/src/session.rs` implements its own Gregorian date math (`days_to_ymd`, `is_leap`) for session filenames instead of using `chrono`. The result is probably correct but the comment "good enough for filenames, no leap second precision needed" overstates the problem — the actual risk is off-by-one errors on month boundaries.
 
-- **Provenance conflict detection beyond Jaccard term overlap**: Contradicting factual assertions, negation patterns, and inconsistent numbers are not detected. Only term co-occurrence is checked (`caw-core/src/provenance.rs:90-133`).
+**Important duplication:** The ambiguity gate, fragment loading, relevance decay, term-overlap refresh, and eviction logic appear in both `DynamicRecallOrchestrator::run_turn` (dynamic.rs:235-373) and the CLI's interactive loop (main.rs:695-900). The two copies have diverged: the orchestrator integrates session history recall; the CLI manages session history via its own parallel `session_content` HashMap. Any bug found in one may not be fixed in the other.
 
-- **Insertion-order experiments harness**: No harness to test relevance-ranked, reverse-relevance, and stub-order insertion sequences.
+9 unit tests + 1 integration test, all passing.
 
-- **Postgres + pgvector**: Listed in README roadmap as "open". No implementation exists.
+### caw-curation — Partial
+
+`HistorySummarizer` (extractive + LLM), `ToolOutputCompressor` (extractive + LLM), and `SystemPromptBudget` are implemented. The `CurationPipeline` wires them together. The CLI uses this when `--curate` is passed.
+
+Few-shot management (design doc §8.1) is not implemented — callers can use `Tokenizer::count_tokens` directly but there is no framework-level utility. SCOPE.md marks this "nice to have."
+
+No dedicated unit tests. All coverage comes through the CLI path.
+
+### caw-eval — Built, Not Wired
+
+`SessionEvaluator`, `RecallMetrics`, `FalseRecallMetrics`, `HysteresisAnalysis`, `ContextEfficiency`, and `CooperationMetrics` are all implemented in `caw-eval/src/session.rs` and `metrics.rs`. The data structures and computation logic look correct.
+
+The problem: `caw-eval` is only a dependency of `caw-bench`. `DynamicRecallOrchestrator` has no `caw-eval` dependency and records no eval events. The `caw-bench` runner (`runner.rs:601`) reimplements the false-recall rate heuristic inline with a comment saying it "matches the FalseRecallMetrics default threshold in caw-eval (0.15)" — which confirms the duplication is known. This is the most significant structural gap: the eval infrastructure is built, the event points exist in the orchestrator, but nothing connects them.
+
+No unit tests in this crate.
+
+### caw-bench — Working
+
+The benchmark harness with NIAH, opencaw, and sysdoc workloads is functional. `caw-bench-build-index` for streaming GPU-pipelined index construction is well-engineered. `intent_bench.rs` is fully implemented with per-field TP/FP/TN/FN scoring, ensemble support, and leaderboard display. `caw-bench-tune` aggregates results and emits recommended model configs.
+
+The sweep binary iterates over parameter grids for threshold tuning. No sweep results have been generated yet — the `bench-results/` tree contains individual runs, not calibration sweeps.
+
+No unit tests in this crate.
+
+### caw-transform — Working
+
+`PromptTransformer` handles markdown link and `@path` references. Fenced blocks with `path=` and bare-path regex (from the design doc) are not implemented — acknowledged in TODO.md. `extract_probes`, `extract_thinking_steps`, and `extract_annotations` use `LazyLock<Regex>` with compile-time-verified patterns; the `cap.get(n).unwrap()` calls on match captures are safe because the regex structure guarantees the capture groups.
+
+6 unit tests, all passing.
+
+### caw-server — Working (documentation is stale)
+
+Contrary to the README and SCOPE.md descriptions of "scaffold only," `caw-server/src/lib.rs` is a functional OpenAI-compatible proxy that retrieves context and augments the last user message before forwarding to an upstream model server. It uses Candle + CUDA for embeddings, supports both flat and HNSW retrieval, and handles streaming passthrough correctly.
+
+This is a completed v0 middleware deployment target. The documentation describing it as scaffold is stale and should be updated.
+
+### caw-cli — Working
+
+The CLI is feature-complete for v1: ingestion, indexing, intent classification with ensemble support, recall loop, curation, session history, and all adapter types. The `--augmentation-prompt` mode and `--intent-model` ensemble are recent additions.
+
+The CLI implements its own recall loop rather than delegating to `DynamicRecallOrchestrator::run_turn`. This duplication is the primary maintenance liability (see above under caw-orchestrator).
 
 ---
 
 ## Test Results
 
-All tests pass. 0 failures.
+All 31 tests pass. Zero failures.
 
 ```
-caw-adapters:      2 passed  (TracingSink, TracingAdapter)
-caw-core:          3 passed  (reindex queue: dedup, reenqueue, multi-receiver split)
-caw-index:         3 passed  (sqlite: stale-on-missing-file, stale-on-mtime-mismatch, replace-clears-stale)
-caw-orchestrator:  9 passed  (degradation: 7 scenarios; probe_recall, thinking_trace: 1 each)
-end_to_end:        1 passed  (full pipeline via MockAdapter + SQLite in-memory)
-caw-transform:     6 passed  (range parse/apply, extract_probes, transform, extract_stub_references)
-caw-server:        0 tests
-caw-bench:         0 tests
-caw-curation:      0 tests
-caw-eval:          0 tests
-caw-cli:           0 tests
-caw-ingest:        0 tests
+caw-adapters:    2 tests (TracingAdapter)
+caw-bench:       0 tests
+caw-cli:         0 tests
+caw-core:       10 tests (QueryIntent, workspace format, candidate list, reindex queue)
+caw-curation:    0 tests
+caw-eval:        0 tests
+caw-index:       3 tests (SqliteStubStore staleness paths)
+caw-ingest:      0 tests
+caw-orchestrator: 9 unit tests (degradation tiers, recovery, thinking trace, probe recall)
+                   1 integration test (end-to-end recall loop with MockAdapter + HashEmbedder)
+caw-server:      0 tests
+caw-transform:   6 tests (probe/thinking/annotation extraction, range parsing, transformer)
 ```
 
-Coverage gap: caw-curation, caw-eval, caw-ingest, and caw-bench have zero tests. These contain non-trivial logic — hysteresis analysis, history partition thresholds, chunking boundary detection, BM25 scoring. The end-to-end test exercises the full stack via `MockAdapter` and is the primary smoke test, but it does not exercise curation or eval code paths at all.
+The test suite is light on the most algorithmic parts: `HybridRetriever` fusion, `SessionEvaluator` metric computation, `ChunkingConfig` boundary snapping, and `LlmConsolidation` fallback behavior are untested. What exists is sound — the degradation tests cover recovery hysteresis correctly, and the integration test exercises the full admission path.
 
 ---
 
-## Technical Debt
+## Code Quality
 
-### High Priority
+### Debt markers
 
-1. **OllamaAdapter capability detection is still hardcoded by model-name substring** — `crates/caw-adapters/src/ollama.rs:116-129`. The code still carries a `TODO` to query Ollama's `/api/models` endpoint and instead infers visible reasoning/tool support from names like `deepseek` and `qwen`. That directly affects whether cooperation instructions are injected, so a naming mismatch changes orchestrator behavior, not just metadata.
+From `debt_report.txt` (generated 2026-04-19): 28 total debt markers in source. Key items by file:
 
-2. **Server embedding choice is still hardwired to Candle** — `crates/caw-server/src/lib.rs:89-96`. `build_state` constructs `CandleEmbeddingProvider::bge_small()` directly, so CPU-only deployments still fail at startup instead of degrading to FastEmbed. That coupling is reasonable for the benchmark-focused v0 target, but it remains undocumented at the README entry point.
+- `caw-bench/src/intent.rs:244` — TODO for more varied bench cases with mixed intent signals
+- `caw-adapters/src/ollama.rs:198` — TODO to query `/api/models` for per-model capabilities
+- `caw-core/src/lib.rs` open items — `AugmentationSignals` not wired to retrieval path
 
-3. **Benchmark defaults and library defaults still diverge** — `crates/caw-bench/src/runner.rs:18-47`. Bench runs default to load/unload thresholds of 0.3/0.2 while the library still presents 0.7/0.4 as its defaults. Until the sweep harness is run and numbers are recorded, one of those defaults is effectively guesswork.
+### unwrap/expect in production code
 
-### Medium Priority
+**Safe patterns (not risks):**
+- `LazyLock<Regex>` `.unwrap()` calls — pattern is verified at compile time; the unwrap is cosmetic
+- `cap.get(n).unwrap()` after a successful regex match — capture group existence is guaranteed by the pattern structure
 
-4. **`caw-adapters/src/claude_code.rs:354` — `.expect("loop exits with final_result set on success path")`** — A logic invariant assertion. If the loop is refactored the invariant could silently break. Should be `unreachable!()` with a comment, or restructured so the result is not in an Option at all.
+**Real concerns:**
+- `caw-ingest/src/tree_sitter_outline.rs:12` — `.expect("language version mismatch")` panics the process on grammar ABI mismatch with no recovery path
+- `caw-core/src/reindex.rs:220-221` — `.unwrap()` on `JoinHandle::join()`; a panicking worker becomes an orchestrator panic rather than a logged error
+- `caw-adapters/src/claude_code.rs:354` — `.expect("loop exits with final_result set on success path")`; the invariant is correct but `unreachable!()` would be clearer
+- `caw-transform/src/recall.rs:126` — `apply_range(...).unwrap()` called in a context that is not inside `#[test]`; the function returns `Result` so this discards errors in non-test callers
 
-### Low Priority
+### Structural issues
 
-5. **`RecallOrchestrator` and `ThinkingTraceOrchestrator` not actively used** — These older orchestrators in `caw-orchestrator/src/lib.rs` and `caw-orchestrator/src/thinking_trace.rs` predate `DynamicRecallOrchestrator` and are not wired into any demo, test, or bench path. If retained they need tests; if superseded they add maintenance surface without benefit.
+**CLI/orchestrator recall loop duplication** is the most significant quality issue. The same eviction, relevance decay, term-overlap refresh, ambiguity gate, and fragment loading logic exists in two places. They have visibly diverged (session content handling differs). A regression fixed in one place is a regression waiting to be found in the other.
+
+**`caw-eval` disconnected from runtime.** The bench runner reimplements the false-recall heuristic inline and explicitly references caw-eval's threshold constant in a comment. The wiring is absent; the intent is there.
+
+**`Range::Tokens` uses whitespace split.** The implementation counts whitespace-split words, not BPE tokens. Since the rest of the stack uses cl100k for token accounting, a `Range::Tokens` address refers to a different position than any other token count in the system. No current production path uses this range type, so it's latent rather than active.
+
+**`truncate_str` is duplicated.** Defined identically in `caw-orchestrator/src/dynamic.rs:658` and `caw-orchestrator/src/consolidation.rs:107`. Both are private to their modules.
 
 ---
 
 ## PRP Status
 
-No PRPs directory exists.
+No `PRPs/` directory. No PRP documents found in the project tree.
 
 ---
 
-## Strategic Recommendation
+## Technical Debt — Top Items
 
-**Next Action**: Run the benchmark harness across enough seeds and workloads to produce actual recall@k numbers, context efficiency ratios, and threshold-tuning data. The bench binary, sysdoc QA file, sweep binary, and NIAH corpus generator all exist. The single most valuable thing to do right now is produce numbers, because every architectural decision (load threshold 0.7, decay 0.8, top_k 4) is currently a documented guess.
+**1. CLI/orchestrator recall loop duplication (high impact, medium effort)**
+`caw-cli/src/main.rs` implements its own recall loop (~200 lines) rather than delegating to `DynamicRecallOrchestrator::run_turn`. The two loops have diverged in session content handling and candidate list injection. Any enhancement to the orchestrator must be manually mirrored in the CLI. Collapsing the CLI loop into `run_turn` calls removes the duplication and makes every CLI user benefit from orchestrator improvements automatically.
 
-**Justification**: The library's core claim over generic RAG is that thinking-trace-as-retrieval-signal plus eviction/consolidation produces better effective context than naive retrieval. That claim has no empirical backing yet. Without numbers: (a) the default thresholds may be wrong for real workloads — `RunnerConfig::default()` in the bench crate already uses 0.3 as the load threshold rather than the library's 0.7, which is a tacit admission the default is too tight; (b) the cooperation calibration work, consolidation note quality work, and insertion-order experiments are unmotivated without knowing how much each matters in practice. The benchmark infrastructure represents significant engineering investment and is ready to use.
+**2. SessionEvaluator not wired to orchestrator (high impact, low effort)**
+All the event emission points exist in `DynamicRecallOrchestrator`: recalls in `load_fragments`, evictions in `evict_stale_fragments`, probes in `process_probes`, annotations in `process_annotations`. Adding `evaluator: Option<SessionEvaluator>` to the orchestrator and calling the record methods at existing event points would take roughly an hour and unlock the threshold tuning story that SCOPE.md marks "must have" (blocks usefulness).
+
+**3. AugmentationSignals not wired to retrieval path (medium impact, medium effort)**
+`QueryIntent::augmentation_signals()` is defined and the CLI runs the intent classifier on every query. The TODO in TODO.md is accurate: `is_status_request` should bias retrieval toward status/todo docs, `is_results_request` toward bench result files, etc. The mechanism for this (a pre-retrieval augmentation step) doesn't exist. This is a meaningful quality improvement for the "what should I work on" class of queries that the CLI is commonly used for.
+
+**4. Hardcoded Ollama model capabilities (medium impact, low effort)**
+`OllamaAdapter::capabilities()` returns `supports_hidden_reasoning: true` for all models. Models that can't follow marker instructions produce probe/note tags in their output instead of using them as intended. A single `/api/show` call at construction time would give actual model metadata. The TODO comment at ollama.rs:198 identifies the fix precisely.
+
+**5. Range::Tokens uses whitespace split (low impact, low effort)**
+`Range::apply` for `Range::Tokens` splits on whitespace, not BPE tokens. This should either be renamed `Range::Words` to match the implementation, or fixed to use cl100k. No production path currently generates token-addressed ranges, so this is latent rather than an active bug.
+
+**6. truncate_str duplication (low impact, trivial)**
+Identical private function defined in `dynamic.rs:658` and `consolidation.rs:107`. One shared utility in a common module.
+
+**7. timestamp_str Gregorian arithmetic (low impact, low effort)**
+`caw-orchestrator/src/session.rs` rolls its own Gregorian date arithmetic for session filenames. The workspace already has `chrono` available through other crates. Using `chrono::Utc::now().format(...)` would be shorter and the correctness would not need to be audited.
+
+**8. caw-server documentation is stale (low impact, trivial)**
+README calls caw-server "scaffold only." It is a working OpenAI-compatible retrieval-augmentation proxy. Update the description to accurately reflect what it does and what its current limitations are (synchronous, Candle-only embedder, no multi-pass orchestration).
 
 ---
 
-## 90-Day Roadmap
+## Recommendation
 
-**Week 1-2: Generate baseline numbers**
+**Next action:** Wire `SessionEvaluator` into `DynamicRecallOrchestrator::run_turn`. Add `evaluator: Option<SessionEvaluator>` to the orchestrator struct, call `record_recall`/`record_eviction`/`record_probe`/`record_annotation` at the existing event points in `load_fragments`, `evict_stale_fragments`, `process_probes`, and `process_annotations`. Expose a `take_evaluator` method. This is a few dozen lines of wiring, has no behavioral impact, and unlocks the one SCOPE.md "must have" that is unaddressed.
 
-Run `caw-bench` with `opencaw` and `niah` workloads in recall-on vs recall-off mode at several top_k / threshold combinations via the `sweep.rs` binary. Primary deliverable: a table of recall@k, context efficiency, and answer score per configuration. Specifically verify whether load=0.7 is workload-appropriate or whether the bench's hardcoded 0.3 reflects a real problem with the library default.
+**90-day roadmap:**
 
-**Week 3-4: Fix the remaining mechanical debt**
+Weeks 1-2: Wire `SessionEvaluator` into the orchestrator. Run the opencaw and sysdoc benchmarks in recall-on mode and collect `HysteresisAnalysis` output for the default `load=0.7 / unload=0.4` thresholds.
 
-Document or relax the server's Candle-only startup assumption. Resolve the Ollama capability detection TODO by querying `/api/models` rather than matching on model name substrings. Primary deliverable: no silent behavior changes from model naming mismatches, and the server's deployment constraints documented at the README entry point.
+Weeks 3-4: Use the collected data to evaluate whether the defaults are appropriate for the sysdoc workload. Update `RecallThresholds::default_hysteresis()` if the data supports different values. Document what workloads the defaults target.
 
-**Week 5-8: Model cooperation calibration harness**
+Weeks 5-6: Collapse the CLI recall loop into `DynamicRecallOrchestrator::run_turn`. The CLI becomes a thin wrapper: build adapters, call `run_turn`, format the response. This removes the duplication and makes curation pipeline integration cleaner.
 
-Build the calibration harness that runs a fixed set of probing questions through each configured adapter, measures whether the model emits probes and annotations that produce correct recalls, and produces a per-model cooperation score. Wire this into `DynamicRecallOrchestrator` as an optional startup phase that sets `enable_probe_recall` and system prompt injection based on observed cooperation quality rather than the current hardcoded capability flags. This is the blocker for v1 usefulness identified in SCOPE.md.
+Weeks 7-8: Wire `AugmentationSignals` to the retrieval path in the orchestrator. For `is_status_request`, inject a `git status` snapshot. For `is_results_request`, bias retrieval toward paths matching `bench-results/`. For `is_next_step_request`, proactively load TODO.md. The intent classifier is already running; this step acts on its output.
 
-**Week 9-12: LLM consolidation as default + test coverage for curation/eval**
+Weeks 9-10: Fix `OllamaAdapter::capabilities()` with a `/api/show` call at construction time. Add appropriate error handling for models that don't respond to the endpoint.
 
-Switch `DynamicRecallOrchestrator::new()` to use `LlmConsolidation` when an aux adapter is configured (or make `with_llm_consolidation(adapter)` the obvious path and document when to use it). Add integration-level tests for `caw-curation` (history partitioning at threshold, tool output compression trigger, budget check) and `caw-eval` (hysteresis thrashing detection, cooperation metric calculation, context efficiency ratio). These crates are exercised only indirectly via the end-to-end test; targeted tests would catch regressions when eviction/curation logic changes during calibration tuning.
+Weeks 11-12: Fix `Range::Tokens`, deduplicate `truncate_str`, migrate `timestamp_str` to chrono, update caw-server documentation. These are cleanup items that should be done before any v1 release.
