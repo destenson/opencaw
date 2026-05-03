@@ -158,8 +158,14 @@ fn run_item_coop(
         unload: cfg.unload_threshold,
     };
 
+    // max_initial_fragments == max_candidates disables the ambiguity gate.
+    // The gate is a chat UX feature; in a bench the model never emits file
+    // paths to exit the candidate-list path, so the gate produces 0 recall.
+    let max_candidates = 20usize;
     let config = if recall_on {
         DynamicRecallConfig {
+            max_candidates,
+            max_initial_fragments: max_candidates,
             thresholds,
             max_workspace_tokens: cfg.max_workspace_tokens,
             max_recall_iterations: 3,
@@ -170,6 +176,8 @@ fn run_item_coop(
         }
     } else {
         DynamicRecallConfig {
+            max_candidates,
+            max_initial_fragments: max_candidates,
             thresholds,
             max_workspace_tokens: cfg.max_workspace_tokens,
             max_recall_iterations: 0,

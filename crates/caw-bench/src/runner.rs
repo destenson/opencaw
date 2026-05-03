@@ -510,6 +510,11 @@ fn orchestrator_config(mode: RecallMode, cfg: &RunnerConfig) -> DynamicRecallCon
     match mode {
         RecallMode::On => DynamicRecallConfig {
             max_candidates: cfg.max_candidates,
+            // Disable the ambiguity gate: it's a chat UX feature that shows a
+            // candidate list when many files match, expecting the user to name
+            // the specific file they want. In a bench, nothing names files and
+            // the orchestrator loads nothing, producing 0 recall every time.
+            max_initial_fragments: cfg.max_candidates,
             thresholds,
             max_workspace_tokens: cfg.max_workspace_tokens,
             max_recall_iterations: cfg.max_recall_iterations,
@@ -520,6 +525,7 @@ fn orchestrator_config(mode: RecallMode, cfg: &RunnerConfig) -> DynamicRecallCon
         },
         RecallMode::Off => DynamicRecallConfig {
             max_candidates: cfg.max_candidates,
+            max_initial_fragments: cfg.max_candidates,
             thresholds,
             max_workspace_tokens: cfg.max_workspace_tokens,
             // No multi-pass, no probes, no trace recall: this is the
