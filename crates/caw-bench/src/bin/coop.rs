@@ -24,7 +24,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use caw_bench::adapter_factory::{AdapterKind, AdapterSpec, build};
+use caw_bench::adapter_factory::{AdapterKind, AdapterSpec, ModelRole, build};
 use caw_bench::opencaw;
 use caw_bench::runner::build_in_memory_prebuilt;
 use caw_bench::shared::ReadOnlyStore;
@@ -45,9 +45,10 @@ use caw_orchestrator::dynamic::{
     about = "Calibrate per-model probe/annotation compliance"
 )]
 struct Cli {
-    /// Model name. Format depends on --adapter.
-    #[arg(long, default_value = "huihui_ai/phi4-reasoning-abliterated:3.8b")]
-    model: String,
+    /// Model name. Format depends on --adapter. Defaults to the adapter's
+    /// built-in default (e.g. llama-3.3-70b-versatile for groq).
+    #[arg(long)]
+    model: Option<String>,
 
     /// Adapter type.
     #[arg(long, value_enum, default_value_t = AdapterKind::Ollama)]
@@ -363,10 +364,14 @@ fn main() -> Result<()> {
     if items.is_empty() {
         anyhow::bail!("workload is empty — check --repo-root and --qa-file");
     }
+    let model = cli.model.as_deref()
+        .unwrap_or_else(|| cli.adapter.default_model(ModelRole::Answer))
+        .to_string();
+
     eprintln!(
         "caw-bench-coop: {} items × 3 modes for model {}",
         items.len(),
-        cli.model
+        model
     );
 
     // Build corpus once — all opencaw items share the same repo corpus.
@@ -380,7 +385,7 @@ fn main() -> Result<()> {
 
     let spec_base = AdapterSpec {
         kind: cli.adapter,
-        model: &cli.model,
+        model: &model,
         ollama_url: &cli.ollama_url,
         openai_url: &cli.openai_url,
         temperature: Some(cli.temperature),
@@ -412,7 +417,7 @@ fn main() -> Result<()> {
                 },
                 &runtime,
             )
-            .with_context(|| format!("build adapter for {}", cli.model))?;
+            .with_context(|| format!("build adapter for {}", model))?;
 
             let outcome = run_item_coop(item, *coop_mode, *recall_on, adapter, &prebuilt, &cli)
                 .with_context(|| format!("item {} mode {}", item.id, label))?;
@@ -441,7 +446,7 @@ fn main() -> Result<()> {
     let (recommendation, recommendation_reason) = recommend(&baseline, &transparent, &cooperative);
 
     let report = CoopReport {
-        model: cli.model.clone(),
+        model: model.clone(),
         item_count: items.len(),
         baseline,
         transparent,
@@ -450,7 +455,7 @@ fn main() -> Result<()> {
         recommendation_reason,
     };
 
-    let slug = model_slug(&cli.model);
+    let slug = model_slug(&model);
     let out_dir = cli.out_dir.join(&slug);
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("create output dir {}", out_dir.display()))?;

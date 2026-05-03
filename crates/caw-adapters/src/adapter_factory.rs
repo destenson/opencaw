@@ -31,6 +31,44 @@ pub enum AdapterKind {
     Anthropic,
 }
 
+/// The intended use of an adapter, used to select an appropriate default model.
+/// Callers always know their role, so defaults are role-specific rather than
+/// a single arbitrary choice per adapter.
+#[derive(Debug, Clone, Copy)]
+pub enum ModelRole {
+    /// Primary answering / response generation — prefers a capable instruct model.
+    Answer,
+    /// Scoring and evaluation — prefers a model from a different family than the
+    /// answer model to avoid self-agreement bias; mid-tier is usually sufficient.
+    Judge,
+    /// Query intent classification — small, fast model is sufficient.
+    Classify,
+}
+
+impl AdapterKind {
+    /// Default model name for this adapter in the given role. Each adapter
+    /// family has its own naming conventions; defaults vary by role to match
+    /// capability requirements (e.g. a small model for classification, a
+    /// mid-tier model for judging).
+    pub fn default_model(self, role: ModelRole) -> &'static str {
+        match (self, role) {
+            (AdapterKind::Ollama, ModelRole::Answer) => "huihui_ai/phi4-reasoning-abliterated:3.8b",
+            (AdapterKind::Ollama, ModelRole::Judge) => "huihui_ai/phi4-reasoning-abliterated:3.8b",
+            (AdapterKind::Ollama, ModelRole::Classify) => "llama3.2:3b",
+            (AdapterKind::Vllm, _) => "",
+            (AdapterKind::ClaudeCode, ModelRole::Answer) => "sonnet",
+            (AdapterKind::ClaudeCode, ModelRole::Judge) => "haiku",
+            (AdapterKind::ClaudeCode, ModelRole::Classify) => "haiku",
+            (AdapterKind::Groq, ModelRole::Answer) => "llama-3.3-70b-versatile",
+            (AdapterKind::Groq, ModelRole::Judge) => "llama-3.3-70b-versatile",
+            (AdapterKind::Groq, ModelRole::Classify) => "llama-3.1-8b-instant",
+            (AdapterKind::Anthropic, ModelRole::Answer) => "claude-sonnet-4-20250514",
+            (AdapterKind::Anthropic, ModelRole::Judge) => "claude-haiku-4-20250514",
+            (AdapterKind::Anthropic, ModelRole::Classify) => "claude-haiku-4-20250514",
+        }
+    }
+}
+
 pub struct AdapterSpec<'a> {
     pub kind: AdapterKind,
     pub model: &'a str,

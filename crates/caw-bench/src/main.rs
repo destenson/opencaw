@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
-use caw_bench::adapter_factory::{self, AdapterKind, AdapterSpec};
+use caw_bench::adapter_factory::{self, AdapterKind, AdapterSpec, ModelRole};
 use caw_bench::niah::{self, NiahConfig};
 use caw_bench::opencaw;
 use caw_bench::report::{build_report, format_summary};
@@ -49,13 +49,10 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = AdapterKind::Ollama)]
     answer_adapter: AdapterKind,
 
-    /// Answering model name. Same value used for both recall-on and
-    /// recall-off so the delta isolates recall's contribution. Format
-    /// depends on `--answer-adapter`: ollama tag (e.g. "qwen3.5:9b"),
-    /// vLLM HF id (e.g. "Qwen/Qwen2.5-7B-Instruct"), or claude alias
-    /// ("sonnet", "opus", "haiku").
-    #[arg(long, default_value = "huihui_ai/phi4-reasoning-abliterated:3.8b")]
-    answer_model: String,
+    /// Answering model name. Format depends on `--answer-adapter`.
+    /// Defaults to the adapter's built-in default when not specified.
+    #[arg(long)]
+    answer_model: Option<String>,
 
     /// Adapter for the judge model (JudgeAgainst scoring only).
     #[arg(long, value_enum, default_value_t = AdapterKind::ClaudeCode)]
@@ -63,8 +60,9 @@ struct Cli {
 
     /// Judge model name. Default keeps the judge on a different model
     /// family than the answer to avoid same-model self-agreement bias.
-    #[arg(long, default_value = "haiku")]
-    judge_model: String,
+    /// Defaults to the adapter's built-in default when not specified.
+    #[arg(long)]
+    judge_model: Option<String>,
 
     /// Ollama base URL (used by both answer and judge if either is `ollama`).
     #[arg(long, default_value = "http://localhost:11434")]
@@ -217,10 +215,17 @@ fn main() -> Result<()> {
     // ignores it.
     let runtime = caw_adapters::create_runtime().context("create tokio runtime")?;
 
+    let answer_model = cli.answer_model.as_deref()
+        .unwrap_or_else(|| cli.answer_adapter.default_model(ModelRole::Answer))
+        .to_string();
+    let judge_model = cli.judge_model.as_deref()
+        .unwrap_or_else(|| cli.judge_adapter.default_model(ModelRole::Judge))
+        .to_string();
+
     let judge_adapter = adapter_factory::build(
         AdapterSpec {
             kind: cli.judge_adapter,
-            model: &cli.judge_model,
+            model: &judge_model,
             ollama_url: &cli.ollama_url,
             openai_url: &cli.openai_url,
             temperature: Some(cli.judge_temperature),
@@ -280,7 +285,7 @@ fn main() -> Result<()> {
             let answer_adapter = match adapter_factory::build(
                 AdapterSpec {
                     kind: cli.answer_adapter,
-                    model: &cli.answer_model,
+                    model: &answer_model,
                     ollama_url: &cli.ollama_url,
                     openai_url: &cli.openai_url,
                     temperature: Some(cli.temperature),
@@ -337,7 +342,7 @@ fn main() -> Result<()> {
         Workload::Sysdoc => "sysdoc",
     };
 
-    let report = build_report(workload_name, &cli.answer_model, &cli.judge_model, &results);
+    let report = build_report(workload_name, &answer_model, &judge_model, &results);
     let json = serde_json::to_string_pretty(&report).context("serialize report")?;
 
     if let Some(path) = &cli.out {
