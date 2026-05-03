@@ -155,11 +155,16 @@ impl Range {
         }
 
         // Token range: T100:500
-        if let Some(rest) = s.strip_prefix('T')
-            && let Some((start, count)) = rest.split_once(':')
-            && let (Ok(s), Ok(c)) = (start.parse(), count.parse())
-        {
-            return Self::Tokens { start: s, count: c };
+        if let Some(value) = s.strip_prefix('T')
+            .and_then(|rest| {
+                rest.split_once(':')
+                    .and_then(|(start, count)| {
+                        let start = start.parse().ok()?;
+                        let count = count.parse().ok()?;
+                        Some(Range::Tokens { start, count })
+                    })
+            }) {
+            return value;
         }
 
         // Line range with L prefix: L5-L15
@@ -1167,14 +1172,13 @@ mod tests {
     #[test]
     fn workspace_format_marks_candidate_lists_as_metadata() {
         let request = CompletionRequest {
-            system: String::new(),
             user: "do you know what benchmarks have been run?".to_string(),
             workspace_fragments: vec![sample_fragment(
                 "search-candidates",
                 "file-list",
                 "- bench-results/throughput/20260419-053329/summary.txt",
             )],
-            workspace_guidance: Vec::new(),
+            ..Default::default()
         };
 
         let formatted = request.format_workspace(ProvenanceFormat::Bracketed);
@@ -1185,14 +1189,13 @@ mod tests {
     #[test]
     fn workspace_format_includes_explicit_extra_guidance() {
         let request = CompletionRequest {
-            system: String::new(),
             user: "can you tell me what the benchmark results were?".to_string(),
             workspace_fragments: vec![sample_fragment(
                 "bench-results/throughput/20260419-053329/summary.txt",
                 "full",
                 "done: 158895 stubs across 27258 files in 392.2s",
             )],
-            workspace_guidance: Vec::new(),
+            ..Default::default()
         };
 
         let formatted = request.format_workspace_with_guidance(

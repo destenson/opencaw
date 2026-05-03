@@ -130,7 +130,7 @@ impl CandleEmbeddingProvider {
             .filter(|s| s.len() < raw_max_chars)
             .count();
 
-        eprintln!(
+        debug!(
             "    candle: about to tokenize batch={} raw_max_chars={} raw_total_chars={} clipped={}",
             texts.len(),
             raw_max_chars,

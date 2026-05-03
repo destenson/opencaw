@@ -57,10 +57,10 @@ pub fn ensure_ort_dylib_path() {
                     Some(f) => f,
                     None => continue,
                 };
-                if let Some(rest) = fname
+                if let Some(v) = fname
                     .strip_prefix("libonnxruntime.so.")
                     .or_else(|| fname.strip_prefix("libonnxruntime.dylib."))
-                    && let Some(v) = Version::parse(rest)
+                    .and_then(|rest| Version::parse(rest))
                 {
                     if has_cuda {
                         cuda_candidates.push((path, v));
