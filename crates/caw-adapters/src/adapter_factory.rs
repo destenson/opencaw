@@ -29,6 +29,11 @@ pub enum AdapterKind {
     Groq,
     /// Anthropic cloud API. Reads `ANTHROPIC_API_KEY` from the environment.
     Anthropic,
+    /// Native llama.cpp inference. `model` is the path to a GGUF file.
+    /// Requires building with `--features llama` and `LLAMA_PATH` pointing
+    /// at the llama.cpp build directory containing libllama.so.
+    #[cfg(feature = "llama")]
+    LlamaCpp,
 }
 
 /// The intended use of an adapter, used to select an appropriate default model.
@@ -65,6 +70,8 @@ impl AdapterKind {
             (AdapterKind::Anthropic, ModelRole::Answer) => "claude-sonnet-4-20250514",
             (AdapterKind::Anthropic, ModelRole::Judge) => "claude-haiku-4-20250514",
             (AdapterKind::Anthropic, ModelRole::Classify) => "claude-haiku-4-20250514",
+            #[cfg(feature = "llama")]
+            (AdapterKind::LlamaCpp, _) => "",
         }
     }
 }
@@ -149,6 +156,20 @@ fn build_inner(
             let api_key = std::env::var("ANTHROPIC_API_KEY")
                 .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;
             Box::new(AnthropicAdapter::new_with(api_key, spec.model, runtime.clone()))
+        }
+        #[cfg(feature = "llama")]
+        AdapterKind::LlamaCpp => {
+            if spec.model.is_empty() {
+                anyhow::bail!("AdapterKind::LlamaCpp requires a non-empty model path");
+            }
+            Box::new(
+                crate::LlamaCppAdapter::new_with(crate::LlamaCppConfig {
+                    model_path: spec.model.to_string(),
+                    n_ctx: spec.num_ctx.unwrap_or(0),
+                    ..Default::default()
+                })
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+            )
         }
     };
     Ok(adapter)

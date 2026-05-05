@@ -400,6 +400,20 @@ fn build_completion_adapter(
                 m => Box::new(caw_adapters::GroqAdapter::groq_model(m, rt)?),
             }
         }
+        #[cfg(feature = "llama")]
+        "llama" => {
+            let path = model.ok_or_else(|| {
+                anyhow::anyhow!("--model <path.gguf> is required for the llama adapter")
+            })?;
+            Box::new(
+                caw_adapters::LlamaCppAdapter::from_path(path)
+                    .context("failed to load llama model")?,
+            )
+        }
+        #[cfg(not(feature = "llama"))]
+        "llama" => {
+            anyhow::bail!("rebuild caw-cli with --features llama to use the llama adapter")
+        }
         "claude-code" => Box::new(caw_adapters::ClaudeCodeAdapter::sonnet()),
         "claude-code-haiku" => Box::new(caw_adapters::ClaudeCodeAdapter::haiku()),
         "ollama" => {

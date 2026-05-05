@@ -26,7 +26,9 @@ container. It implements:
 - **caw-index**: Embedding providers, vector stores, BM25, hybrid retrieval
 - **caw-transform**: Prompt transformer — replaces file references with stubs
 - **caw-adapters**: Model adapters (Anthropic, Groq, Ollama, OpenAI-compat,
-  ClaudeCode, Mock)
+  ClaudeCode, Mock, LlamaCpp)
+- **caw-llama-sys**: FFI bindings to libllama.so (feature-gated; generated
+  by bindgen at build time against a local llama.cpp build)
 - **caw-orchestrator**: `DynamicRecallOrchestrator`, degradation monitor,
   consolidation
 - **caw-curation**: History summarization, tool output compression, system
@@ -179,6 +181,35 @@ use caw_adapters::OpenAiCompatibleAdapter;
 
 ```rust
 use caw_adapters::ClaudeCodeAdapter;
+```
+
+### LlamaCpp (feature-gated)
+
+- Native llama.cpp inference via FFI — no HTTP server, no restart overhead
+- Owns the sampling loop: implements `generate_passive` for true mid-stream recall injection every N tokens directly into the KV cache
+- Any GGUF model; GPU offload via CUDA
+- Enable with `--features llama`. Requires `LLAMA_PATH` pointing at a llama.cpp build directory containing `libllama.so`.
+
+```rust
+use caw_adapters::{LlamaCppAdapter, LlamaCppConfig};
+
+let adapter = LlamaCppAdapter::from_path("model.gguf")?;
+// or with explicit config:
+let adapter = LlamaCppAdapter::new_with(LlamaCppConfig {
+    model_path: "model.gguf".into(),
+    n_gpu_layers: -1,   // all layers on GPU
+    n_ctx: 8192,
+    temperature: 0.7,
+    ..Default::default()
+})?;
+```
+
+```bash
+# CLI usage
+LLAMA_PATH=/path/to/llama.cpp \
+  LD_LIBRARY_PATH=/path/to/llama.cpp/build/bin \
+  cargo run -p caw-cli --features llama -- \
+    --adapter llama --model /path/to/model.gguf
 ```
 
 ### MockAdapter
@@ -383,7 +414,10 @@ See `TODO.md` for line-item status and `SCOPE.md` for v1 boundaries.
 - Provenance ledger with inline source tagging (XML for Anthropic, bracketed for
   OpenAI-shape)
 - Adapters: Anthropic, Groq, Ollama, OpenAI-compatible (covers vLLM / Perplexity
-  / HF Inference / llama.cpp-server), ClaudeCode, Mock
+  / HF Inference / llama.cpp-server), ClaudeCode, Mock, LlamaCpp (native FFI,
+  feature-gated) with passive mid-stream injection — every N tokens the
+  orchestrator embeds the window and injects matching stubs directly into the
+  KV cache without restarting generation
 - Evaluation primitives: `SessionEvaluator` with recall metrics, false-recall
   heuristic, hysteresis analysis, context efficiency, cooperation metrics
 - `caw-bench` with NIAH, opencaw, and sysdoc workloads; `caw-bench-build-index`

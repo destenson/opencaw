@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+llama = ["caw-adapters/llama"]
+
 [dependencies]
 anyhow.workspace = true
 caw-adapters = { workspace = true, features = ["cli"] }
