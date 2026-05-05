@@ -1,14 +1,16 @@
 use std::path::PathBuf;
 
 fn main() {
-    let (header, extra_include) = find_llama();
-
-    // Emit link directives. For system installs the library lives in a
-    // standard linker search path so no rustc-link-search is needed.
-    println!("cargo:rustc-link-lib=dylib=llama");
-    println!("cargo:rustc-link-lib=dylib=ggml");
-
     println!("cargo:rerun-if-env-changed=LLAMA_PATH");
+
+    let include_dirs = locate_llama();
+
+    let header = include_dirs
+        .iter()
+        .map(|d| d.join("llama.h"))
+        .find(|p| p.exists())
+        .expect("llama.h not found in any include directory");
+
     println!("cargo:rerun-if-changed={}", header.display());
 
     let mut builder = bindgen::Builder::default()
@@ -19,7 +21,7 @@ fn main() {
         .prepend_enum_name(false)
         .derive_default(true);
 
-    for dir in &extra_include {
+    for dir in &include_dirs {
         builder = builder.clang_arg(format!("-I{}", dir.display()));
     }
 
@@ -31,36 +33,30 @@ fn main() {
         .expect("could not write bindings.rs");
 }
 
-/// Locate llama.h and any extra include directories needed to parse it.
+/// Locate llama include directories and emit link directives.
 ///
-/// Search order:
-///   1. `/usr/include/llama.h`  — system .deb / package install (no extra
-///      link-search or include paths needed since they are standard).
-///   2. `$LLAMA_PATH`           — custom build directory. Emits
-///      `rustc-link-search` so the non-standard .so location is found.
-fn find_llama() -> (PathBuf, Vec<PathBuf>) {
-    // 1. System install
-    let sys_header = PathBuf::from("/usr/include/llama.h");
-    if sys_header.exists() {
-        // /usr/include is a standard clang search path; no -I needed.
-        return (sys_header, vec![]);
+/// Uses pkg-config when available. Falls back to LLAMA_PATH for custom builds.
+fn locate_llama() -> Vec<PathBuf> {
+    if let Ok(lib) = pkg_config::probe_library("llama") {
+        // probe_library already emitted cargo:rustc-link-* directives.
+        return lib.include_paths;
     }
 
-    // 2. Custom build via LLAMA_PATH
-    let llama_root = PathBuf::from(
+    // pkg-config not available or llama not registered — fall back to a
+    // manually specified build directory.
+    let root = PathBuf::from(
         std::env::var("LLAMA_PATH").expect(
-            "llama.h not found in /usr/include and LLAMA_PATH is not set.\n\
-             Install the llama.cpp dev package or point LLAMA_PATH at your build directory.",
+            "pkg-config could not find llama and LLAMA_PATH is not set.\n\
+             Install the llama.cpp dev package or set LLAMA_PATH to your build directory.",
         ),
     );
 
-    let lib_dir = llama_root.join("build/bin");
-    println!("cargo:rustc-link-search=native={}", lib_dir.display());
+    println!(
+        "cargo:rustc-link-search=native={}",
+        root.join("build/bin").display()
+    );
+    println!("cargo:rustc-link-lib=dylib=llama");
+    println!("cargo:rustc-link-lib=dylib=ggml");
 
-    let header = llama_root.join("include/llama.h");
-    let extra = vec![
-        llama_root.join("include"),
-        llama_root.join("ggml/include"),
-    ];
-    (header, extra)
+    vec![root.join("include"), root.join("ggml/include")]
 }

@@ -7,3 +7,4 @@ links = "llama"
 
 [build-dependencies]
 bindgen = "0.71"
+pkg-config = "0.3"
