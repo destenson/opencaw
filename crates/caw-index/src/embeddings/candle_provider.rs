@@ -4,6 +4,7 @@ use candle_transformers::models::bert::{BertModel, Config as BertConfig};
 use caw_core::{CawError, CawResult, EmbeddingProvider};
 use hf_hub::api::sync::Api;
 use tokenizers::Tokenizer;
+use tracing::debug;
 
 const DTYPE: DType = DType::F32;
 
