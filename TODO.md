@@ -97,6 +97,10 @@ orchestrator runs at full capability unconditionally.
 
 ## Other
 
+- [ ] **Tool call support**: The design doc describes tool calls as a distinct retrieval signal and a separate path for proactive context injection. Not implemented yet — the current approach is to detect tool-like prompts and inject relevant context reactively, but true tool call support with visible tool output and proactive injection is still open.
+- [ ] **Additional prompt reference surfaces**: The current `PromptTransformer` supports markdown links and `@path` references. The design doc also describes fenced blocks with `path=` and bare paths matching a regex. These are not implemented yet.
+- [ ] Add scripts for systematically running the `caw-bench` harness across multiple seeds, models, and workloads to produce statistically significant results for tuning the various thresholds. The harness is in place but the actual runs and analysis are still pending.
+- [ ] Improve the benchmark prompt suite for intent classification to cover more varied and complex queries, including multi-intent combinations and edge cases. The current set is a starting point but could be expanded to better represent real-world usage.
 - [ ] detect git/repo references in prompts and link to stubs with git status (modified/unmodified), git blame info (author, commit message, date), branch information, and/or git log data, as needed.
 - [ ] reconsider parse failures in small models & see if there may be a better way to use them to accomplish the classification goal without strict JSON parsing. The current approach is to look for JSON in the raw output, but that may be brittle. For example, if the model outputs "is_inventory_request: true" without JSON formatting, we could still detect that with a regex or simple string search, and it would be more robust to minor formatting variations.
 - [ ] add more default bench cases with more varied intent combinations, e.g. non-grounded questions, next-step questions that also ask for numeric values ("what's the next step and how long will it take?"), etc.
