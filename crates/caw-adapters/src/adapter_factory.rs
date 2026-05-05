@@ -134,6 +134,7 @@ fn build_inner(
                     supports_tool_calls: false,
                     supports_hidden_reasoning: false,
                     supports_visible_reasoning: false,
+                    ..Default::default()
                 },
                 runtime.clone(),
             );

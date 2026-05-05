@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/caw-llama-sys",
   "crates/caw-core",
   "crates/caw-ingest",
   "crates/caw-index",
@@ -31,6 +32,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 rayon = "1"
 caw-adapters = { path = "crates/caw-adapters" }
+caw-llama-sys = { path = "crates/caw-llama-sys" }
 caw-bench = { path = "crates/caw-bench" }
 caw-cli = { path = "crates/caw-cli" }
 caw-core = { path = "crates/caw-core" }

@@ -7,6 +7,8 @@ pub mod adapter_factory;
 mod anthropic;
 mod claude_code;
 mod groq;
+#[cfg(feature = "llama")]
+mod llama_cpp;
 mod ollama;
 mod openai_compatible;
 mod tracing;
@@ -14,6 +16,8 @@ mod tracing;
 pub use anthropic::AnthropicAdapter;
 pub use claude_code::ClaudeCodeAdapter;
 pub use groq::GroqAdapter;
+#[cfg(feature = "llama")]
+pub use llama_cpp::{LlamaCppAdapter, LlamaCppConfig};
 pub use ollama::OllamaAdapter;
 pub use openai_compatible::{OpenAiCompatibleAdapter, RequestHeaders};
 use ::tracing::trace;
@@ -43,6 +47,7 @@ impl MockAdapter {
                 supports_tool_calls: true,
                 supports_hidden_reasoning: false,
                 supports_visible_reasoning,
+                ..Default::default()
             },
         }
     }

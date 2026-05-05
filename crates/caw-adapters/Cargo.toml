@@ -6,8 +6,10 @@ license.workspace = true
 
 [features]
 cli = ["dep:clap"]
+llama = ["dep:caw-llama-sys"]
 
 [dependencies]
+caw-llama-sys = { workspace = true, optional = true }
 caw-core = { workspace = true }
 reqwest = { version = "0.13", features = ["json", "stream"] }
 futures-util = "0.3"

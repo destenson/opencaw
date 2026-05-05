@@ -118,6 +118,7 @@ impl OpenAiCompatibleAdapter {
                 supports_tool_calls: true,
                 supports_hidden_reasoning: false,
                 supports_visible_reasoning: false,
+                ..Default::default()
             },
             runtime,
         )
@@ -140,6 +141,7 @@ impl OpenAiCompatibleAdapter {
                 supports_tool_calls: false,
                 supports_hidden_reasoning: false,
                 supports_visible_reasoning: false,
+                ..Default::default()
             },
             runtime,
         ))
@@ -162,6 +164,7 @@ impl OpenAiCompatibleAdapter {
                 supports_tool_calls: false,
                 supports_hidden_reasoning: false,
                 supports_visible_reasoning: false,
+                ..Default::default()
             },
             runtime,
         ))
@@ -180,6 +183,7 @@ impl OpenAiCompatibleAdapter {
                 supports_tool_calls: true,
                 supports_hidden_reasoning: false,
                 supports_visible_reasoning: false,
+                ..Default::default()
             },
             runtime,
         ))

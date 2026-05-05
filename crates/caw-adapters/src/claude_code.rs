@@ -161,6 +161,7 @@ impl ModelAdapter for ClaudeCodeAdapter {
             supports_tool_calls: !self.allowed_tools.is_empty(),
             supports_hidden_reasoning: true,
             supports_visible_reasoning: false,
+            ..Default::default()
         }
     }
 

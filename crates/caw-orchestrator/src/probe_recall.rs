@@ -203,6 +203,7 @@ mod tests {
                 supports_tool_calls: false,
                 supports_hidden_reasoning: false,
                 supports_visible_reasoning: false,
+                ..Default::default()
             }
         }
         fn complete(&self, _req: CompletionRequest) -> CawResult<CompletionResponse> {

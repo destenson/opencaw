@@ -92,6 +92,7 @@ impl ModelAdapter for AnthropicAdapter {
             supports_hidden_reasoning: self.model.contains("sonnet-4")
                 || self.model.contains("opus-4"),
             supports_visible_reasoning: false,
+            ..Default::default()
         }
     }
 

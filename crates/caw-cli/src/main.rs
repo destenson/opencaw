@@ -461,6 +461,7 @@ fn build_completion_adapter(
                     supports_tool_calls: true,
                     supports_hidden_reasoning: false,
                     supports_visible_reasoning: false,
+                    ..Default::default()
                 },
                 rt,
             ))

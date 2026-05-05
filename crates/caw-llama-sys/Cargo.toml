@@ -1,0 +1,9 @@
+[package]
+name = "caw-llama-sys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+links = "llama"
+
+[build-dependencies]
+bindgen = "0.71"

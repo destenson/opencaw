@@ -226,6 +226,7 @@ impl ModelAdapter for OllamaAdapter {
             // Visible reasoning gates <think>-block parsing; detected by model name.
             supports_visible_reasoning: self.model.contains("deepseek")
                 || self.model.contains("qwen"),
+            ..Default::default()
         }
     }
 

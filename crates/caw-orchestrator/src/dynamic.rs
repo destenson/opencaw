@@ -91,6 +91,10 @@ pub struct DynamicRecallConfig {
     /// system prompt. Defaults to `Auto` (capability-based). Override with
     /// calibration data from `caw-bench-coop`.
     pub cooperation_mode: CooperationMode,
+    /// How many generated tokens to accumulate before embedding the window and
+    /// checking for passive injection candidates. Only used when the adapter
+    /// reports `supports_passive_injection = true`.
+    pub passive_injection_window: usize,
 }
 
 impl Default for DynamicRecallConfig {
@@ -105,6 +109,7 @@ impl Default for DynamicRecallConfig {
             enable_probe_recall: true,
             max_initial_fragments: 4,
             cooperation_mode: CooperationMode::Auto,
+            passive_injection_window: 64,
         }
     }
 }
@@ -388,12 +393,18 @@ where
         let mut initial_fragments = self.loaded.clone();
         initial_fragments.extend(candidate_fragment);
 
-        let mut last_response = self.adapter.complete(CompletionRequest {
+        let initial_req = CompletionRequest {
             system: system_prompt.clone(),
             user: user.to_string(),
             workspace_fragments: initial_fragments,
             workspace_guidance: guidance.to_vec(),
-        })?;
+        };
+
+        let mut last_response = if caps.supports_passive_injection {
+            self.run_with_passive_injection(initial_req)?
+        } else {
+            self.adapter.complete(initial_req)?
+        };
 
         // When the candidate list was shown, check if the model's response
         // mentions any candidate file paths explicitly. If so, load those files
@@ -548,6 +559,77 @@ where
         }
 
         Ok(())
+    }
+
+    /// Run one generation pass with passive mid-stream recall injection.
+    ///
+    /// Every `passive_injection_window` tokens the adapter calls back with a
+    /// text window. We embed it, search for matches above threshold, and return
+    /// content to inject directly into the KV cache — no generation restart.
+    ///
+    /// The `retriever`, `loaded_ids`, and `adapter` fields are disjoint struct
+    /// members, so Rust NLL allows the split borrow across the closure and the
+    /// method call simultaneously.
+    fn run_with_passive_injection(
+        &mut self,
+        req: CompletionRequest,
+    ) -> CawResult<CompletionResponse> {
+        let load_threshold = self.config.thresholds.load;
+        let max_candidates = self.config.max_candidates;
+        let window_tokens = self.config.passive_injection_window;
+        let initial_budget = self
+            .config
+            .max_workspace_tokens
+            .saturating_sub(self.loaded.iter().map(|f| f.tokens).sum::<usize>());
+
+        let mut injected: Vec<(StubId, f32)> = Vec::new();
+        let mut remaining_budget = initial_budget;
+
+        let response = {
+            let retriever = &mut self.retriever;
+            let loaded_ids = &self.loaded_ids;
+
+            let mut on_window = |window: &str| -> CawResult<Option<String>> {
+                let hits = retriever.search(window, max_candidates)?;
+                for hit in &hits {
+                    if hit.score < load_threshold {
+                        break;
+                    }
+                    if loaded_ids.contains(&hit.stub.id) {
+                        continue;
+                    }
+                    if injected.iter().any(|(id, _)| *id == hit.stub.id) {
+                        continue;
+                    }
+                    if hit.stub.token_estimate > remaining_budget {
+                        continue;
+                    }
+                    let fragment = retriever.read_range(&hit.stub.id, "full")?;
+                    remaining_budget = remaining_budget.saturating_sub(fragment.tokens);
+                    injected.push((hit.stub.id.clone(), hit.score));
+                    debug!(
+                        stub_id = hit.stub.id.0.as_str(),
+                        score = hit.score,
+                        tokens = fragment.tokens,
+                        "passive injection"
+                    );
+                    return Ok(Some(format!(
+                        "\n[recalled from {}]\n{}\n",
+                        fragment.locator.source, fragment.content
+                    )));
+                }
+                Ok(None)
+            };
+
+            self.adapter.generate_passive(req, window_tokens, &mut on_window)?
+        };
+
+        // Update the loaded workspace state to reflect what was injected mid-generation.
+        for (stub_id, score) in injected {
+            self.load_fragments(vec![(stub_id, score)])?;
+        }
+
+        Ok(response)
     }
 
     fn process_probes(&mut self, output: &str) -> CawResult<()> {

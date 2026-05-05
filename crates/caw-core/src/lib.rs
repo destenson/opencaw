@@ -370,11 +370,15 @@ pub struct SchedulerDecision {
     pub admitted: Vec<RecallFragment>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ModelCapabilities {
     pub supports_tool_calls: bool,
     pub supports_hidden_reasoning: bool,
     pub supports_visible_reasoning: bool,
+    /// Adapter owns its sampling loop and can inject content mid-generation
+    /// every N tokens without restarting. When true, the orchestrator calls
+    /// `generate_passive` instead of `complete`.
+    pub supports_passive_injection: bool,
 }
 
 /// Signals that drive what to proactively load into the context workspace.
@@ -974,6 +978,25 @@ pub trait ModelAdapter {
     fn capabilities(&self) -> ModelCapabilities;
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse>;
 
+    /// Drive generation token-by-token, calling `on_window` every
+    /// `window_tokens` generated tokens with the text of that window.
+    ///
+    /// If `on_window` returns `Some(content)`, the adapter injects those tokens
+    /// directly into the in-flight KV cache before sampling the next token —
+    /// no generation restart, no re-encoding of prior output.
+    ///
+    /// Default: runs `complete` with no injection. Only adapters that own their
+    /// sampling loop (e.g. `LlamaCppAdapter`) override this.
+    fn generate_passive(
+        &self,
+        req: CompletionRequest,
+        window_tokens: usize,
+        on_window: &mut dyn FnMut(&str) -> CawResult<Option<String>>,
+    ) -> CawResult<CompletionResponse> {
+        let _ = (window_tokens, on_window);
+        self.complete(req)
+    }
+
     /// Stream the model's thinking trace, calling `on_step` at each reasoning
     /// step boundary (`\n\n`). Returning `false` from `on_step` stops replay
     /// early so the orchestrator can inject context and restart.
@@ -1016,6 +1039,15 @@ impl<T: ModelAdapter + ?Sized> ModelAdapter for Box<T> {
 
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
         (**self).complete(req)
+    }
+
+    fn generate_passive(
+        &self,
+        req: CompletionRequest,
+        window_tokens: usize,
+        on_window: &mut dyn FnMut(&str) -> CawResult<Option<String>>,
+    ) -> CawResult<CompletionResponse> {
+        (**self).generate_passive(req, window_tokens, on_window)
     }
 
     fn thinking_with_steps(
