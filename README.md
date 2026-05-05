@@ -28,7 +28,7 @@ container. It implements:
 - **caw-adapters**: Model adapters (Anthropic, Groq, Ollama, OpenAI-compat,
   ClaudeCode, Mock, LlamaCpp)
 - **caw-llama-sys**: FFI bindings to libllama.so (feature-gated; generated
-  by bindgen at build time against a local llama.cpp build)
+  by bindgen at build time against `/usr/include/llama.h` or `$LLAMA_PATH`)
 - **caw-orchestrator**: `DynamicRecallOrchestrator`, degradation monitor,
   consolidation
 - **caw-curation**: History summarization, tool output compression, system
@@ -188,7 +188,7 @@ use caw_adapters::ClaudeCodeAdapter;
 - Native llama.cpp inference via FFI — no HTTP server, no restart overhead
 - Owns the sampling loop: implements `generate_passive` for true mid-stream recall injection every N tokens directly into the KV cache
 - Any GGUF model; GPU offload via CUDA
-- Enable with `--features llama`. Requires `LLAMA_PATH` pointing at a llama.cpp build directory containing `libllama.so`.
+- Enable with `--features llama`. Builds against the system-installed llama.cpp by default (`/usr/include/llama.h`); set `LLAMA_PATH` to a custom build directory if needed.
 
 ```rust
 use caw_adapters::{LlamaCppAdapter, LlamaCppConfig};
@@ -205,11 +205,9 @@ let adapter = LlamaCppAdapter::new_with(LlamaCppConfig {
 ```
 
 ```bash
-# CLI usage
-LLAMA_PATH=/path/to/llama.cpp \
-  LD_LIBRARY_PATH=/path/to/llama.cpp/build/bin \
-  cargo run -p caw-cli --features llama -- \
-    --adapter llama --model /path/to/model.gguf
+# CLI usage (system install — no env vars needed)
+cargo run -p caw-cli --features llama -- \
+  --adapter llama --model /path/to/model.gguf
 ```
 
 ### MockAdapter
