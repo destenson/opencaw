@@ -551,11 +551,20 @@ where
             match sf.write_turn(self.session_turn, user, &last_response.answer) {
                 Ok(text) => {
                     let stub_id = StubId(format!("session-turn-{}", self.session_turn));
+                    // Embed the full turn for recall accuracy, but store only a compact
+                    // reference for workspace injection — the full text is in the session
+                    // file if the model needs it.
+                    let workspace_ref = format!(
+                        "[Session turn {} — {}]\nUser: {}",
+                        self.session_turn,
+                        sf.path().display(),
+                        user
+                    );
                     match self.embedder.embed_document(vec![text.as_str()]) {
                         Ok(embeddings) => {
                             if let Some(emb) = embeddings.into_iter().next() {
                                 self.vector_index.add(stub_id.clone(), emb);
-                                self.session_content.insert(stub_id, text);
+                                self.session_content.insert(stub_id, workspace_ref);
                             }
                         }
                         Err(e) => warn!(error = %e, "session turn embedding failed"),
