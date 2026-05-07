@@ -678,7 +678,7 @@ fn run_interactive(
                 .collect();
             if show_intent && votes.len() > 1 {
                 for (name, v) in &votes {
-                    eprintln!("[intent {name}] {:?}", v);
+                    eprintln!("[intent {name}] {}", v);
                 }
             }
             if votes.is_empty() {
@@ -688,7 +688,7 @@ fn run_interactive(
                 let merged = QueryIntent::majority_vote(&intents);
                 if show_intent {
                     let label = if intent_adapters.len() > 1 { " merged" } else { "" };
-                    eprintln!("[intent{label}] {:?}", merged);
+                    eprintln!("[intent{label}] {}", merged);
                 }
                 Some(merged)
             }

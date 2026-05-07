@@ -7,7 +7,7 @@ pub use provenance::tokenize_terms;
 pub use reindex::{ChannelReindexQueue, NoopReindexQueue, ReindexQueue, ReindexReceiver};
 pub use tokenizer::{count_tokens_cl100k, extract_token_range};
 
-use std::collections::{HashMap, HashSet};
+use std::{collections::{HashMap, HashSet}, fmt::Display};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -428,6 +428,52 @@ pub struct QueryIntent {
     /// Bool-true values and non-empty strings are forwarded as guidance to the answer model.
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+impl Display for QueryIntent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut parts = Vec::new();
+        if self.is_inventory_request {
+            parts.push("inventory");
+        }
+        if self.is_results_request {
+            parts.push("results");
+        }
+        if self.is_status_request {
+            parts.push("status");
+        }
+        if self.is_next_step_request {
+            parts.push("next_step");
+        }
+        if self.wants_exact_names_or_paths {
+            parts.push("exact_names_or_paths");
+        }
+        if self.wants_numeric_values {
+            parts.push("numeric_values");
+        }
+        if self.wants_latest_run_only {
+            parts.push("latest_run_only");
+        }
+        if self.wants_comparison {
+            parts.push("comparison");
+        }
+        if self.wants_explanation {
+            parts.push("explanation");
+        }
+        if self.wants_completion_state {
+            parts.push("completion_state");
+        }
+        if self.wants_recommended_actions {
+            parts.push("recommended_actions");
+        }
+        if self.needs_grounded_evidence_only {
+            parts.push("grounded_evidence_only");
+        }
+        if self.abstain {
+            parts.push("abstain");
+        }
+        write!(f, "QueryIntent({})", parts.join(", "))
+    }
 }
 
 impl QueryIntent {
