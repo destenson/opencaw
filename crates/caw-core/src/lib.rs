@@ -57,6 +57,12 @@ impl From<std::io::Error> for CawError {
 /// Responses shorter than 20 words are never flagged — structured one-liners
 /// and short factual answers would produce false positives.
 pub fn is_looping(text: &str) -> bool {
+    // Chat-template tokens leaking into output are an unambiguous runaway signal
+    // regardless of response length.
+    if text.contains("<|im_end|>") || text.contains("<|im_start|>") {
+        return true;
+    }
+
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.len() < 20 {
         return false;
@@ -80,6 +86,24 @@ pub fn is_looping(text: &str) -> bool {
         let unique: std::collections::HashSet<[&str; 3]> =
             words.windows(3).map(|w| [w[0], w[1], w[2]]).collect();
         if unique.len() * 10 < total {
+            return true;
+        }
+    }
+
+    // Sentence-level repetition: 4× sentence repetition at the trigram level
+    // won't collapse diversity below 10%, but repeating any substantial line
+    // ≥3 times is still pathological output.
+    let long_lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.len() > 30)
+        .collect();
+    if long_lines.len() >= 6 {
+        let mut counts = std::collections::HashMap::new();
+        for &line in &long_lines {
+            *counts.entry(line).or_insert(0usize) += 1;
+        }
+        if counts.values().any(|&c| c >= 3) {
             return true;
         }
     }

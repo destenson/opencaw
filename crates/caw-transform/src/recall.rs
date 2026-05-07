@@ -5,7 +5,7 @@ use std::sync::LazyLock;
 static PROBE_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<probe>(.*?)</probe>").unwrap());
 static THINK_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<think>(.*?)</think>").unwrap());
+    LazyLock::new(|| Regex::new(r"(?s)<think>(.*?)</think>").unwrap());
 static ANNOTATION_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"<note id="([^"]+)">(.*?)</note>"#).unwrap());
 
@@ -85,11 +85,21 @@ pub fn apply_range(content: &str, range: &Range) -> CawResult<String> {
 
 /// Strip cooperation-protocol markers from the final answer before returning
 /// it to the caller. Note content is kept inline (small models often wrap their
-/// entire answer in a note tag). Probe markers are discarded — they are
-/// retrieval queries, not answer text.
+/// entire answer in a note tag). Probe markers, thinking traces, and leaked
+/// chat-template tokens are discarded — they are not answer text.
 pub fn strip_markers(text: &str) -> String {
     let text = ANNOTATION_PATTERN.replace_all(text, "$2");
     let text = PROBE_PATTERN.replace_all(&text, "");
+    // Strip complete <think>...</think> blocks (reasoning traces are internal).
+    let text = THINK_PATTERN.replace_all(&text, "");
+    // Strip partial <think> block if the model was cut off before </think>.
+    let text = match text.find("<think>") {
+        Some(pos) => std::borrow::Cow::Owned(text[..pos].to_string()),
+        None => text,
+    };
+    // Chat-template sentinel tokens that leak when stop sequences aren't
+    // configured correctly are an unambiguous sign of a degenerate response.
+    let text = text.replace("<|im_end|>", "").replace("<|im_start|>", "");
     text.trim().to_string()
 }
 
