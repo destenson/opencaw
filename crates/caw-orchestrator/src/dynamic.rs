@@ -91,10 +91,13 @@ pub struct DynamicRecallConfig {
     /// system prompt. Defaults to `Auto` (capability-based). Override with
     /// calibration data from `caw-bench-coop`.
     pub cooperation_mode: CooperationMode,
-    /// How many generated tokens to accumulate before embedding the window and
-    /// checking for passive injection candidates. Only used when the adapter
-    /// reports `supports_passive_injection = true`.
-    pub passive_injection_window: usize,
+    /// How many tokens to generate between passive injection checks. Only used
+    /// when the adapter reports `supports_passive_injection = true`.
+    pub passive_injection_interval: usize,
+    /// How many of the most recently generated tokens to include in the
+    /// embedding query at each check. Must be >= `passive_injection_interval`
+    /// to avoid missing sequences that span an interval boundary.
+    pub passive_injection_window_size: usize,
 }
 
 impl Default for DynamicRecallConfig {
@@ -109,7 +112,8 @@ impl Default for DynamicRecallConfig {
             enable_probe_recall: true,
             max_initial_fragments: 4,
             cooperation_mode: CooperationMode::Auto,
-            passive_injection_window: 64,
+            passive_injection_interval: 32,
+            passive_injection_window_size: 192,
         }
     }
 }
@@ -563,9 +567,10 @@ where
 
     /// Run one generation pass with passive mid-stream recall injection.
     ///
-    /// Every `passive_injection_window` tokens the adapter calls back with a
-    /// text window. We embed it, search for matches above threshold, and return
-    /// content to inject directly into the KV cache — no generation restart.
+    /// Every `passive_injection_interval` tokens the adapter calls back with
+    /// the last `passive_injection_window_size` tokens as a sliding window.
+    /// We embed it, search for matches above threshold, and return content to
+    /// inject directly into the KV cache — no generation restart.
     ///
     /// The `retriever`, `loaded_ids`, and `adapter` fields are disjoint struct
     /// members, so Rust NLL allows the split borrow across the closure and the
@@ -576,7 +581,8 @@ where
     ) -> CawResult<CompletionResponse> {
         let load_threshold = self.config.thresholds.load;
         let max_candidates = self.config.max_candidates;
-        let window_tokens = self.config.passive_injection_window;
+        let check_interval = self.config.passive_injection_interval;
+        let window_size = self.config.passive_injection_window_size;
         let initial_budget = self
             .config
             .max_workspace_tokens
@@ -621,7 +627,7 @@ where
                 Ok(None)
             };
 
-            self.adapter.generate_passive(req, window_tokens, &mut on_window)?
+            self.adapter.generate_passive(req, check_interval, window_size, &mut on_window)?
         };
 
         // Update the loaded workspace state to reflect what was injected mid-generation.

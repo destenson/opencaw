@@ -978,8 +978,12 @@ pub trait ModelAdapter {
     fn capabilities(&self) -> ModelCapabilities;
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse>;
 
-    /// Drive generation token-by-token, calling `on_window` every
-    /// `window_tokens` generated tokens with the text of that window.
+    /// Drive generation token-by-token with a sliding recall window.
+    ///
+    /// Every `check_interval` generated tokens, `on_window` is called with the
+    /// last `window_size` tokens of generated text (a sliding window, not just
+    /// the interval slice). This lets the embedding query span token sequences
+    /// that cross interval boundaries.
     ///
     /// If `on_window` returns `Some(content)`, the adapter injects those tokens
     /// directly into the in-flight KV cache before sampling the next token —
@@ -990,10 +994,11 @@ pub trait ModelAdapter {
     fn generate_passive(
         &self,
         req: CompletionRequest,
-        window_tokens: usize,
+        check_interval: usize,
+        window_size: usize,
         on_window: &mut dyn FnMut(&str) -> CawResult<Option<String>>,
     ) -> CawResult<CompletionResponse> {
-        let _ = (window_tokens, on_window);
+        let _ = (check_interval, window_size, on_window);
         self.complete(req)
     }
 
@@ -1044,10 +1049,11 @@ impl<T: ModelAdapter + ?Sized> ModelAdapter for Box<T> {
     fn generate_passive(
         &self,
         req: CompletionRequest,
-        window_tokens: usize,
+        check_interval: usize,
+        window_size: usize,
         on_window: &mut dyn FnMut(&str) -> CawResult<Option<String>>,
     ) -> CawResult<CompletionResponse> {
-        (**self).generate_passive(req, window_tokens, on_window)
+        (**self).generate_passive(req, check_interval, window_size, on_window)
     }
 
     fn thinking_with_steps(

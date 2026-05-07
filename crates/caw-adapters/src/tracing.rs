@@ -153,10 +153,11 @@ impl<A: ModelAdapter> ModelAdapter for TracingAdapter<A> {
     fn generate_passive(
         &self,
         req: CompletionRequest,
-        window_tokens: usize,
+        check_interval: usize,
+        window_size: usize,
         on_window: &mut dyn FnMut(&str) -> caw_core::CawResult<Option<String>>,
     ) -> caw_core::CawResult<CompletionResponse> {
-        self.inner.generate_passive(req, window_tokens, on_window)
+        self.inner.generate_passive(req, check_interval, window_size, on_window)
     }
 }
 

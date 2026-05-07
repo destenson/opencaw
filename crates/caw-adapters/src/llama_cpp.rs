@@ -3,6 +3,7 @@ use caw_core::{
     ModelCapabilities, ProvenanceFormat,
 };
 use caw_llama_sys::*;
+use std::collections::VecDeque;
 use std::ffi::CString;
 use std::sync::Mutex;
 use tracing::debug;
@@ -149,7 +150,7 @@ impl ModelAdapter for LlamaCppAdapter {
             .map_err(|_| CawError::Adapter("llama state mutex poisoned".into()))?;
 
         let prompt = format_prompt(&state, &req)?;
-        let raw = run_generation(&mut state, &self.config, &prompt, usize::MAX, None)?;
+        let raw = run_generation(&mut state, &self.config, &prompt, usize::MAX, 0, None)?;
         let (thinking, answer) = split_thinking(&raw);
         Ok(CompletionResponse {
             answer,
@@ -161,7 +162,8 @@ impl ModelAdapter for LlamaCppAdapter {
     fn generate_passive(
         &self,
         req: CompletionRequest,
-        window_tokens: usize,
+        check_interval: usize,
+        window_size: usize,
         on_window: &mut dyn FnMut(&str) -> CawResult<Option<String>>,
     ) -> CawResult<CompletionResponse> {
         let mut state = self
@@ -170,8 +172,14 @@ impl ModelAdapter for LlamaCppAdapter {
             .map_err(|_| CawError::Adapter("llama state mutex poisoned".into()))?;
 
         let prompt = format_prompt(&state, &req)?;
-        let raw =
-            run_generation(&mut state, &self.config, &prompt, window_tokens, Some(on_window))?;
+        let raw = run_generation(
+            &mut state,
+            &self.config,
+            &prompt,
+            check_interval,
+            window_size,
+            Some(on_window),
+        )?;
         let (thinking, answer) = split_thinking(&raw);
         Ok(CompletionResponse {
             answer,
@@ -325,15 +333,19 @@ fn token_to_piece(vocab: *const llama_vocab, token: i32) -> String {
 
 /// Core sampling loop shared by `complete` and `generate_passive`.
 ///
-/// When `on_window` is provided, every `window_tokens` generated tokens the
-/// accumulated text is passed to the callback. If it returns `Some(content)`,
-/// that content is tokenized and decoded into the KV cache before sampling
-/// continues — injecting the recalled material without restarting generation.
+/// When `on_window` is provided, `on_window` is called every `check_interval`
+/// tokens with the last `window_size` token pieces as a sliding window. This
+/// means consecutive calls overlap, so important token sequences are never
+/// split across an interval boundary and missed. If the callback returns
+/// `Some(content)`, that content is tokenized and decoded into the KV cache
+/// before sampling continues — injecting recalled material without restarting
+/// generation.
 fn run_generation(
     state: &mut LlamaState,
     config: &LlamaCppConfig,
     prompt: &str,
-    window_tokens: usize,
+    check_interval: usize,
+    window_size: usize,
     mut on_window: Option<&mut dyn FnMut(&str) -> CawResult<Option<String>>>,
 ) -> CawResult<String> {
     let ctx = state.ctx;
@@ -378,7 +390,9 @@ fn run_generation(
     };
 
     let mut generated = String::new();
-    let mut window_buf = String::new();
+    // Sliding deque: each entry is one decoded token piece. Capped at
+    // `window_size` so joining it always yields the last N tokens of output.
+    let mut sliding_window: VecDeque<String> = VecDeque::with_capacity(window_size + 1);
     let mut tokens_since_check = 0usize;
 
     'decode: for _ in 0..config.max_new_tokens {
@@ -390,7 +404,14 @@ fn run_generation(
 
         let piece = token_to_piece(vocab, token);
         generated.push_str(&piece);
-        window_buf.push_str(&piece);
+
+        if on_window.is_some() {
+            sliding_window.push_back(piece.clone());
+            if sliding_window.len() > window_size {
+                sliding_window.pop_front();
+            }
+        }
+
         tokens_since_check += 1;
 
         unsafe { llama_sampler_accept(smpl, token) };
@@ -408,14 +429,10 @@ fn run_generation(
             break 'decode;
         }
 
-        // Passive injection: every `window_tokens` tokens, embed the window and
-        // check for matching stubs. If a match is found, decode the content into
-        // the KV cache before sampling the next token.
-        if tokens_since_check >= window_tokens {
+        if tokens_since_check >= check_interval {
+            tokens_since_check = 0;
             if let Some(ref mut cb) = on_window {
-                let window_text = std::mem::take(&mut window_buf);
-                tokens_since_check = 0;
-
+                let window_text: String = sliding_window.iter().cloned().collect();
                 if let Ok(Some(injection)) = cb(&window_text) {
                     // Append the injected text to the visible output so the
                     // caller can see what was materialised inline.
@@ -437,8 +454,6 @@ fn run_generation(
                         }
                     }
                 }
-            } else {
-                tokens_since_check = 0;
             }
         }
     }
