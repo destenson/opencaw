@@ -842,26 +842,52 @@ impl CompletionRequest {
             return String::new();
         }
 
+        // First pass: collect extra locators for each source beyond the first
+        // occurrence, preserving the iteration order of first appearances.
+        let mut extra_locators: std::collections::HashMap<&str, Vec<&str>> =
+            std::collections::HashMap::new();
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for f in &self.workspace_fragments {
+            let src = f.locator.source.as_str();
+            if !seen.insert(src) {
+                extra_locators.entry(src).or_default().push(f.locator.locator.as_str());
+            }
+        }
+
+        // Second pass: render the first fragment from each source with a compact
+        // note about any additional sections; skip the rest entirely.
+        let mut rendered: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let fragments: Vec<String> = self
             .workspace_fragments
             .iter()
-            .map(|f| {
-                let source = &f.locator.source;
+            .filter_map(|f| {
+                let source = f.locator.source.as_str();
+                if !rendered.insert(source) {
+                    return None;
+                }
                 let locator = &f.locator.locator;
-                match format {
+                let extras_note = match extra_locators.get(source) {
+                    Some(locs) if !locs.is_empty() => format!(
+                        "\n[+{} more section(s) from this file: {}]",
+                        locs.len(),
+                        locs.join(", ")
+                    ),
+                    _ => String::new(),
+                };
+                Some(match format {
                     ProvenanceFormat::Xml => format!(
                         "<recalled from=\"{source}\" locator=\"{locator}\">\n\
-                         {content}\n\
+                         {content}{extras_note}\n\
                          </recalled>",
                         content = f.content,
                     ),
                     ProvenanceFormat::Bracketed => format!(
                         "[recalled from {source}:{locator}]\n\
-                         {content}\n\
+                         {content}{extras_note}\n\
                          [end recall]",
                         content = f.content,
                     ),
-                }
+                })
             })
             .collect();
 
@@ -1470,6 +1496,37 @@ mod tests {
         assert!(formatted.contains(
             "say what planning or status evidence is needed before recommending a next step"
         ));
+    }
+
+    #[test]
+    fn duplicate_source_fragments_are_collapsed_to_extras_note() {
+        let request = CompletionRequest {
+            system: String::new(),
+            user: String::new(),
+            workspace_fragments: vec![
+                sample_fragment("lib.rs", "1-40", "fn foo() {}"),
+                sample_fragment("other.rs", "full", "fn bar() {}"),
+                sample_fragment("lib.rs", "80-120", "fn baz() {}"),
+                sample_fragment("lib.rs", "200-240", "fn qux() {}"),
+            ],
+            workspace_guidance: vec![],
+        };
+
+        let formatted = request.format_workspace(ProvenanceFormat::Bracketed);
+
+        // Primary fragment from lib.rs is present.
+        assert!(formatted.contains("[recalled from lib.rs:1-40]"));
+        assert!(formatted.contains("fn foo() {}"));
+        // Secondary fragments from lib.rs are not rendered as full blocks.
+        assert!(!formatted.contains("[recalled from lib.rs:80-120]"));
+        assert!(!formatted.contains("fn baz() {}"));
+        assert!(!formatted.contains("[recalled from lib.rs:200-240]"));
+        assert!(!formatted.contains("fn qux() {}"));
+        // The extras note is appended to the primary block.
+        assert!(formatted.contains("+2 more section(s) from this file: 80-120, 200-240"));
+        // The sole other.rs fragment is shown normally.
+        assert!(formatted.contains("[recalled from other.rs:full]"));
+        assert!(formatted.contains("fn bar() {}"));
     }
 }
 
