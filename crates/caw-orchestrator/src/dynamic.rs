@@ -999,7 +999,7 @@ where
                         mtime_unix_secs: 0,
                     }
                 }
-                None => match self.retriever.read_range(&stub_id, "full") {
+                None => match self.retriever.read_range(&stub_id, "stub") {
                     Ok(mut f) => {
                         // If there are persisted consolidation notes for this stub
                         // (written on prior evictions), prepend them so the model

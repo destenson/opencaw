@@ -48,6 +48,7 @@ Cross-reference: design doc is `context-as-workspace.md`, scope boundaries are i
 - [x] **Probe extraction**: Parses `<probe>...</probe>` markers from model output for automatic recall.
 - [x] **Thinking-trace extraction**: Parses `<think>...</think>` blocks and heuristic step boundaries for reasoning models.
 - [ ] **Streaming recall**: Multi-pass is request/response per iteration. True streaming (interleave retrieval with token generation mid-response) requires async streaming adapter traits. The multi-pass approach captures most of the value but doesn't match the design doc's mid-reasoning vision.
+- [ ] **Progressive disclosure: stub-to-full upgrade on probe**: `load_fragments` now defaults to `"stub"` range (summary + outline). When a probe fires on a stub already in the workspace, the fragment should be upgraded from stub to full content in-place rather than being skipped by `loaded_sources`. Requires distinguishing stub-loaded vs full-loaded in the `loaded_sources` set and allowing re-entry for upgrades.
 
 ## Adapters
 

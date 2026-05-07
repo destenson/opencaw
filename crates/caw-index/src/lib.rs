@@ -135,9 +135,27 @@ where
     }
 
     fn read_range(&self, id: &StubId, range: &str) -> CawResult<RecallFragment> {
-        let full_content = self.store.get_content(id)?;
         let stub = self.store.get_stub(id)?;
 
+        // "stub" range returns the summary + outline without loading body content.
+        // Used for progressive disclosure: the model sees a compact descriptor
+        // and can probe for full content if the source turns out to be relevant.
+        if range.eq_ignore_ascii_case("stub") {
+            let content = stub_descriptor(&stub.summary, &stub.outline);
+            let tokens = count_tokens_cl100k(&content);
+            return Ok(RecallFragment {
+                stub_id: id.clone(),
+                content,
+                locator: Locator {
+                    source: stub.path,
+                    locator: "stub".to_string(),
+                },
+                tokens,
+                mtime_unix_secs: stub.mtime_unix_secs,
+            });
+        }
+
+        let full_content = self.store.get_content(id)?;
         let parsed = Range::parse(range);
         let content = parsed.apply(&full_content);
         let tokens = count_tokens_cl100k(&content);
@@ -318,16 +336,31 @@ impl Retriever for InMemoryIndex {
     }
 
     fn read_range(&self, id: &StubId, range: &str) -> CawResult<RecallFragment> {
-        let full_content = self
-            .docs
-            .iter()
-            .find_map(|(stub_id, content)| (stub_id == id).then_some(content))
-            .ok_or_else(|| CawError::NotFound(id.0.clone()))?;
-
         let stub = self
             .stubs
             .iter()
             .find(|s| &s.id == id)
+            .ok_or_else(|| CawError::NotFound(id.0.clone()))?;
+
+        if range.eq_ignore_ascii_case("stub") {
+            let content = stub_descriptor(&stub.summary, &stub.outline);
+            let tokens = count_tokens_cl100k(&content);
+            return Ok(RecallFragment {
+                stub_id: id.clone(),
+                content,
+                locator: Locator {
+                    source: stub.path.clone(),
+                    locator: "stub".to_string(),
+                },
+                tokens,
+                mtime_unix_secs: stub.mtime_unix_secs,
+            });
+        }
+
+        let full_content = self
+            .docs
+            .iter()
+            .find_map(|(stub_id, content)| (stub_id == id).then_some(content))
             .ok_or_else(|| CawError::NotFound(id.0.clone()))?;
 
         let parsed = Range::parse(range);
@@ -344,6 +377,14 @@ impl Retriever for InMemoryIndex {
             tokens,
             mtime_unix_secs: stub.mtime_unix_secs,
         })
+    }
+}
+
+fn stub_descriptor(summary: &str, outline: &[String]) -> String {
+    if outline.is_empty() {
+        summary.to_string()
+    } else {
+        format!("{}\nOutline: {}", summary, outline.join(", "))
     }
 }
 
