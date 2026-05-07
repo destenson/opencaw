@@ -815,10 +815,10 @@ pub fn split_thinking(raw: &str) -> (Option<String>, String) {
 /// Format for inline provenance tags on recalled content.
 #[derive(Debug, Clone, Copy)]
 pub enum ProvenanceFormat {
-    /// XML tags: `<recalled from="path" locator="range">content</recalled>`
+    /// XML tags: `<recalled from="path">content</recalled>`
     /// Preferred by Anthropic models which handle XML natively.
     Xml,
-    /// Bracket tags: `[recalled from path:range]\ncontent\n[end recall]`
+    /// Bracket tags: `[recalled from path]\ncontent\n[end recall]`
     /// Preferred by OpenAI-protocol models.
     Bracketed,
 }
@@ -865,24 +865,37 @@ impl CompletionRequest {
                 if !rendered.insert(source) {
                     return None;
                 }
-                let locator = &f.locator.locator;
+                // "full" is the default and adds no information; omit it.
+                let source_ref = if f.locator.locator == "full" {
+                    source.to_string()
+                } else {
+                    format!("{}:{}", source, f.locator.locator)
+                };
                 let extras_note = match extra_locators.get(source) {
-                    Some(locs) if !locs.is_empty() => format!(
-                        "\n[+{} more section(s) from this file: {}]",
-                        locs.len(),
-                        locs.join(", ")
-                    ),
+                    Some(locs) if !locs.is_empty() => {
+                        let meaningful: Vec<&&str> =
+                            locs.iter().filter(|l| **l != "full").collect();
+                        if meaningful.is_empty() {
+                            format!("\n[+{} more section(s) from this file]", locs.len())
+                        } else {
+                            format!(
+                                "\n[+{} more section(s) from this file: {}]",
+                                locs.len(),
+                                meaningful.iter().map(|l| **l).collect::<Vec<_>>().join(", ")
+                            )
+                        }
+                    }
                     _ => String::new(),
                 };
                 Some(match format {
                     ProvenanceFormat::Xml => format!(
-                        "<recalled from=\"{source}\" locator=\"{locator}\">\n\
+                        "<recalled from=\"{source_ref}\">\n\
                          {content}{extras_note}\n\
                          </recalled>",
                         content = f.content,
                     ),
                     ProvenanceFormat::Bracketed => format!(
-                        "[recalled from {source}:{locator}]\n\
+                        "[recalled from {source_ref}]\n\
                          {content}{extras_note}\n\
                          [end recall]",
                         content = f.content,
@@ -1524,8 +1537,9 @@ mod tests {
         assert!(!formatted.contains("fn qux() {}"));
         // The extras note is appended to the primary block.
         assert!(formatted.contains("+2 more section(s) from this file: 80-120, 200-240"));
-        // The sole other.rs fragment is shown normally.
-        assert!(formatted.contains("[recalled from other.rs:full]"));
+        // The sole other.rs fragment is shown normally, without the ":full" noise.
+        assert!(formatted.contains("[recalled from other.rs]"));
+        assert!(!formatted.contains("[recalled from other.rs:full]"));
         assert!(formatted.contains("fn bar() {}"));
     }
 }
