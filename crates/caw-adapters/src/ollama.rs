@@ -312,21 +312,21 @@ impl ModelAdapter for OllamaAdapter {
         &self,
         req: CompletionRequest,
         on_step: &mut dyn FnMut(&str) -> CawResult<bool>,
-    ) -> CawResult<()> {
+    ) -> CawResult<CompletionResponse> {
         if !self.capabilities().supports_visible_reasoning {
             // Non-reasoning model: full completion, split on \n\n, replay.
             let response = self.complete(req)?;
-            let thinking = response.thinking.unwrap_or_default();
+            let thinking = response.clone().thinking.unwrap_or_default();
             for step in thinking
                 .split("\n\n")
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
             {
                 if !on_step(step)? {
-                    return Ok(());
+                    return Ok(response);
                 }
             }
-            return Ok(());
+            return Ok(response);
         }
 
         debug!(model = %self.model, "streaming thinking trace");
@@ -439,6 +439,10 @@ impl ModelAdapter for OllamaAdapter {
                 break;
             }
         }
-        Ok(())
+        Ok(CompletionResponse {
+            answer: String::new(),
+            thinking: None,
+            usage: None,
+        })
     }
 }

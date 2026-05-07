@@ -46,6 +46,12 @@ impl From<std::io::Error> for CawError {
     }
 }
 
+impl From<std::fmt::Error> for CawError {
+    fn from(e: std::fmt::Error) -> Self {
+        CawError::Io(e.to_string())
+    }
+}
+
 /// Returns `true` if `text` looks like degenerate looping output.
 ///
 /// Two signals, either sufficient:
@@ -1144,9 +1150,9 @@ pub trait ModelAdapter {
         &self,
         req: CompletionRequest,
         on_step: &mut dyn FnMut(&str) -> CawResult<bool>,
-    ) -> CawResult<()> {
+    ) -> CawResult<CompletionResponse> {
         let response = self.complete(req)?;
-        let thinking = response.thinking.unwrap_or_default();
+        let thinking = response.clone().thinking.unwrap_or_default();
         for step in thinking
             .split("\n\n")
             .map(str::trim)
@@ -1156,7 +1162,7 @@ pub trait ModelAdapter {
                 break;
             }
         }
-        Ok(())
+        Ok(response)
     }
 }
 
@@ -1191,7 +1197,7 @@ impl<T: ModelAdapter + ?Sized> ModelAdapter for Box<T> {
         &self,
         req: CompletionRequest,
         on_step: &mut dyn FnMut(&str) -> CawResult<bool>,
-    ) -> CawResult<()> {
+    ) -> CawResult<CompletionResponse> {
         (**self).thinking_with_steps(req, on_step)
     }
 }
@@ -1226,7 +1232,7 @@ impl<T: ModelAdapter + ?Sized> ModelAdapter for std::sync::Arc<T> {
         &self,
         req: CompletionRequest,
         on_step: &mut dyn FnMut(&str) -> CawResult<bool>,
-    ) -> CawResult<()> {
+    ) -> CawResult<CompletionResponse> {
         (**self).thinking_with_steps(req, on_step)
     }
 }

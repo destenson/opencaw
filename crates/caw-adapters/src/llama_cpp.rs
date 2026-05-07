@@ -210,16 +210,16 @@ impl ModelAdapter for LlamaCppAdapter {
         &self,
         req: CompletionRequest,
         on_step: &mut dyn FnMut(&str) -> CawResult<bool>,
-    ) -> CawResult<()> {
+    ) -> CawResult<CompletionResponse> {
         if !self.visible_reasoning {
             let response = self.complete(req)?;
-            let thinking = response.thinking.unwrap_or_default();
+            let thinking = response.clone().thinking.unwrap_or_default();
             for step in thinking.split("\n\n").map(str::trim).filter(|s| !s.is_empty()) {
                 if !on_step(step)? {
-                    return Ok(());
+                    return Ok(response);
                 }
             }
-            return Ok(());
+            return Ok(response);
         }
 
         let mut state = self
@@ -546,7 +546,7 @@ fn run_thinking_steps(
     config: &LlamaCppConfig,
     prompt: &str,
     on_step: &mut dyn FnMut(&str) -> CawResult<bool>,
-) -> CawResult<()> {
+) -> CawResult<CompletionResponse> {
     let ctx = state.ctx;
     let vocab = state.vocab;
 
@@ -617,5 +617,9 @@ fn run_thinking_steps(
 
     unsafe { llama_sampler_free(smpl) };
 
-    Ok(())
+    Ok(CompletionResponse {
+        answer: step_buf,
+        thinking: None,
+        usage: None,
+    })
 }

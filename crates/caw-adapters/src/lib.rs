@@ -108,16 +108,18 @@ impl ShowPromptAdapter {
         self
     }
 
-    fn log_prompt(&self, req: &CompletionRequest) {
+    fn log_prompt(&self, req: &CompletionRequest, res: CawResult<CompletionResponse>) -> CawResult<CompletionResponse> {
         let fragment_tokens: usize = req.workspace_fragments.iter().map(|f| f.tokens).sum();
         let mut out = String::new();
-        let _ = writeln!(out, "\n─── PROMPT ({} workspace tokens across {} fragments) ───", fragment_tokens, req.workspace_fragments.len());
-        let _ = writeln!(out, "[system]\n{}", req.system);
-        let _ = writeln!(out, "[user]\n{}", req.user);
+        writeln!(out, "\n─── PROMPT ({} workspace tokens across {} fragments) [MODEL: {}] ───", fragment_tokens, req.workspace_fragments.len(), self.inner.model_name())?;
+        writeln!(out, "[system]\n{}", req.system)?;
+        writeln!(out, "[user]\n{}", req.user)?;
         for frag in &req.workspace_fragments {
-            let _ = writeln!(out, "[fragment: {} | {} tokens]\n{}", frag.locator.source, frag.tokens, frag.content);
+            writeln!(out, "[fragment: {} | {} tokens]\n{}", frag.locator.source, frag.tokens, frag.content)?;
         }
-        let _ = writeln!(out, "─────────────────────────");
+        writeln!(out, "─────────────────────────")?;
+        writeln!(out, "Response: {}", res.as_ref().map(|r| r.answer.clone()).unwrap_or_else(|e| format!("Error: {}", e)))?;
+        writeln!(out, "─────────────────────────")?;
         eprint!("{out}");
 
         if let Some(dir) = &self.prompt_dir {
@@ -125,9 +127,10 @@ impl ShowPromptAdapter {
             *turn += 1;
             let path = dir.join(format!("prompt-{}-turn-{}.txt", self.timestamp, *turn));
             if let Ok(mut f) = std::fs::File::create(&path) {
-                let _ = std::io::Write::write_all(&mut f, out.as_bytes());
+                std::io::Write::write_all(&mut f, out.as_bytes())?;
             }
         }
+        res
     }
 }
 
@@ -176,8 +179,7 @@ impl ModelAdapter for ShowPromptAdapter {
     }
 
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
-        self.log_prompt(&req);
-        self.inner.complete(req)
+        self.log_prompt(&req, self.inner.complete(req.clone()))
     }
 
     fn generate_passive(
@@ -187,16 +189,14 @@ impl ModelAdapter for ShowPromptAdapter {
         window_size: usize,
         on_window: &mut dyn FnMut(&str) -> CawResult<Option<String>>,
     ) -> CawResult<CompletionResponse> {
-        self.log_prompt(&req);
-        self.inner.generate_passive(req, check_interval, window_size, on_window)
+        self.log_prompt(&req, self.inner.generate_passive(req.clone(), check_interval, window_size, on_window))
     }
 
     fn thinking_with_steps(
         &self,
         req: CompletionRequest,
         on_step: &mut dyn FnMut(&str) -> CawResult<bool>,
-    ) -> CawResult<()> {
-        self.log_prompt(&req);
-        self.inner.thinking_with_steps(req, on_step)
+    ) -> CawResult<CompletionResponse> {
+        self.log_prompt(&req, self.inner.thinking_with_steps(req.clone(), on_step))
     }
 }
