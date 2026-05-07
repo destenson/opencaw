@@ -170,6 +170,27 @@ struct Cli {
 
     #[arg(long, default_value_t = false)]
     amnesia: bool,
+
+    /// Context window size in tokens for the llama adapter. Defaults to 8192.
+    /// Note: Qwen3 models have a 128K training context; leaving this unset
+    /// causes llama.cpp to pre-allocate a KV cache that will OOM on 16GB GPUs.
+    #[arg(long)]
+    num_ctx: Option<u32>,
+
+    /// Sampling temperature. Lower = more deterministic; higher = more creative.
+    /// Applies to the llama adapter; other adapters use their own defaults.
+    #[arg(long)]
+    temperature: Option<f32>,
+
+    /// Number of model layers to offload to GPU. -1 = all layers (default).
+    /// Pass a lower value if you need to split between GPU and CPU RAM.
+    /// Llama adapter only.
+    #[arg(long)]
+    n_gpu_layers: Option<i32>,
+
+    /// Maximum number of tokens to generate per response. Llama adapter only.
+    #[arg(long)]
+    max_new_tokens: Option<usize>,
 }
 
 fn main() -> Result<()> {
@@ -303,8 +324,14 @@ fn main() -> Result<()> {
         ..Default::default()
     };
 
-    let adapter: Box<dyn ModelAdapter> =
-        build_completion_adapter(&cli.adapter, cli.model.as_deref())?;
+    let adapter: Box<dyn ModelAdapter> = build_completion_adapter(
+        &cli.adapter,
+        cli.model.as_deref(),
+        cli.num_ctx,
+        cli.temperature,
+        cli.n_gpu_layers,
+        cli.max_new_tokens,
+    )?;
     let intent_adapters: Vec<Box<dyn ModelAdapter>> = if cli.no_intent_classifier {
         Vec::new()
     } else {
@@ -383,6 +410,10 @@ fn build_aux_adapter(model: &str) -> Box<dyn ModelAdapter + Send + Sync> {
 fn build_completion_adapter(
     adapter_name: &str,
     model: Option<&str>,
+    num_ctx: Option<u32>,
+    temperature: Option<f32>,
+    n_gpu_layers: Option<i32>,
+    max_new_tokens: Option<usize>,
 ) -> Result<Box<dyn ModelAdapter>> {
     let adapter: Box<dyn ModelAdapter> = match adapter_name {
         "mock" => Box::new(MockAdapter::new("mock-local", true)),
@@ -405,9 +436,17 @@ fn build_completion_adapter(
             let path = model.ok_or_else(|| {
                 anyhow::anyhow!("--model <path.gguf> is required for the llama adapter")
             })?;
+            let defaults = caw_adapters::LlamaCppConfig::default();
             Box::new(
-                caw_adapters::LlamaCppAdapter::from_path(path)
-                    .context("failed to load llama model")?,
+                caw_adapters::LlamaCppAdapter::new_with(caw_adapters::LlamaCppConfig {
+                    model_path: path.to_string(),
+                    n_ctx: num_ctx.unwrap_or(defaults.n_ctx),
+                    temperature: temperature.unwrap_or(defaults.temperature),
+                    n_gpu_layers: n_gpu_layers.unwrap_or(defaults.n_gpu_layers),
+                    max_new_tokens: max_new_tokens.unwrap_or(defaults.max_new_tokens),
+                    ..defaults
+                })
+                .context("failed to load llama model")?,
             )
         }
         #[cfg(not(feature = "llama"))]
@@ -490,7 +529,7 @@ fn build_completion_adapter(
 }
 
 fn build_intent_adapter(adapter_name: &str, model: &str) -> Result<Box<dyn ModelAdapter>> {
-    build_completion_adapter(adapter_name, Some(model))
+    build_completion_adapter(adapter_name, Some(model), None, None, None, None)
 }
 
 fn classify_query_intent(adapter: &dyn ModelAdapter, query: &str) -> Result<QueryIntent> {

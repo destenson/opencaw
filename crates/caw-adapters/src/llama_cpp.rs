@@ -68,6 +68,9 @@ pub struct LlamaCppAdapter {
     state: Mutex<LlamaState>,
     config: LlamaCppConfig,
     model_name: String,
+    /// True when the model is known to produce `<think>...</think>` blocks.
+    /// Detected from the model filename at load time.
+    visible_reasoning: bool,
 }
 
 impl LlamaCppAdapter {
@@ -109,11 +112,13 @@ impl LlamaCppAdapter {
 
         let vocab = unsafe { llama_model_get_vocab(model) };
         let model_name = extract_model_name(&config.model_path);
+        let visible_reasoning = is_thinking_model(&model_name);
 
         debug!(
             model = %model_name,
             n_ctx = config.n_ctx,
             n_gpu_layers = config.n_gpu_layers,
+            visible_reasoning,
             "llama model loaded"
         );
 
@@ -121,6 +126,7 @@ impl LlamaCppAdapter {
             state: Mutex::new(LlamaState { model, ctx, vocab }),
             config,
             model_name,
+            visible_reasoning,
         })
     }
 
@@ -141,6 +147,7 @@ impl ModelAdapter for LlamaCppAdapter {
     fn capabilities(&self) -> ModelCapabilities {
         ModelCapabilities {
             supports_passive_injection: true,
+            supports_visible_reasoning: self.visible_reasoning,
             ..Default::default()
         }
     }
@@ -189,9 +196,39 @@ impl ModelAdapter for LlamaCppAdapter {
             usage: None,
         })
     }
+
+    fn thinking_with_steps(
+        &self,
+        req: CompletionRequest,
+        on_step: &mut dyn FnMut(&str) -> CawResult<bool>,
+    ) -> CawResult<()> {
+        if !self.visible_reasoning {
+            let response = self.complete(req)?;
+            let thinking = response.thinking.unwrap_or_default();
+            for step in thinking.split("\n\n").map(str::trim).filter(|s| !s.is_empty()) {
+                if !on_step(step)? {
+                    return Ok(());
+                }
+            }
+            return Ok(());
+        }
+
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| CawError::Adapter("llama state mutex poisoned".into()))?;
+        let prompt = format_prompt(&state, &req)?;
+        run_thinking_steps(&mut state, &self.config, &prompt, on_step)
+    }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+/// Detect whether a model produces `<think>...</think>` blocks from its name.
+fn is_thinking_model(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.contains("think") || lower.contains("qwq") || lower.contains("-r1")
+}
 
 fn extract_model_name(path: &str) -> String {
     std::path::Path::new(path)
@@ -463,4 +500,122 @@ fn run_generation(
     unsafe { llama_sampler_free(smpl) };
 
     Ok(generated)
+}
+
+/// Generate the thinking trace for a single turn, stopping at `</think>`.
+///
+/// Steps are `\n\n`-delimited paragraphs inside the `<think>` block. They are
+/// collected during generation, then replayed through `on_step`. Stopping at
+/// `</think>` means the orchestrator can inject recalled context before answer
+/// tokens begin.
+fn run_thinking_steps(
+    state: &mut LlamaState,
+    config: &LlamaCppConfig,
+    prompt: &str,
+    on_step: &mut dyn FnMut(&str) -> CawResult<bool>,
+) -> CawResult<()> {
+    let ctx = state.ctx;
+    let vocab = state.vocab;
+
+    unsafe {
+        let mem = llama_get_memory(ctx);
+        llama_memory_clear(mem, false);
+    }
+
+    let prompt_tokens = tokenize(vocab, prompt, true)?;
+    if prompt_tokens.is_empty() {
+        return Err(CawError::Adapter("empty prompt after tokenization".into()));
+    }
+
+    let prefill_ret = unsafe {
+        llama_decode(
+            ctx,
+            llama_batch_get_one(
+                prompt_tokens.as_ptr() as *mut _,
+                prompt_tokens.len() as i32,
+            ),
+        )
+    };
+    if prefill_ret != 0 {
+        return Err(CawError::Adapter(
+            format!("prefill decode failed: {prefill_ret}").into(),
+        ));
+    }
+
+    let smpl = unsafe {
+        let sparams = llama_sampler_chain_default_params();
+        let smpl = llama_sampler_chain_init(sparams);
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_k(config.top_k));
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_p(config.top_p, 1));
+        llama_sampler_chain_add(smpl, llama_sampler_init_temp(config.temperature));
+        llama_sampler_chain_add(smpl, llama_sampler_init_dist(config.seed));
+        smpl
+    };
+
+    let mut preamble = String::new();
+    let mut in_think = false;
+    let mut step_buf = String::new();
+    let mut steps: Vec<String> = Vec::new();
+
+    'decode: for _ in 0..config.max_new_tokens {
+        let token = unsafe { llama_sampler_sample(smpl, ctx, -1) };
+
+        if unsafe { llama_vocab_is_eog(vocab, token) } {
+            break;
+        }
+
+        let piece = token_to_piece(vocab, token);
+        unsafe { llama_sampler_accept(smpl, token) };
+
+        let token_arr = [token];
+        let step_ret = unsafe {
+            llama_decode(ctx, llama_batch_get_one(token_arr.as_ptr() as *mut _, 1))
+        };
+        if step_ret != 0 {
+            debug!(ret = step_ret, "llama_decode step error — stopping");
+            break 'decode;
+        }
+
+        if !in_think {
+            preamble.push_str(&piece);
+            if let Some((_, after)) = preamble.split_once("<think>") {
+                in_think = true;
+                step_buf = after.trim_start_matches('\n').to_string();
+                debug!("<think> detected — collecting steps");
+            }
+        } else {
+            step_buf.push_str(&piece);
+
+            if let Some(end) = step_buf.find("</think>") {
+                let final_step = step_buf[..end].trim().to_string();
+                if !final_step.is_empty() {
+                    debug!(step_preview = &final_step[..final_step.len().min(80)], "step at </think>");
+                    steps.push(final_step);
+                }
+                debug!("</think> detected — stopping generation");
+                break 'decode;
+            }
+
+            while let Some(boundary) = step_buf.find("\n\n") {
+                let step = step_buf[..boundary].trim().to_string();
+                step_buf.drain(..boundary + 2);
+                if !step.is_empty() {
+                    debug!(step_preview = &step[..step.len().min(80)], "step boundary flushed");
+                    steps.push(step);
+                }
+            }
+        }
+    }
+
+    unsafe { llama_sampler_free(smpl) };
+
+    debug!(steps = steps.len(), "thinking trace collected");
+
+    for step in &steps {
+        if !on_step(step)? {
+            break;
+        }
+    }
+
+    Ok(())
 }
