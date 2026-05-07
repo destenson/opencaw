@@ -440,6 +440,10 @@ fn run_generation(
     debug!(prompt_tokens = prompt_tokens.len(), "prefilling");
     prefill(ctx, &prompt_tokens, state.n_batch)?;
 
+    // Cap generation to the remaining KV slots so we never attempt to decode
+    // past n_ctx and hit a hard llama_decode failure mid-generation.
+    let max_new_tokens = config.max_new_tokens.min(state.n_ctx.saturating_sub(prompt_tokens.len()));
+
     // Build sampler chain.
     let smpl = unsafe {
         let sparams = llama_sampler_chain_default_params();
@@ -460,7 +464,7 @@ fn run_generation(
     // skipped rather than causing a hard llama_decode failure.
     let mut kv_used = prompt_tokens.len();
 
-    'decode: for _ in 0..config.max_new_tokens {
+    'decode: for _ in 0..max_new_tokens {
         let token = unsafe { llama_sampler_sample(smpl, ctx, -1) };
 
         if unsafe { llama_vocab_is_eog(vocab, token) } {
@@ -558,6 +562,8 @@ fn run_thinking_steps(
     debug!(prompt_tokens = prompt_tokens.len(), "prefilling (thinking)");
     prefill(ctx, &prompt_tokens, state.n_batch)?;
 
+    let max_new_tokens = config.max_new_tokens.min(state.n_ctx.saturating_sub(prompt_tokens.len()));
+
     let smpl = unsafe {
         let sparams = llama_sampler_chain_default_params();
         let smpl = llama_sampler_chain_init(sparams);
@@ -571,7 +577,7 @@ fn run_thinking_steps(
     let mut step_buf = String::new();
     let mut n_steps = 0usize;
 
-    'decode: for _ in 0..config.max_new_tokens {
+    'decode: for _ in 0..max_new_tokens {
         let token = unsafe { llama_sampler_sample(smpl, ctx, -1) };
 
         if unsafe { llama_vocab_is_eog(vocab, token) } {
