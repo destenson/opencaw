@@ -15,7 +15,7 @@ use caw_ingest::{DocumentIdSet, IngestionPipeline};
 use caw_orchestrator::consolidation::LlmConsolidation;
 use caw_orchestrator::dynamic::{DynamicRecallConfig, DynamicRecallOrchestrator};
 use clap::Parser;
-use std::io::{self, BufRead, Write};
+use rustyline::{error::ReadlineError, DefaultEditor};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::debug;
@@ -633,24 +633,24 @@ fn run_interactive(
         &extractive_compressor
     };
 
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
+    let mut rl = DefaultEditor::new()?;
 
     loop {
         debug!("> waiting for user input");
-        print!("> ");
-        stdout.flush()?;
+        let line = match rl.readline("> ") {
+            Ok(l) => l,
+            Err(ReadlineError::Eof | ReadlineError::Interrupted) => {
+                println!();
+                break;
+            }
+            Err(e) => return Err(e.into()),
+        };
 
-        let mut query = String::new();
-        if stdin.lock().read_line(&mut query)? == 0 {
-            println!();
-            break;
-        }
-
-        let query = query.trim();
+        let query = line.trim();
         if query.is_empty() {
             continue;
         }
+        let _ = rl.add_history_entry(query);
 
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
