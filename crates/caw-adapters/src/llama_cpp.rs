@@ -51,6 +51,7 @@ struct LlamaState {
     ctx: *mut llama_context,
     vocab: *const llama_vocab,
     n_batch: usize,
+    n_ctx: usize,
 }
 
 // The model and context pointers are only accessed while the Mutex is held,
@@ -129,8 +130,9 @@ impl LlamaCppAdapter {
         );
 
         let n_batch = config.n_batch as usize;
+        let n_ctx = config.n_ctx as usize;
         Ok(Self {
-            state: Mutex::new(LlamaState { model, ctx, vocab, n_batch }),
+            state: Mutex::new(LlamaState { model, ctx, vocab, n_batch, n_ctx }),
             config,
             model_name,
             visible_reasoning,
@@ -453,6 +455,9 @@ fn run_generation(
     // `window_size` so joining it always yields the last N tokens of output.
     let mut sliding_window: VecDeque<String> = VecDeque::with_capacity(window_size + 1);
     let mut tokens_since_check = 0usize;
+    // Track total KV slots used so injections that would overflow n_ctx are
+    // skipped rather than causing a hard llama_decode failure.
+    let mut kv_used = prompt_tokens.len();
 
     'decode: for _ in 0..config.max_new_tokens {
         let token = unsafe { llama_sampler_sample(smpl, ctx, -1) };
@@ -483,6 +488,7 @@ fn run_generation(
                 llama_batch_get_one(token_arr.as_ptr() as *mut _, 1),
             )
         };
+        kv_used += 1;
         if step_ret != 0 {
             debug!(ret = step_ret, "llama_decode step error — stopping");
             break 'decode;
@@ -493,24 +499,25 @@ fn run_generation(
             if let Some(ref mut cb) = on_window {
                 let window_text: String = sliding_window.iter().cloned().collect();
                 if let Ok(Some(injection)) = cb(&window_text) {
+                    let inj_tokens = tokenize(vocab, &injection, false)?;
+                    if inj_tokens.is_empty() {
+                        continue;
+                    }
+                    if kv_used + inj_tokens.len() >= state.n_ctx {
+                        debug!(
+                            kv_used,
+                            inj_tokens = inj_tokens.len(),
+                            n_ctx = state.n_ctx,
+                            "injection skipped — would overflow KV cache"
+                        );
+                        continue;
+                    }
                     // Append the injected text to the visible output so the
                     // caller can see what was materialised inline.
                     generated.push_str(&injection);
-
-                    let inj_tokens = tokenize(vocab, &injection, false)?;
-                    if !inj_tokens.is_empty() {
-                        let inj_ret = unsafe {
-                            llama_decode(
-                                ctx,
-                                llama_batch_get_one(
-                                    inj_tokens.as_ptr() as *mut _,
-                                    inj_tokens.len() as i32,
-                                ),
-                            )
-                        };
-                        if inj_ret != 0 {
-                            debug!(ret = inj_ret, "injection decode error — continuing without inject");
-                        }
+                    match prefill(ctx, &inj_tokens, state.n_batch) {
+                        Ok(()) => kv_used += inj_tokens.len(),
+                        Err(e) => debug!(?e, "injection decode error — continuing without inject"),
                     }
                 }
             }

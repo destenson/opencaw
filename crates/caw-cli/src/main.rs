@@ -325,7 +325,7 @@ fn main() -> Result<()> {
     let max_workspace_tokens = if cli.adapter == "llama" {
         let n_ctx = cli.num_ctx
             .unwrap_or(caw_adapters::LlamaCppConfig::default().n_ctx) as usize;
-        let cap = n_ctx.saturating_sub(1024);
+        let cap = n_ctx.saturating_sub(2048);
         if cli.max_tokens > cap {
             eprintln!(
                 "NOTE: capping workspace tokens from {} to {} to fit within n_ctx={}",
