@@ -237,7 +237,9 @@ impl ModelAdapter for LlamaCppAdapter {
 /// automatically based on the current KV cache state, so consecutive
 /// chunk calls accumulate correctly without manual position tracking.
 fn prefill(ctx: *mut llama_context, tokens: &[i32], n_batch: usize) -> CawResult<()> {
-    for chunk in tokens.chunks(n_batch) {
+    let total = tokens.len();
+    for (i, chunk) in tokens.chunks(n_batch).enumerate() {
+        let offset = i * n_batch;
         let ret = unsafe {
             llama_decode(
                 ctx,
@@ -245,7 +247,12 @@ fn prefill(ctx: *mut llama_context, tokens: &[i32], n_batch: usize) -> CawResult
             )
         };
         if ret != 0 {
-            return Err(CawError::Adapter(format!("prefill decode failed: {ret}").into()));
+            return Err(CawError::Adapter(
+                format!(
+                    "prefill failed at token {offset}/{total} (ret={ret}); prompt may exceed n_ctx"
+                )
+                .into(),
+            ));
         }
     }
     Ok(())

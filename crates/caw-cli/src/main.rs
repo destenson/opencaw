@@ -318,9 +318,28 @@ fn main() -> Result<()> {
     let retriever = SemanticRetriever::new(embedder, store, vector_index);
     let trace_embedder = LazyFastEmbedProvider::new();
 
+    // When using the llama adapter, the total prompt (system + user +
+    // workspace fragments) must fit within n_ctx. Reserve 1024 tokens for
+    // the system prompt, user message, and generation headroom; use the rest
+    // for workspace fragments. Without this cap, the prefill will OOM the KV cache.
+    let max_workspace_tokens = if cli.adapter == "llama" {
+        let n_ctx = cli.num_ctx
+            .unwrap_or(caw_adapters::LlamaCppConfig::default().n_ctx) as usize;
+        let cap = n_ctx.saturating_sub(1024);
+        if cli.max_tokens > cap {
+            eprintln!(
+                "NOTE: capping workspace tokens from {} to {} to fit within n_ctx={}",
+                cli.max_tokens, cap, n_ctx
+            );
+        }
+        cli.max_tokens.min(cap)
+    } else {
+        cli.max_tokens
+    };
+
     let config = DynamicRecallConfig {
         max_candidates: cli.max_candidates,
-        max_workspace_tokens: cli.max_tokens,
+        max_workspace_tokens,
         ..Default::default()
     };
 
