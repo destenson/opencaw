@@ -16,6 +16,10 @@ pub struct LlamaCppConfig {
     /// with large training contexts like Qwen3's 128K will pre-allocate an
     /// enormous KV cache; prefer an explicit cap unless you have the VRAM).
     pub n_ctx: u32,
+    /// Physical batch size: maximum tokens processed in a single llama_decode
+    /// call. Prompts longer than this are split into chunks automatically.
+    /// Larger values use more VRAM for the batch buffer.
+    pub n_batch: u32,
     /// GPU layers to offload. -1 = all layers.
     pub n_gpu_layers: i32,
     /// RNG seed. Use 0 for a time-based seed.
@@ -31,6 +35,7 @@ impl Default for LlamaCppConfig {
         Self {
             model_path: String::new(),
             n_ctx: 8192,
+            n_batch: 512,
             n_gpu_layers: -1,
             seed: 42,
             temperature: 0.7,
@@ -45,6 +50,7 @@ struct LlamaState {
     model: *mut llama_model,
     ctx: *mut llama_context,
     vocab: *const llama_vocab,
+    n_batch: usize,
 }
 
 // The model and context pointers are only accessed while the Mutex is held,
@@ -101,7 +107,7 @@ impl LlamaCppAdapter {
 
         let mut ctx_params = unsafe { llama_context_default_params() };
         ctx_params.n_ctx = config.n_ctx;
-        ctx_params.n_batch = 512;
+        ctx_params.n_batch = config.n_batch;
         ctx_params.offload_kqv = true;
 
         let ctx = unsafe { llama_init_from_model(model, ctx_params) };
@@ -122,8 +128,9 @@ impl LlamaCppAdapter {
             "llama model loaded"
         );
 
+        let n_batch = config.n_batch as usize;
         Ok(Self {
-            state: Mutex::new(LlamaState { model, ctx, vocab }),
+            state: Mutex::new(LlamaState { model, ctx, vocab, n_batch }),
             config,
             model_name,
             visible_reasoning,
@@ -223,6 +230,26 @@ impl ModelAdapter for LlamaCppAdapter {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+/// Feed prompt tokens into the KV cache in n_batch-sized chunks.
+///
+/// llama_batch_get_one with pos=NULL lets llama.cpp assign positions
+/// automatically based on the current KV cache state, so consecutive
+/// chunk calls accumulate correctly without manual position tracking.
+fn prefill(ctx: *mut llama_context, tokens: &[i32], n_batch: usize) -> CawResult<()> {
+    for chunk in tokens.chunks(n_batch) {
+        let ret = unsafe {
+            llama_decode(
+                ctx,
+                llama_batch_get_one(chunk.as_ptr() as *mut _, chunk.len() as i32),
+            )
+        };
+        if ret != 0 {
+            return Err(CawError::Adapter(format!("prefill decode failed: {ret}").into()));
+        }
+    }
+    Ok(())
+}
 
 /// Detect whether a model produces `<think>...</think>` blocks from its name.
 fn is_thinking_model(name: &str) -> bool {
@@ -396,26 +423,12 @@ fn run_generation(
         llama_memory_clear(mem, false);
     }
 
-    // Tokenize and prefill the prompt.
+    // Tokenize and prefill the prompt in n_batch-sized chunks.
     let prompt_tokens = tokenize(vocab, prompt, true)?;
     if prompt_tokens.is_empty() {
         return Err(CawError::Adapter("empty prompt after tokenization".into()));
     }
-
-    let prefill_ret = unsafe {
-        llama_decode(
-            ctx,
-            llama_batch_get_one(
-                prompt_tokens.as_ptr() as *mut _,
-                prompt_tokens.len() as i32,
-            ),
-        )
-    };
-    if prefill_ret != 0 {
-        return Err(CawError::Adapter(
-            format!("prefill decode failed: {prefill_ret}").into(),
-        ));
-    }
+    prefill(ctx, &prompt_tokens, state.n_batch)?;
 
     // Build sampler chain.
     let smpl = unsafe {
@@ -527,21 +540,7 @@ fn run_thinking_steps(
     if prompt_tokens.is_empty() {
         return Err(CawError::Adapter("empty prompt after tokenization".into()));
     }
-
-    let prefill_ret = unsafe {
-        llama_decode(
-            ctx,
-            llama_batch_get_one(
-                prompt_tokens.as_ptr() as *mut _,
-                prompt_tokens.len() as i32,
-            ),
-        )
-    };
-    if prefill_ret != 0 {
-        return Err(CawError::Adapter(
-            format!("prefill decode failed: {prefill_ret}").into(),
-        ));
-    }
+    prefill(ctx, &prompt_tokens, state.n_batch)?;
 
     let smpl = unsafe {
         let sparams = llama_sampler_chain_default_params();
