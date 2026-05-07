@@ -357,15 +357,23 @@ fn main() -> Result<()> {
         ..Default::default()
     };
 
-    let adapter: Arc<dyn ModelAdapter> = Arc::new(build_completion_adapter(
+    let raw_adapter = build_completion_adapter(
         &cli.adapter,
         cli.model.as_deref(),
         cli.num_ctx,
         cli.temperature,
         cli.n_gpu_layers,
         cli.max_new_tokens,
-        cli.show_prompt,
-    )?);
+    )?;
+    let adapter: Arc<dyn ModelAdapter> = if cli.show_prompt {
+        let mut show = caw_adapters::ShowPromptAdapter::new(raw_adapter);
+        if let Some(sdir) = cli.session_dir.as_deref() {
+            show = show.saving_to(sdir.to_path_buf());
+        }
+        Arc::new(show)
+    } else {
+        Arc::new(raw_adapter)
+    };
     // When the main adapter is llama, reuse it for classification rather than
     // spinning up ollama. The Arc lets both the orchestrator and the classifier
     // share the already-loaded model without a second load.
@@ -456,7 +464,6 @@ fn build_completion_adapter(
     temperature: Option<f32>,
     n_gpu_layers: Option<i32>,
     max_new_tokens: Option<usize>,
-    show_prompt: bool,
 ) -> Result<Box<dyn ModelAdapter>> {
     let adapter: Box<dyn ModelAdapter> = match adapter_name {
         "mock" => Box::new(MockAdapter::new("mock-local", true)),
@@ -568,15 +575,11 @@ fn build_completion_adapter(
             Box::new(caw_adapters::OllamaAdapter::local(m, rt))
         }
     };
-    if show_prompt {
-        Ok(Box::new(caw_adapters::ShowPromptAdapter::new(adapter)))
-    } else {
-        Ok(adapter)
-    }
+    Ok(adapter)
 }
 
 fn build_intent_adapter(adapter_name: &str, model: &str) -> Result<Box<dyn ModelAdapter>> {
-    build_completion_adapter(adapter_name, Some(model), None, None, None, None, false)
+    build_completion_adapter(adapter_name, Some(model), None, None, None, None)
 }
 
 fn classify_query_intent(adapter: &dyn ModelAdapter, query: &str) -> Result<QueryIntent> {

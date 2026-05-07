@@ -2,7 +2,9 @@ use caw_core::{
     CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities,
     ProvenanceFormat,
 };
-use std::fmt::Write as _;
+use std::fmt::Write as FmtWrite;
+use std::path::PathBuf;
+use std::sync::Mutex;
 
 pub mod adapter_factory;
 mod anthropic;
@@ -82,25 +84,86 @@ impl ModelAdapter for MockAdapter {
 /// receives — system prompt, user message, and every loaded workspace fragment.
 pub struct ShowPromptAdapter {
     inner: Box<dyn ModelAdapter>,
+    /// When set, each prompt is also written to this directory as
+    /// `prompt-{timestamp}-turn-{N}.txt`. The .txt extension keeps these
+    /// files out of the session indexer, which only loads .md files.
+    prompt_dir: Option<PathBuf>,
+    timestamp: String,
+    turn: Mutex<usize>,
 }
 
 impl ShowPromptAdapter {
     pub fn new(inner: Box<dyn ModelAdapter>) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            prompt_dir: None,
+            timestamp: prompt_timestamp(),
+            turn: Mutex::new(0),
+        }
+    }
+
+    /// Also save each prompt as a file in `dir` beside the session files.
+    pub fn saving_to(mut self, dir: PathBuf) -> Self {
+        self.prompt_dir = Some(dir);
+        self
+    }
+
+    fn log_prompt(&self, req: &CompletionRequest) {
+        let fragment_tokens: usize = req.workspace_fragments.iter().map(|f| f.tokens).sum();
+        let mut out = String::new();
+        let _ = writeln!(out, "\n─── PROMPT ({} workspace tokens across {} fragments) ───", fragment_tokens, req.workspace_fragments.len());
+        let _ = writeln!(out, "[system]\n{}", req.system);
+        let _ = writeln!(out, "[user]\n{}", req.user);
+        for frag in &req.workspace_fragments {
+            let _ = writeln!(out, "[fragment: {} | {} tokens]\n{}", frag.locator.source, frag.tokens, frag.content);
+        }
+        let _ = writeln!(out, "─────────────────────────");
+        eprint!("{out}");
+
+        if let Some(dir) = &self.prompt_dir {
+            let mut turn = self.turn.lock().unwrap();
+            *turn += 1;
+            let path = dir.join(format!("prompt-{}-turn-{}.txt", self.timestamp, *turn));
+            if let Ok(mut f) = std::fs::File::create(&path) {
+                let _ = std::io::Write::write_all(&mut f, out.as_bytes());
+            }
+        }
     }
 }
 
-fn dump_request(req: &CompletionRequest) {
-    let fragment_tokens: usize = req.workspace_fragments.iter().map(|f| f.tokens).sum();
-    let mut out = String::new();
-    let _ = writeln!(out, "\n─── PROMPT ({} workspace tokens across {} fragments) ───", fragment_tokens, req.workspace_fragments.len());
-    let _ = writeln!(out, "[system]\n{}", req.system);
-    let _ = writeln!(out, "[user]\n{}", req.user);
-    for frag in &req.workspace_fragments {
-        let _ = writeln!(out, "[fragment: {} | {} tokens]\n{}", frag.locator.source, frag.tokens, frag.content);
+fn prompt_timestamp() -> String {
+    let s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let sec = s % 60;
+    let min = (s / 60) % 60;
+    let hour = (s / 3600) % 24;
+    let days = s / 86400;
+    // Minimal Gregorian date (good enough for filenames)
+    let (y, mo, d) = epoch_days_to_ymd(days);
+    format!("{:04}{:02}{:02}-{:02}{:02}{:02}", y, mo, d, hour, min, sec)
+}
+
+fn epoch_days_to_ymd(days: u64) -> (u64, u64, u64) {
+    let mut y = 1970u64;
+    let mut rem = days;
+    loop {
+        let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+        let dy = if leap { 366 } else { 365 };
+        if rem < dy { break; }
+        rem -= dy;
+        y += 1;
     }
-    let _ = writeln!(out, "─────────────────────────");
-    eprint!("{out}");
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let months = [31u64, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut mo = 1u64;
+    for &dm in &months {
+        if rem < dm { break; }
+        rem -= dm;
+        mo += 1;
+    }
+    (y, mo, rem + 1)
 }
 
 impl ModelAdapter for ShowPromptAdapter {
@@ -113,7 +176,7 @@ impl ModelAdapter for ShowPromptAdapter {
     }
 
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
-        dump_request(&req);
+        self.log_prompt(&req);
         self.inner.complete(req)
     }
 
@@ -124,7 +187,7 @@ impl ModelAdapter for ShowPromptAdapter {
         window_size: usize,
         on_window: &mut dyn FnMut(&str) -> CawResult<Option<String>>,
     ) -> CawResult<CompletionResponse> {
-        dump_request(&req);
+        self.log_prompt(&req);
         self.inner.generate_passive(req, check_interval, window_size, on_window)
     }
 
@@ -133,7 +196,7 @@ impl ModelAdapter for ShowPromptAdapter {
         req: CompletionRequest,
         on_step: &mut dyn FnMut(&str) -> CawResult<bool>,
     ) -> CawResult<()> {
-        dump_request(&req);
+        self.log_prompt(&req);
         self.inner.thinking_with_steps(req, on_step)
     }
 }

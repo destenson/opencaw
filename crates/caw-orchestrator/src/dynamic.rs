@@ -119,7 +119,7 @@ impl Default for DynamicRecallConfig {
             enable_thinking_trace_recall: true,
             enable_probe_recall: true,
             enable_line_reference_recall: true,
-            max_loaded_fragments: 15,
+            max_loaded_fragments: 50,
             max_initial_fragments: 4,
             cooperation_mode: CooperationMode::Auto,
             passive_injection_interval: 32,
