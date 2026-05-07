@@ -1,6 +1,6 @@
 use caw_core::{
-    is_looping, split_thinking, CawError, CawResult, CompletionRequest, CompletionResponse,
-    ModelAdapter, ModelCapabilities, ProvenanceFormat, TokenUsage,
+    is_looping, split_thinking, truncate_at_chat_boundary, CawError, CawResult, CompletionRequest,
+    CompletionResponse, ModelAdapter, ModelCapabilities, ProvenanceFormat, TokenUsage,
 };
 use futures_util::StreamExt;
 use tracing::{debug, info, trace};
@@ -276,7 +276,8 @@ impl ModelAdapter for OllamaAdapter {
         // both candidate parses gives the caller something to act on.
         match serde_json::from_str::<OllamaChatResponse>(&body) {
             Ok(parsed) => {
-                let (thinking, answer) = split_thinking(&parsed.message.content);
+                let raw = truncate_at_chat_boundary(&parsed.message.content);
+                let (thinking, answer) = split_thinking(raw);
                 if is_looping(&answer) {
                     return Err(CawError::DegenerateOutput {
                         model: self.model.clone(),

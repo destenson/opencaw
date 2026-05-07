@@ -56,6 +56,28 @@ impl From<std::io::Error> for CawError {
 ///
 /// Responses shorter than 20 words are never flagged — structured one-liners
 /// and short factual answers would produce false positives.
+
+/// Truncate a model response at the first chat-template boundary token.
+///
+/// Chat models sometimes fail to stop at the configured sentinel and begin
+/// generating the next conversation turn. Everything from `<|im_start|>`
+/// onward is not part of the model's answer and should be discarded rather
+/// than treating the entire response as degenerate.
+pub fn truncate_at_chat_boundary(text: &str) -> &str {
+    if let Some(pos) = text.find("<|im_start|>") {
+        return text[..pos].trim_end();
+    }
+    // <|im_end|> in the middle of the response (not as a trailing stop token)
+    // also indicates the model is generating conversation structure.
+    if let Some(pos) = text.find("<|im_end|>") {
+        let after = text[pos + "<|im_end|>".len()..].trim();
+        if !after.is_empty() {
+            return text[..pos].trim_end();
+        }
+    }
+    text
+}
+
 pub fn is_looping(text: &str) -> bool {
     // Chat-template tokens leaking into output are an unambiguous runaway signal
     // regardless of response length.

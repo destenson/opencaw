@@ -1,6 +1,6 @@
 use caw_core::{
-    is_looping, CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
-    ModelCapabilities, ProvenanceFormat, TokenUsage,
+    is_looping, truncate_at_chat_boundary, CawError, CawResult, CompletionRequest,
+    CompletionResponse, ModelAdapter, ModelCapabilities, ProvenanceFormat, TokenUsage,
 };
 use tracing::trace;
 use reqwest::Client;
@@ -305,11 +305,12 @@ impl ModelAdapter for OpenAiCompatibleAdapter {
                 .map_err(|e| CawError::Adapter(format!("Failed to parse response: {}", e)))
         })?;
 
-        let answer = response
+        let raw = response
             .choices
             .first()
             .map(|c| c.message.content.clone())
             .unwrap_or_default();
+        let answer = truncate_at_chat_boundary(&raw).to_string();
 
         if is_looping(&answer) {
             return Err(CawError::DegenerateOutput {
