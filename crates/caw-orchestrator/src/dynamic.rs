@@ -458,7 +458,7 @@ where
 
             // Automatic recall only runs when the monitor permits it
             if self.auto_recall_enabled() {
-                if self.config.enable_thinking_trace_recall && caps.supports_visible_reasoning {
+                if self.config.enable_thinking_trace_recall {
                     self.process_thinking_trace(&last_response.answer)?;
                 }
 
