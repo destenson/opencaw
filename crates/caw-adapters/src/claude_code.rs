@@ -167,8 +167,8 @@ impl ModelAdapter for ClaudeCodeAdapter {
 
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
         let workspace_context = req.format_workspace(ProvenanceFormat::Xml);
-        let full_user_message = format!("{}{}", req.user, workspace_context);
-        trace!(model = %self.model, prompt = %full_user_message, "→ llm");
+        let full_system = format!("{}{}", req.system, workspace_context);
+        trace!(model = %self.model, prompt = %req.user, "→ llm");
 
         // Use stream-json so a reader-side watchdog can detect upstream
         // hangs. Previously the CLI could sit in ep_poll indefinitely with
@@ -204,7 +204,7 @@ impl ModelAdapter for ClaudeCodeAdapter {
             .arg("--model")
             .arg(&self.model)
             .arg("--system-prompt")
-            .arg(&req.system)
+            .arg(&full_system)
             .arg("--effort")
             .arg(&self.effort)
             .arg("--no-session-persistence")
@@ -263,7 +263,7 @@ impl ModelAdapter for ClaudeCodeAdapter {
                 .take()
                 .ok_or_else(|| CawError::Adapter("claude CLI stdin unavailable".to_string()))?;
             stdin
-                .write_all(full_user_message.as_bytes())
+                .write_all(req.user.as_bytes())
                 .map_err(|e| CawError::Adapter(format!("write prompt to claude stdin: {}", e)))?;
             // dropped here
         }

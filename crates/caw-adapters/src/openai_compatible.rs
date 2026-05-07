@@ -245,8 +245,8 @@ impl ModelAdapter for OpenAiCompatibleAdapter {
 
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
         let workspace_context = req.format_workspace(ProvenanceFormat::Bracketed);
-        let full_user_message = format!("{}{}", req.user, workspace_context);
-        trace!(model = %self.model, system = %req.system, prompt = %full_user_message, "→ llm");
+        let full_system = format!("{}{}", req.system, workspace_context);
+        trace!(model = %self.model, system = %full_system, prompt = %req.user, "→ llm");
 
         let chat_req = ChatCompletionRequest {
             model: self.model.clone(),
@@ -255,11 +255,11 @@ impl ModelAdapter for OpenAiCompatibleAdapter {
             messages: vec![
                 ChatMessage {
                     role: "system".to_string(),
-                    content: req.system,
+                    content: full_system,
                 },
                 ChatMessage {
                     role: "user".to_string(),
-                    content: full_user_message,
+                    content: req.user,
                 },
             ],
         };

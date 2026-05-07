@@ -98,16 +98,16 @@ impl ModelAdapter for AnthropicAdapter {
 
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
         let workspace_context = req.format_workspace(ProvenanceFormat::Xml);
-        let full_user_message = format!("{}{}", req.user, workspace_context);
-        trace!(model = %self.model, system = %req.system, prompt = %full_user_message, "→ llm");
+        let full_system = format!("{}{}", req.system, workspace_context);
+        trace!(model = %self.model, system = %full_system, prompt = %req.user, "→ llm");
 
         let anthropic_req = AnthropicRequest {
             model: self.model.clone(),
             max_tokens: 4096,
-            system: req.system,
+            system: full_system,
             messages: vec![AnthropicMessage {
                 role: "user".to_string(),
-                content: full_user_message,
+                content: req.user,
             }],
         };
 

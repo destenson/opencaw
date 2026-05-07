@@ -232,12 +232,12 @@ impl ModelAdapter for OllamaAdapter {
 
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
         let workspace_context = req.format_workspace(ProvenanceFormat::Bracketed);
-        let full_user_message = format!("{}{}", req.user, workspace_context);
-        trace!(model = %self.model, system = %req.system, prompt = %full_user_message, "→ llm");
+        let full_system = format!("{}{}", req.system, workspace_context);
+        trace!(model = %self.model, system = %full_system, prompt = %req.user, "→ llm");
 
         let ollama_req = OllamaChatRequest {
             model: self.model.clone(),
-            messages: self.build_messages(req.system, full_user_message),
+            messages: self.build_messages(full_system, req.user),
             stream: false,
             options: OllamaOptions {
                 temperature: self.temperature,
@@ -331,11 +331,11 @@ impl ModelAdapter for OllamaAdapter {
         debug!(model = %self.model, "streaming thinking trace");
 
         let workspace_context = req.format_workspace(ProvenanceFormat::Bracketed);
-        let full_user = format!("{}{}", req.user, workspace_context);
+        let full_system = format!("{}{}", req.system, workspace_context);
 
         let ollama_req = OllamaChatRequest {
             model: self.model.clone(),
-            messages: self.build_messages(req.system, full_user),
+            messages: self.build_messages(full_system, req.user),
             stream: true,
             options: OllamaOptions {
                 temperature: self.temperature,

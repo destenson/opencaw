@@ -102,8 +102,8 @@ impl ModelAdapter for GroqAdapter {
 
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
         let workspace_context = req.format_workspace(ProvenanceFormat::Bracketed);
-        let full_user_message = format!("{}{}", req.user, workspace_context);
-        trace!(model = %self.model, system = %req.system, prompt = %full_user_message, "→ llm");
+        let full_system = format!("{}{}", req.system, workspace_context);
+        trace!(model = %self.model, system = %full_system, prompt = %req.user, "→ llm");
 
         let groq_req = GroqRequest {
             model: self.model.clone(),
@@ -111,11 +111,11 @@ impl ModelAdapter for GroqAdapter {
             messages: vec![
                 GroqMessage {
                     role: "system".to_string(),
-                    content: req.system,
+                    content: full_system,
                 },
                 GroqMessage {
                     role: "user".to_string(),
-                    content: full_user_message,
+                    content: req.user,
                 },
             ],
         };

@@ -277,13 +277,13 @@ fn extract_model_name(path: &str) -> String {
 /// Apply the model's embedded chat template to produce a prompt string.
 fn format_prompt(state: &LlamaState, req: &CompletionRequest) -> CawResult<String> {
     let workspace_context = req.format_workspace(ProvenanceFormat::Bracketed);
-    let full_user = format!("{}{}", req.user, workspace_context);
+    let full_system = format!("{}{}", req.system, workspace_context);
 
     // Build system and user message C strings — must outlive the chat array.
     let system_c =
-        CString::new(req.system.as_str()).map_err(|e| CawError::Adapter(e.to_string().into()))?;
+        CString::new(full_system.as_str()).map_err(|e| CawError::Adapter(e.to_string().into()))?;
     let user_c =
-        CString::new(full_user.as_str()).map_err(|e| CawError::Adapter(e.to_string().into()))?;
+        CString::new(req.user.as_str()).map_err(|e| CawError::Adapter(e.to_string().into()))?;
     let role_system = c"system";
     let role_user = c"user";
 
