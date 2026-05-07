@@ -502,12 +502,13 @@ fn run_generation(
     Ok(generated)
 }
 
-/// Generate the thinking trace for a single turn, stopping at `</think>`.
+/// Generate tokens, firing `on_step` at each `\n\n` paragraph boundary.
 ///
-/// Steps are `\n\n`-delimited paragraphs inside the `<think>` block. They are
-/// collected during generation, then replayed through `on_step`. Stopping at
-/// `</think>` means the orchestrator can inject recalled context before answer
-/// tokens begin.
+/// The sampling loop stops immediately if `on_step` returns `false` — meaning
+/// a recall hit was found and the orchestrator wants to restart with an
+/// enriched workspace. We own the loop here, so unlike HTTP-streaming adapters
+/// there is no need to collect all steps first and replay; we interrupt in
+/// real time as soon as new context is found.
 fn run_thinking_steps(
     state: &mut LlamaState,
     config: &LlamaCppConfig,
@@ -552,10 +553,8 @@ fn run_thinking_steps(
         smpl
     };
 
-    let mut preamble = String::new();
-    let mut in_think = false;
     let mut step_buf = String::new();
-    let mut steps: Vec<String> = Vec::new();
+    let mut n_steps = 0usize;
 
     'decode: for _ in 0..config.max_new_tokens {
         let token = unsafe { llama_sampler_sample(smpl, ctx, -1) };
@@ -576,46 +575,26 @@ fn run_thinking_steps(
             break 'decode;
         }
 
-        if !in_think {
-            preamble.push_str(&piece);
-            if let Some((_, after)) = preamble.split_once("<think>") {
-                in_think = true;
-                step_buf = after.trim_start_matches('\n').to_string();
-                debug!("<think> detected — collecting steps");
-            }
-        } else {
-            step_buf.push_str(&piece);
+        step_buf.push_str(&piece);
 
-            if let Some(end) = step_buf.find("</think>") {
-                let final_step = step_buf[..end].trim().to_string();
-                if !final_step.is_empty() {
-                    debug!(step_preview = &final_step[..final_step.len().min(80)], "step at </think>");
-                    steps.push(final_step);
-                }
-                debug!("</think> detected — stopping generation");
+        // Fire a step at each paragraph boundary and stop if the orchestrator
+        // found a recall hit (on_step returns false).
+        while let Some(boundary) = step_buf.find("\n\n") {
+            let step = step_buf[..boundary].trim().to_string();
+            step_buf.drain(..boundary + 2);
+            if step.is_empty() {
+                continue;
+            }
+            n_steps += 1;
+            debug!(step_preview = &step[..step.len().min(80)], "step");
+            if !on_step(&step)? {
+                debug!(n_steps, "early stop — recall hit");
                 break 'decode;
-            }
-
-            while let Some(boundary) = step_buf.find("\n\n") {
-                let step = step_buf[..boundary].trim().to_string();
-                step_buf.drain(..boundary + 2);
-                if !step.is_empty() {
-                    debug!(step_preview = &step[..step.len().min(80)], "step boundary flushed");
-                    steps.push(step);
-                }
             }
         }
     }
 
     unsafe { llama_sampler_free(smpl) };
-
-    debug!(steps = steps.len(), "thinking trace collected");
-
-    for step in &steps {
-        if !on_step(step)? {
-            break;
-        }
-    }
 
     Ok(())
 }
