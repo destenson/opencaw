@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 caw-core = { workspace = true }
 caw-ingest = { workspace = true }
+ignore = "0.4"
 
 # Embedding backends
 fastembed = { version = "5", optional = true }

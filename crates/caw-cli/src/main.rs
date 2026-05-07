@@ -291,6 +291,15 @@ fn main() -> Result<()> {
         }
     }
 
+    match store.apply_cawignore(&cli.dir) {
+        Ok((0, 0)) => {}
+        Ok((ignored, cleared)) => {
+            if ignored > 0 { eprintln!("{ignored} stubs marked ignored from .cawignore."); }
+            if cleared > 0 { eprintln!("{cleared} stubs un-ignored (.cawignore updated)."); }
+        }
+        Err(e) => eprintln!("Warning: failed to apply .cawignore: {e}"),
+    }
+
     let all_emb = store
         .all_embeddings()
         .context("Failed to load embeddings")?;
@@ -328,8 +337,7 @@ fn main() -> Result<()> {
     // the system prompt, user message, and generation headroom; use the rest
     // for workspace fragments. Without this cap, the prefill will OOM the KV cache.
     let max_workspace_tokens = if cli.adapter == "llama" {
-        let n_ctx = cli.num_ctx
-            .unwrap_or(caw_adapters::LlamaCppConfig::default().n_ctx) as usize;
+        let n_ctx = cli.num_ctx.unwrap_or(8192) as usize;
         let cap = n_ctx.saturating_sub(2048);
         if cli.max_tokens > cap {
             eprintln!(

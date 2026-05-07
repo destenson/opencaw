@@ -69,7 +69,8 @@ impl SqliteStubStore {
                 byte_offset INTEGER NOT NULL,
                 byte_length INTEGER NOT NULL,
                 stub_json TEXT NOT NULL,
-                stale INTEGER NOT NULL DEFAULT 0
+                stale INTEGER NOT NULL DEFAULT 0,
+                ignored INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )
@@ -94,6 +95,23 @@ impl SqliteStubStore {
             }
         }
 
+        // Migration for databases created before `ignored` existed.
+        match conn.execute(
+            "ALTER TABLE stubs ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0",
+            [],
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                let msg = e.to_string();
+                if !msg.contains("duplicate column name") {
+                    return Err(CawError::VectorStore(format!(
+                        "Failed to add ignored column: {}",
+                        e
+                    )));
+                }
+            }
+        }
+
         // Path lookup for startup sweeps and mark-stale-by-path. Index on
         // stale lets the sweep skip the majority of non-stale rows on large
         // corpora without a full scan.
@@ -107,6 +125,11 @@ impl SqliteStubStore {
             [],
         )
         .map_err(|e| CawError::VectorStore(format!("Failed to create stubs_stale_idx: {}", e)))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS stubs_ignored_idx ON stubs(ignored) WHERE ignored = 1",
+            [],
+        )
+        .map_err(|e| CawError::VectorStore(format!("Failed to create stubs_ignored_idx: {}", e)))?;
 
         // NOTE: no `contents` table. Previously this stored the full chunk
         // text per row, which on multi-chunk files duplicated the source
@@ -452,6 +475,61 @@ impl SqliteStubStore {
             .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect()
     }
+
+    /// Apply `.cawignore` patterns from `root` to the stub index.
+    ///
+    /// Stubs whose paths match the patterns are flagged `ignored=1` and
+    /// excluded from all subsequent searches. Stubs that no longer match are
+    /// cleared to `ignored=0`. If `.cawignore` does not exist all flags are
+    /// cleared. Returns `(ignored, cleared)`.
+    pub fn apply_cawignore(&self, root: &std::path::Path) -> CawResult<(usize, usize)> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT path FROM stubs")
+            .map_err(|e| CawError::VectorStore(format!("apply_cawignore prepare: {}", e)))?;
+        let all_paths: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .map_err(|e| CawError::VectorStore(format!("apply_cawignore query: {}", e)))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let cawignore_path = root.join(".cawignore");
+        let to_ignore: std::collections::HashSet<String> = if cawignore_path.exists() {
+            let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
+            builder.add(&cawignore_path);
+            let gitignore = builder
+                .build()
+                .map_err(|e| CawError::VectorStore(format!("apply_cawignore build: {}", e)))?;
+            all_paths
+                .iter()
+                .filter(|p| {
+                    let rel = p.trim_start_matches("./").trim_start_matches('/');
+                    let abs = root.join(rel);
+                    matches!(gitignore.matched(&abs, false), ignore::Match::Ignore(_))
+                })
+                .cloned()
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+
+        // Clear all existing flags first, then re-apply the current pattern set.
+        let cleared = self
+            .conn
+            .execute("UPDATE stubs SET ignored = 0 WHERE ignored = 1", [])
+            .map_err(|e| CawError::VectorStore(format!("apply_cawignore clear: {}", e)))?;
+
+        let mut ignored = 0usize;
+        for path in &to_ignore {
+            let n = self
+                .conn
+                .execute("UPDATE stubs SET ignored = 1 WHERE path = ?1", params![path])
+                .map_err(|e| CawError::VectorStore(format!("apply_cawignore mark: {}", e)))?;
+            ignored += n;
+        }
+
+        Ok((ignored, cleared))
+    }
 }
 
 impl StubStore for SqliteStubStore {
@@ -562,12 +640,12 @@ impl StubStore for SqliteStubStore {
         // here means the `SemanticRetriever` search loop's `Err(_) => continue`
         // arm drops them before scoring, so evicted-but-not-yet-reingested
         // rows don't surface as recall candidates.
-        let (stub_json, path, stale): (String, String, i64) = self
+        let (stub_json, path, stale, ignored): (String, String, i64, i64) = self
             .conn
             .query_row(
-                "SELECT stub_json, path, stale FROM stubs WHERE id = ?1",
+                "SELECT stub_json, path, stale, ignored FROM stubs WHERE id = ?1",
                 params![id.0],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .map_err(|e| match e {
                 rusqlite::Error::QueryReturnedNoRows => CawError::NotFound(id.0.clone()),
@@ -576,6 +654,9 @@ impl StubStore for SqliteStubStore {
 
         if stale != 0 {
             return Err(CawError::StaleStub { path });
+        }
+        if ignored != 0 {
+            return Err(CawError::NotFound(id.0.clone()));
         }
 
         serde_json::from_str(&stub_json)
@@ -666,15 +747,14 @@ impl StubStore for SqliteStubStore {
     }
 
     fn all_embeddings(&self) -> CawResult<Vec<(StubId, Vec<f32>)>> {
-        // Join against stubs to exclude stale rows: rebuilding an HNSW index
-        // at startup shouldn't add vectors that immediately fail retrieval
-        // because the underlying stub is stale.
+        // Exclude stale and ignored rows: neither should appear in an HNSW
+        // index that's used for recall.
         let mut stmt = self
             .conn
             .prepare(
                 "SELECT e.stub_id, e.embedding FROM embeddings e \
                  JOIN stubs s ON s.id = e.stub_id \
-                 WHERE s.stale = 0",
+                 WHERE s.stale = 0 AND s.ignored = 0",
             )
             .map_err(|e| CawError::VectorStore(format!("Failed to prepare query: {}", e)))?;
 
