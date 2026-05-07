@@ -437,6 +437,7 @@ fn run_generation(
     if prompt_tokens.is_empty() {
         return Err(CawError::Adapter("empty prompt after tokenization".into()));
     }
+    debug!(prompt_tokens = prompt_tokens.len(), "prefilling");
     prefill(ctx, &prompt_tokens, state.n_batch)?;
 
     // Build sampler chain.
@@ -554,6 +555,7 @@ fn run_thinking_steps(
     if prompt_tokens.is_empty() {
         return Err(CawError::Adapter("empty prompt after tokenization".into()));
     }
+    debug!(prompt_tokens = prompt_tokens.len(), "prefilling (thinking)");
     prefill(ctx, &prompt_tokens, state.n_batch)?;
 
     let smpl = unsafe {

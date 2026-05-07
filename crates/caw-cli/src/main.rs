@@ -191,6 +191,11 @@ struct Cli {
     /// Maximum number of tokens to generate per response. Llama adapter only.
     #[arg(long)]
     max_new_tokens: Option<usize>,
+
+    /// Print the full formatted prompt to stderr before each llama generation.
+    /// Useful for inspecting exactly what context the model receives.
+    #[arg(long, default_value_t = false)]
+    show_prompt: bool,
 }
 
 fn main() -> Result<()> {
@@ -350,6 +355,7 @@ fn main() -> Result<()> {
         cli.temperature,
         cli.n_gpu_layers,
         cli.max_new_tokens,
+        cli.show_prompt,
     )?);
     // When the main adapter is llama, reuse it for classification rather than
     // spinning up ollama. The Arc lets both the orchestrator and the classifier
@@ -441,6 +447,7 @@ fn build_completion_adapter(
     temperature: Option<f32>,
     n_gpu_layers: Option<i32>,
     max_new_tokens: Option<usize>,
+    show_prompt: bool,
 ) -> Result<Box<dyn ModelAdapter>> {
     let adapter: Box<dyn ModelAdapter> = match adapter_name {
         "mock" => Box::new(MockAdapter::new("mock-local", true)),
@@ -552,11 +559,15 @@ fn build_completion_adapter(
             Box::new(caw_adapters::OllamaAdapter::local(m, rt))
         }
     };
-    Ok(adapter)
+    if show_prompt {
+        Ok(Box::new(caw_adapters::ShowPromptAdapter::new(adapter)))
+    } else {
+        Ok(adapter)
+    }
 }
 
 fn build_intent_adapter(adapter_name: &str, model: &str) -> Result<Box<dyn ModelAdapter>> {
-    build_completion_adapter(adapter_name, Some(model), None, None, None, None)
+    build_completion_adapter(adapter_name, Some(model), None, None, None, None, false)
 }
 
 fn classify_query_intent(adapter: &dyn ModelAdapter, query: &str) -> Result<QueryIntent> {

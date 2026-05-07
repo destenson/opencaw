@@ -2,6 +2,7 @@ use caw_core::{
     CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities,
     ProvenanceFormat,
 };
+use std::fmt::Write as _;
 
 pub mod adapter_factory;
 mod anthropic;
@@ -73,5 +74,66 @@ impl ModelAdapter for MockAdapter {
             thinking: None,
             usage: None,
         })
+    }
+}
+
+/// Wraps any adapter and prints the contents of each CompletionRequest to
+/// stderr before delegating. Lets you verify exactly what context the model
+/// receives — system prompt, user message, and every loaded workspace fragment.
+pub struct ShowPromptAdapter {
+    inner: Box<dyn ModelAdapter>,
+}
+
+impl ShowPromptAdapter {
+    pub fn new(inner: Box<dyn ModelAdapter>) -> Self {
+        Self { inner }
+    }
+}
+
+fn dump_request(req: &CompletionRequest) {
+    let fragment_tokens: usize = req.workspace_fragments.iter().map(|f| f.tokens).sum();
+    let mut out = String::new();
+    let _ = writeln!(out, "\n─── PROMPT ({} workspace tokens across {} fragments) ───", fragment_tokens, req.workspace_fragments.len());
+    let _ = writeln!(out, "[system]\n{}", req.system);
+    let _ = writeln!(out, "[user]\n{}", req.user);
+    for frag in &req.workspace_fragments {
+        let _ = writeln!(out, "[fragment: {} | {} tokens]\n{}", frag.locator.source, frag.tokens, frag.content);
+    }
+    let _ = writeln!(out, "─────────────────────────");
+    eprint!("{out}");
+}
+
+impl ModelAdapter for ShowPromptAdapter {
+    fn model_name(&self) -> &str {
+        self.inner.model_name()
+    }
+
+    fn capabilities(&self) -> ModelCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
+        dump_request(&req);
+        self.inner.complete(req)
+    }
+
+    fn generate_passive(
+        &self,
+        req: CompletionRequest,
+        check_interval: usize,
+        window_size: usize,
+        on_window: &mut dyn FnMut(&str) -> CawResult<Option<String>>,
+    ) -> CawResult<CompletionResponse> {
+        dump_request(&req);
+        self.inner.generate_passive(req, check_interval, window_size, on_window)
+    }
+
+    fn thinking_with_steps(
+        &self,
+        req: CompletionRequest,
+        on_step: &mut dyn FnMut(&str) -> CawResult<bool>,
+    ) -> CawResult<()> {
+        dump_request(&req);
+        self.inner.thinking_with_steps(req, on_step)
     }
 }
