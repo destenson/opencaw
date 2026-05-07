@@ -26,7 +26,7 @@ type CliOrchestrator = DynamicRecallOrchestrator<
     LazyFastEmbedProvider,
     HnswVectorIndex,
     InMemoryProvenanceStore,
-    Box<dyn ModelAdapter>,
+    Arc<dyn ModelAdapter>,
     SqliteStubStore,
 >;
 
@@ -324,20 +324,28 @@ fn main() -> Result<()> {
         ..Default::default()
     };
 
-    let adapter: Box<dyn ModelAdapter> = build_completion_adapter(
+    let adapter: Arc<dyn ModelAdapter> = Arc::new(build_completion_adapter(
         &cli.adapter,
         cli.model.as_deref(),
         cli.num_ctx,
         cli.temperature,
         cli.n_gpu_layers,
         cli.max_new_tokens,
-    )?;
-    let intent_adapters: Vec<Box<dyn ModelAdapter>> = if cli.no_intent_classifier {
+    )?);
+    // When the main adapter is llama, reuse it for classification rather than
+    // spinning up ollama. The Arc lets both the orchestrator and the classifier
+    // share the already-loaded model without a second load.
+    let intent_adapters: Vec<Arc<dyn ModelAdapter>> = if cli.no_intent_classifier {
         Vec::new()
+    } else if cli.adapter == "llama" {
+        vec![Arc::clone(&adapter)]
     } else {
         cli.intent_model
             .iter()
-            .map(|model| build_intent_adapter(&cli.intent_adapter, model))
+            .map(|model| {
+                build_intent_adapter(&cli.intent_adapter, model)
+                    .map(|a| Arc::new(a) as Arc<dyn ModelAdapter>)
+            })
             .collect::<Result<Vec<_>>>()?
     };
 
@@ -547,7 +555,7 @@ fn classify_query_intent(adapter: &dyn ModelAdapter, query: &str) -> Result<Quer
 #[allow(clippy::too_many_arguments)]
 fn run_interactive(
     orchestrator: &mut CliOrchestrator,
-    intent_adapters: Vec<Box<dyn ModelAdapter>>,
+    intent_adapters: Vec<Arc<dyn ModelAdapter>>,
     intent_confidence: f32,
     show_intent: bool,
     system: &str,

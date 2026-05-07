@@ -1065,6 +1065,41 @@ impl<T: ModelAdapter + ?Sized> ModelAdapter for Box<T> {
     }
 }
 
+/// Forward `ModelAdapter` through an `Arc` so a single loaded adapter can be
+/// shared between the orchestrator and the intent classifier without loading
+/// the model twice.
+impl<T: ModelAdapter + ?Sized> ModelAdapter for std::sync::Arc<T> {
+    fn model_name(&self) -> &str {
+        (**self).model_name()
+    }
+
+    fn capabilities(&self) -> ModelCapabilities {
+        (**self).capabilities()
+    }
+
+    fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
+        (**self).complete(req)
+    }
+
+    fn generate_passive(
+        &self,
+        req: CompletionRequest,
+        check_interval: usize,
+        window_size: usize,
+        on_window: &mut dyn FnMut(&str) -> CawResult<Option<String>>,
+    ) -> CawResult<CompletionResponse> {
+        (**self).generate_passive(req, check_interval, window_size, on_window)
+    }
+
+    fn thinking_with_steps(
+        &self,
+        req: CompletionRequest,
+        on_step: &mut dyn FnMut(&str) -> CawResult<bool>,
+    ) -> CawResult<()> {
+        (**self).thinking_with_steps(req, on_step)
+    }
+}
+
 /// Embedding generation trait - abstracts different embedding backends.
 ///
 /// Asymmetric models (BGE, E5) produce better results when queries and documents
