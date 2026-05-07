@@ -1286,6 +1286,17 @@ pub struct ThinkingStep {
     pub step_number: usize,
 }
 
+/// An explicit line-range reference detected in model output or thinking traces.
+/// Carries enough information to load the specific range from the workspace.
+#[derive(Debug, Clone)]
+pub struct LineReference {
+    /// The source as written by the model — may be a partial path like `lib.rs`
+    /// or a full path like `./crates/caw-core/src/lib.rs`.
+    pub source_hint: String,
+    pub start: usize,
+    pub end: usize,
+}
+
 /// Persistent storage for stubs and their embeddings.
 ///
 /// Content is NOT stored here — stubs carry `(path, byte_offset, byte_length)`

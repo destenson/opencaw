@@ -1,4 +1,4 @@
-use caw_core::{CawResult, ModelAnnotation, ProbeMarker, Range, ThinkingStep};
+use caw_core::{CawResult, LineReference, ModelAnnotation, ProbeMarker, Range, ThinkingStep};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -8,6 +8,11 @@ static THINK_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)<think>(.*?)</think>").unwrap());
 static ANNOTATION_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"<note id="([^"]+)">(.*?)</note>"#).unwrap());
+// Matches `path/file.ext:start-end` or `path/file.ext:N`.
+// Requires an alphabetic extension to avoid matching version strings like `v0.1:2`.
+static LINE_REF_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"((?:[\w./\-]+/)?[\w\-]+\.[a-zA-Z]+):(\d+)(?:-(\d+))?").unwrap()
+});
 
 /// Extract probe markers from model output
 pub fn extract_probes(text: &str) -> Vec<ProbeMarker> {
@@ -101,6 +106,23 @@ pub fn strip_markers(text: &str) -> String {
     // configured correctly are an unambiguous sign of a degenerate response.
     let text = text.replace("<|im_end|>", "").replace("<|im_start|>", "");
     text.trim().to_string()
+}
+
+/// Extract explicit line-range references from model output or thinking traces.
+/// Detects `path/file.ext:start-end` and `path/file.ext:N` patterns.
+pub fn extract_line_references(text: &str) -> Vec<LineReference> {
+    LINE_REF_PATTERN
+        .captures_iter(text)
+        .map(|cap| {
+            let source_hint = cap[1].to_string();
+            let start: usize = cap[2].parse().unwrap_or(1);
+            let end: usize = cap
+                .get(3)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(start);
+            LineReference { source_hint, start, end: end.max(start) }
+        })
+        .collect()
 }
 
 /// Extract model annotations about specific stubs.

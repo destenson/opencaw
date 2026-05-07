@@ -3,13 +3,13 @@ use crate::degradation::DegradationMonitor;
 use crate::session::{self, SessionFile};
 use caw_core::{
     AugmentationSignals, CawError, CawResult, CompletionRequest, CompletionResponse,
-    ConsolidationNote, ConsolidationSource, EmbeddingProvider, Locator, ModelAdapter,
+    ConsolidationNote, ConsolidationSource, EmbeddingProvider, LineReference, Locator, ModelAdapter,
     ProvenanceStore, Range, RecallFragment, RecallThresholds, Retriever, ScoredStub, StubId,
     StubStore, VectorIndex, candidate_list_fragment, count_tokens_cl100k, tokenize_terms,
 };
 use caw_eval::SessionEvaluator;
 use caw_ingest::{DocumentIdSet, IngestionPipeline};
-use caw_transform::{extract_annotations, extract_probes, extract_thinking_steps, strip_markers};
+use caw_transform::{extract_annotations, extract_line_references, extract_probes, extract_thinking_steps, strip_markers};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
@@ -83,6 +83,7 @@ pub struct DynamicRecallConfig {
     pub relevance_decay_rate: f32,
     pub enable_thinking_trace_recall: bool,
     pub enable_probe_recall: bool,
+    pub enable_line_reference_recall: bool,
     /// Maximum fragments to load in the initial (pre-probe) phase. If more
     /// candidates than this clear the load threshold, the query is too broad
     /// for confident initial augmentation — load nothing and let probes drive.
@@ -110,6 +111,7 @@ impl Default for DynamicRecallConfig {
             relevance_decay_rate: 0.8,
             enable_thinking_trace_recall: true,
             enable_probe_recall: true,
+            enable_line_reference_recall: true,
             max_initial_fragments: 4,
             cooperation_mode: CooperationMode::Auto,
             passive_injection_interval: 32,
@@ -249,6 +251,22 @@ where
             "need to answer well — not for every turn.",
         ));
 
+        // Thinking-trace instructions: for models that support visible reasoning, the model's
+        prompt.push_str(concat!(
+            "\n\nFeel free to think out loud as you work through the problem. The system will ",
+            "parse your thinking steps and recall relevant context for each step. This helps ",
+            "you get the information you need even if your initial retrieval missed ",
+            "something important.",
+        ));
+
+        if self.config.enable_line_reference_recall {
+            prompt.push_str(concat!(
+                " To load specific lines from a recalled file, write the path and range in your ",
+                "thinking as `path/to/file.ext:start-end` (e.g. `./crates/caw-core/src/lib.rs:45-67`). ",
+                "The system will automatically load that line range into your workspace.",
+            ));
+        }
+
         prompt
     }
 
@@ -318,7 +336,9 @@ where
             } else {
                 user.into()
             };
-        let initial_hits = self.retriever.search(&retrieval_query, self.config.max_candidates)?;
+        let initial_hits = self
+            .retriever
+            .search(&retrieval_query, self.config.max_candidates)?;
         let above_threshold = initial_hits
             .iter()
             .filter(|h| h.score >= self.config.thresholds.load)
@@ -464,6 +484,14 @@ where
 
                 if self.config.enable_probe_recall {
                     self.process_probes(&last_response.answer)?;
+                }
+
+                if self.config.enable_line_reference_recall {
+                    let text = match &last_response.thinking {
+                        Some(t) => format!("{}\n{}", t, last_response.answer),
+                        None => last_response.answer.clone(),
+                    };
+                    self.process_line_references(&text)?;
                 }
             }
 
@@ -627,7 +655,8 @@ where
                 Ok(None)
             };
 
-            self.adapter.generate_passive(req, check_interval, window_size, &mut on_window)?
+            self.adapter
+                .generate_passive(req, check_interval, window_size, &mut on_window)?
         };
 
         // Update the loaded workspace state to reflect what was injected mid-generation.
@@ -662,6 +691,79 @@ where
             )?;
             if let Some(eval) = &mut self.evaluator {
                 eval.record_probe(&probe.content, self.loaded.len() > loaded_before, 0.0);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Load specific line ranges explicitly referenced in model output or thinking.
+    /// Detects `path/file.ext:start-end` patterns, resolves the stub by matching
+    /// the source hint against loaded fragments first, then falls back to search.
+    fn process_line_references(&mut self, text: &str) -> CawResult<()> {
+        let refs: Vec<LineReference> = extract_line_references(text);
+        if refs.is_empty() {
+            return Ok(());
+        }
+        debug!(refs = refs.len(), "line references extracted");
+
+        for line_ref in refs {
+            // Prefer stubs already in the workspace; fall back to a targeted search.
+            let stub_id = self
+                .loaded
+                .iter()
+                .find(|f| {
+                    let src = f.locator.source.trim_start_matches("./");
+                    src.ends_with(&line_ref.source_hint)
+                        || line_ref.source_hint.ends_with(src)
+                })
+                .map(|f| f.stub_id.clone());
+
+            let stub_id = match stub_id {
+                Some(id) => id,
+                None => {
+                    let hits = self.retriever.search(&line_ref.source_hint, 5)?;
+                    match hits.into_iter().find(|h| {
+                        let p = h.stub.path.trim_start_matches("./");
+                        p.ends_with(&line_ref.source_hint) || line_ref.source_hint.ends_with(p)
+                    }) {
+                        Some(h) => h.stub.id,
+                        None => {
+                            debug!(source = %line_ref.source_hint, "line reference: no matching stub");
+                            continue;
+                        }
+                    }
+                }
+            };
+
+            if self.loaded_ids.contains(&stub_id) {
+                // Full file already loaded; the specific range is already visible.
+                debug!(source = %line_ref.source_hint, "line reference: stub already loaded");
+                continue;
+            }
+
+            let range = if line_ref.start == line_ref.end {
+                line_ref.start.to_string()
+            } else {
+                format!("{}-{}", line_ref.start, line_ref.end)
+            };
+
+            match self.retriever.read_range(&stub_id, &range) {
+                Ok(fragment) => {
+                    let current_tokens: usize = self.loaded.iter().map(|f| f.tokens).sum();
+                    if current_tokens + fragment.tokens <= self.config.max_workspace_tokens {
+                        debug!(
+                            source = %line_ref.source_hint,
+                            range = %range,
+                            tokens = fragment.tokens,
+                            "line reference admitted"
+                        );
+                        self.loaded_ids.insert(stub_id);
+                        self.provenance.record(fragment.clone());
+                        self.loaded.push(fragment);
+                    }
+                }
+                Err(e) => debug!(error = %e, source = %line_ref.source_hint, "line reference read failed"),
             }
         }
 
