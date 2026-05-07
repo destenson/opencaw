@@ -47,6 +47,9 @@ pub struct DynamicRecallOrchestrator<R, E, V, P, M, S = ()> {
     pub adapter: M,
     pub loaded: Vec<RecallFragment>,
     pub loaded_ids: HashSet<StubId>,
+    /// Source paths of currently loaded fragments. Prevents admitting
+    /// multiple chunks from the same file — one per source is enough.
+    loaded_sources: HashSet<String>,
     /// Per-fragment relevance scores. Decay each reasoning step;
     /// refreshed when the model's output re-engages with the fragment.
     relevance_scores: HashMap<StubId, f32>,
@@ -84,6 +87,10 @@ pub struct DynamicRecallConfig {
     pub enable_thinking_trace_recall: bool,
     pub enable_probe_recall: bool,
     pub enable_line_reference_recall: bool,
+    /// Hard cap on the number of fragments that can be loaded simultaneously.
+    /// Prevents unbounded accumulation across long conversations regardless of
+    /// the token budget. When hit, new admissions are blocked.
+    pub max_loaded_fragments: usize,
     /// Maximum fragments to load in the initial (pre-probe) phase. If more
     /// candidates than this clear the load threshold, the query is too broad
     /// for confident initial augmentation — load nothing and let probes drive.
@@ -112,6 +119,7 @@ impl Default for DynamicRecallConfig {
             enable_thinking_trace_recall: true,
             enable_probe_recall: true,
             enable_line_reference_recall: true,
+            max_loaded_fragments: 15,
             max_initial_fragments: 4,
             cooperation_mode: CooperationMode::Auto,
             passive_injection_interval: 32,
@@ -145,6 +153,7 @@ where
             adapter,
             loaded: Vec::new(),
             loaded_ids: HashSet::new(),
+            loaded_sources: HashSet::new(),
             relevance_scores: HashMap::new(),
             config,
             store: None,
@@ -748,8 +757,14 @@ where
                 format!("{}-{}", line_ref.start, line_ref.end)
             };
 
+            if self.loaded.len() >= self.config.max_loaded_fragments {
+                debug!("fragment cap reached — line reference skipped");
+                break;
+            }
+
             match self.retriever.read_range(&stub_id, &range) {
                 Ok(fragment) => {
+                    let source = &fragment.locator.source;
                     let current_tokens: usize = self.loaded.iter().map(|f| f.tokens).sum();
                     if current_tokens + fragment.tokens <= self.config.max_workspace_tokens {
                         debug!(
@@ -759,6 +774,9 @@ where
                             "line reference admitted"
                         );
                         self.loaded_ids.insert(stub_id);
+                        if source != "session history" {
+                            self.loaded_sources.insert(source.clone());
+                        }
                         self.provenance.record(fragment.clone());
                         self.loaded.push(fragment);
                     }
@@ -816,9 +834,12 @@ where
         for frag in &self.loaded {
             let overlap = term_overlap_score(&context, &frag.content);
             if let Some(current) = self.relevance_scores.get_mut(&frag.stub_id) {
-                // Take the higher of: decayed score or fresh overlap.
-                // A fragment being discussed should never be penalized by decay.
-                if overlap > *current {
+                // Only restore a decayed score when the fragment is strongly
+                // re-engaged — not on generic topic overlap that appears in
+                // every fragment of a domain-specific codebase. Without the
+                // margin, decay can never push a score below the unload
+                // threshold because even tangential overlap tops it up each turn.
+                if overlap > *current + 0.2 {
                     *current = overlap;
                 }
             }
@@ -876,6 +897,9 @@ where
         for idx in to_evict {
             let fragment = self.loaded.remove(idx);
             self.loaded_ids.remove(&fragment.stub_id);
+            if fragment.locator.source != "session history" {
+                self.loaded_sources.remove(&fragment.locator.source);
+            }
             debug!(path = %fragment.locator.source, "fragment evicted");
 
             let decayed_score = self
@@ -922,6 +946,15 @@ where
         for (stub_id, score) in hits {
             if self.loaded_ids.contains(&stub_id) {
                 continue;
+            }
+
+            if self.loaded.len() >= self.config.max_loaded_fragments {
+                debug!(
+                    count = self.loaded.len(),
+                    max = self.config.max_loaded_fragments,
+                    "fragment cap reached — stopping"
+                );
+                break;
             }
 
             if score < self.config.thresholds.load {
@@ -991,6 +1024,14 @@ where
                 },
             };
 
+            // Skip a second chunk from a source already in the workspace.
+            // "session history" is exempt — multiple turns are distinct content.
+            let source = &fragment.locator.source;
+            if source != "session history" && self.loaded_sources.contains(source) {
+                debug!(source = %source, "source already loaded — skipping duplicate chunk");
+                continue;
+            }
+
             if current_tokens + fragment.tokens <= self.config.max_workspace_tokens {
                 let fragment_tokens = fragment.tokens;
                 debug!(
@@ -1001,6 +1042,9 @@ where
                 );
                 self.relevance_scores.insert(stub_id.clone(), score);
                 self.loaded_ids.insert(stub_id.clone());
+                if source != "session history" {
+                    self.loaded_sources.insert(source.clone());
+                }
                 self.provenance.record_with_context(fragment.clone(), "", 0);
                 self.loaded.push(fragment);
                 if let Some(eval) = &mut self.evaluator {
@@ -1044,6 +1088,7 @@ impl<R, E, V, P: Default, M, S> DynamicRecallOrchestrator<R, E, V, P, M, S> {
     pub fn reset_session(&mut self) {
         self.loaded.clear();
         self.loaded_ids.clear();
+        self.loaded_sources.clear();
         self.relevance_scores.clear();
         self.provenance = P::default();
     }

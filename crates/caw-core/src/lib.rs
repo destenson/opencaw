@@ -1006,7 +1006,7 @@ impl RecallThresholds {
     pub fn default_hysteresis() -> Self {
         Self {
             load: 0.7,
-            unload: 0.4,
+            unload: 0.55,
         }
     }
 
