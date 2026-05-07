@@ -165,7 +165,7 @@ fn build_inner(
             Box::new(
                 crate::LlamaCppAdapter::new_with(crate::LlamaCppConfig {
                     model_path: spec.model.to_string(),
-                    n_ctx: spec.num_ctx.unwrap_or(0),
+                    n_ctx: spec.num_ctx.unwrap_or(crate::LlamaCppConfig::default().n_ctx),
                     ..Default::default()
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?,

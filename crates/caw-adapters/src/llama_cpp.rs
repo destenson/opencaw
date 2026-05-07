@@ -12,7 +12,9 @@ use tracing::debug;
 #[derive(Debug, Clone)]
 pub struct LlamaCppConfig {
     pub model_path: String,
-    /// Context window size in tokens. 0 = use model default.
+    /// Context window size in tokens. 0 = use model default (dangerous: models
+    /// with large training contexts like Qwen3's 128K will pre-allocate an
+    /// enormous KV cache; prefer an explicit cap unless you have the VRAM).
     pub n_ctx: u32,
     /// GPU layers to offload. -1 = all layers.
     pub n_gpu_layers: i32,
@@ -28,7 +30,7 @@ impl Default for LlamaCppConfig {
     fn default() -> Self {
         Self {
             model_path: String::new(),
-            n_ctx: 0, // model default
+            n_ctx: 8192,
             n_gpu_layers: -1,
             seed: 42,
             temperature: 0.7,
