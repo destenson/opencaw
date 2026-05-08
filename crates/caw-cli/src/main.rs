@@ -759,6 +759,8 @@ fn run_interactive(
             .unwrap_or_default();
         let signals = actionable.map(|i| i.augmentation_signals());
 
+        // TODO: This is *ABSOLUTELY WRONG* THE INTENT CLASSIFIER SHOULD BE A SIGNAL, NOT A GATING FACTOR.
+
         // Skip the retrieval cycle when the intent classifier confirms no substantive
         // query signal AND the message is short. Casual acknowledgments ("nice to know",
         // "got it", "ok") would otherwise surface lexically similar but off-topic fragments
@@ -768,6 +770,7 @@ fn run_interactive(
                 if show_intent {
                     eprintln!("[intent] short non-substantive input — skipping retrieval");
                 }
+                // FIXME:  DO NOT HARD CODE RESPONSES!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
                 println!("\nGot it.\n");
                 continue;
             }
