@@ -177,3 +177,15 @@ B13 fixed trailing `<|im_end|>` tokens; B12 fixed `<think>…</think>` stored as
 ## B15. Session log truncation (B2) traces to degenerate-response error path, not flush timing (high) — FIXED
 
 QA loop 0015 session-20260508-084805 recorded only 1 turn despite processing 2 queries across 7 prompt files. The per-turn flush fix from QA 0003 should have written each turn before the next begins. The second turn was not written, and the session's second query triggered a degenerate-response error (B14). This strongly suggests `write_turn` is not called before the error propagates — the degenerate-response handler exits the turn-processing path before the write. Fix: call `write_turn` with whatever response text was received (including partial or error-annotated text) before raising or propagating the degenerate-output error. The session log should capture every turn attempted, even failed ones.
+
+## B16. Valid prefix of a degenerate response is discarded — session records empty answer (high)
+
+Observed in QA loop 0016 session-20260508-090505. When `is_looping` fires on the answer text, `run_turn` creates `CompletionResponse { answer: String::new() }` and writes that to the session log. The degenerate error message format includes a 120-char sample of the answer ("OpenCAW (Context as Workspace) is a framework that treats the workspace..."), which is a coherent, correct opening. The model looped somewhere after that point, but the valid prefix is discarded entirely.
+
+For aggressively quantized models (e.g., Q2_K_XL MoE) that start correctly and loop partway through, the valid prefix before the repetition began is often sufficient to give the user a useful answer. The `is_looping` checks identify which pattern triggered (trigram collapse, line repetition, word dominance). For trigram collapse and line repetition, the collapse point is approximately identifiable — the response could be truncated there rather than discarded. At minimum, the pre-loop portion should be stored in the session log instead of an empty string, so the user sees something and session history carries a real answer forward.
+
+## B17. Blank model response not treated as degenerate — silently accepted and bypasses retry logic (high)
+
+Observed in QA loop 0016 prompt-turn-2.txt (search-candidates pass). The model emitted only a `<think>...</think>` reasoning block with an empty answer after `</think>`. `split_thinking` correctly returns `answer = ""`. `is_looping("")` returns `false` because the length check (`words.len() < 20`) short-circuits before any loop detection. The blank answer passes through without error and is written to the session log, bypassing any retry or fallback.
+
+A blank answer after `split_thinking` is structurally indistinct from a response where the model simply failed to generate any text. Both should be treated as degenerate output and route through the same retry/fallback path as `DegenerateOutput`. The existing "always produce a visible response" system prompt instruction is insufficient — the model ignored it. The system needs to enforce non-blank answers mechanically, not by instruction.
