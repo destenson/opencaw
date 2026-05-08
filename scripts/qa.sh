@@ -106,9 +106,9 @@ for n in $(seq 1 "$NLOOPS"); do
 
     mv .caw ".caw${LOOP_NUMBER}"
     if [ "${REGENERATE:-1}" -eq 1 ]; then
-        echo "Regenerating index.db for loop $LOOP_NUMBER to ensure it reflects the final session artifacts..."
+        echo "Regenerating index.db for loop $((10#$LOOP_NUMBER + 1)) to ensure it reflects the final session artifacts..."
     else
-        echo "NOTE: Skipping index.db regeneration for loop $LOOP_NUMBER; if session artifacts changed during generation, the index may be out of sync."
+        echo "NOTE: Skipping index.db regeneration for loop $((10#$LOOP_NUMBER + 1)); if session artifacts changed during generation, the index may be out of sync."
         mkdir -p .caw/
         cp ".caw${LOOP_NUMBER}/index.db" .caw/ || echo "No index.db found in .caw${LOOP_NUMBER}, skipping copy to .caw/"
     fi
