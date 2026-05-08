@@ -161,3 +161,9 @@ The fix is to strip chat-template tokens and `<think>...</think>` blocks from th
 Related to B11. In session 082520 turn 4, the logged response begins with `<think>` rather than with the answer. The model's internal reasoning (which can be hundreds of tokens) is stored as the turn's answer, making the session log misleading and the history injection actively harmful — subsequent sessions will retrieve the prior reasoning as if it were a factual answer.
 
 Distinct from B11 in that B12 is specifically about the `<think>...</think>` prefix being treated as the answer rather than as a separate artifact to be discarded. The adapter needs to detect whether the model output starts with a thinking block and, if so, extract only the content after `</think>` as the answer.
+
+## B13. `truncate_at_chat_boundary` does not strip trailing `<|im_end|>` stop tokens, causing `is_looping` to flag valid Qwen3 responses as degenerate (critical)
+
+Observed in QA loop 0014: every Qwen3 response was flagged as degenerate, aborting the session after 1 question. The `<|im_end|>` token Qwen3 emits at the end of a proper generation is the normal chat-template stop sentinel. `truncate_at_chat_boundary` only strips it when there is content after it — the guard `if !after.is_empty()` causes a bare trailing `<|im_end|>` to pass through unchanged. `is_looping` then unconditionally returns `true` on `text.contains("<|im_end|>")`, flagging the response as a runaway generation even though the answer text before the stop token is valid.
+
+The fix is to remove the `if !after.is_empty()` condition for the trailing-stop-token case and strip `<|im_end|>` unconditionally. The runaway-generation case (model generating additional conversation turns) is already handled by the `<|im_start|>` check earlier in the function.
