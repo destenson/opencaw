@@ -11,6 +11,9 @@ MAX_FIX_ATTEMPTS=${MAX_FIX_ATTEMPTS:-3}
 
 export CUDA_VISIBLE_DEVICES=1,0
 
+# Kill the entire process group on Ctrl-C so claude subprocesses don't linger.
+trap 'kill 0' INT TERM
+
 LOOP_NUMBER_STRING() {
     printf "%04d" "$1"
 }
