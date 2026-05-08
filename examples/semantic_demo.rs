@@ -71,8 +71,8 @@ fn main() -> Result<()> {
         }
         std::fs::write(&full, &doc.content)?;
         let stubs = pipeline.ingest(doc);
-        for (stub, _embed_text) in stubs {
-            retriever.insert(stub)?;
+        for (stub, embed_text) in stubs {
+            retriever.insert(stub, embed_text)?;
         }
     }
 

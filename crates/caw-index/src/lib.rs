@@ -80,13 +80,18 @@ where
         }
     }
 
-    /// Embed the stub (path + summary + outline only — content is not
-    /// included here because at this layer we don't have it, and the
-    /// bench-index path has its own content-aware embedding builder).
-    /// Persist the stub + embedding to the store and register with the
-    /// in-memory vector index.
-    pub fn insert(&mut self, stub: Stub) -> CawResult<()> {
-        let text = format!("{} {} {}", stub.path, stub.summary, stub.outline.join(" "));
+    /// Embed the stub using its chunk content as the primary signal, with
+    /// path and summary as a prefix. Asymmetric models benefit from
+    /// document-side context, and code behavior is only recoverable from the
+    /// body — metadata-only embeddings degrade to symbol-name lookup.
+    /// Pass an empty string for `content` only when the body is unavailable
+    /// (e.g. legacy call sites that construct stubs without chunking).
+    pub fn insert(&mut self, stub: Stub, content: &str) -> CawResult<()> {
+        let text = if content.is_empty() {
+            format!("{} {}", stub.path, stub.summary)
+        } else {
+            format!("{}\n{}\n\n{}", stub.path, stub.summary, content)
+        };
         let embeddings = self.embedder.embed_document(vec![text.as_str()])?;
         let embedding = embeddings
             .into_iter()
@@ -172,8 +177,8 @@ where
         })
     }
 
-    fn insert(&mut self, stub: Stub, _content: String) -> CawResult<()> {
-        self.insert(stub)
+    fn insert(&mut self, stub: Stub, content: String) -> CawResult<()> {
+        self.insert(stub, &content)
     }
 }
 
@@ -221,7 +226,7 @@ where
     pub fn insert(&mut self, stub: Stub, content: String) -> CawResult<()> {
         let bm25_text = format!("{} {} {}", stub.path, stub.summary, content);
         self.bm25.add(stub.id.clone(), &bm25_text);
-        self.semantic.insert(stub)
+        self.semantic.insert(stub, &content)
     }
 }
 
