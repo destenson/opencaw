@@ -97,6 +97,7 @@ for n in $(seq 1 "$NLOOPS"); do
             --dir "$LOC" \
             --num-ctx "$CONTEXT_LENGTH" \
             --save-prompt \
+            --verbose \
             < "$QA_FILE" \
             >> qa/log.txt || {
             echo "caw-cli failed on prompt $j, stopping inner loop."

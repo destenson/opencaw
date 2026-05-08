@@ -125,10 +125,7 @@ struct Cli {
     max_tokens: usize,
 
     /// System prompt
-    #[arg(
-        long,
-        default_value = "With access to recalled documents, use the recalled context to answer questions accurately."
-    )]
+    #[arg(long, default_value = "")]
     system: String,
 
     /// Tokenizer for token counting: cl100k (default), whitespace, p50k
@@ -137,19 +134,19 @@ struct Cli {
 
     /// Use LLM to generate stub summaries during ingestion (uses aux-model)
     #[arg(long)]
-    llm_summarize: bool,
+    no_llm_summarize: bool,
 
     /// Use LLM to synthesize consolidation notes on eviction (uses aux-model)
     #[arg(long)]
-    llm_consolidation: bool,
+    no_llm_consolidation: bool,
 
     /// Model for auxiliary LLM tasks (summarization, consolidation). Default: haiku
     #[arg(long, default_value = "haiku")]
     aux_model: String,
 
-    /// Enable curation pipeline (history summarization + tool output compression)
+    /// Disable curation pipeline (history summarization + tool output compression)
     #[arg(long)]
-    curate: bool,
+    no_curate: bool,
 
     /// Directory for session history files. Each run appends to a new file;
     /// previous runs' files are indexed at startup for cross-session recall.
@@ -259,7 +256,7 @@ fn main() -> Result<()> {
         _ => Arc::new(WhitespaceTokenizer),
     };
 
-    let pipeline = if cli.llm_summarize {
+    let pipeline = if !cli.no_llm_summarize {
         let aux_adapter = build_aux_adapter(&cli.aux_model);
         eprintln!(
             "Using LLM summarizer ({}) for stub generation",
@@ -450,7 +447,7 @@ fn main() -> Result<()> {
     )
     .with_store(consolidation_store);
 
-    if cli.llm_consolidation {
+    if !cli.no_llm_consolidation {
         eprintln!(
             "Using LLM consolidation ({}) for eviction notes",
             cli.aux_model
@@ -469,7 +466,7 @@ fn main() -> Result<()> {
         }
     }
 
-    if cli.curate {
+    if !cli.no_curate {
         eprintln!("Curation pipeline enabled (history summarization + tool output compression)");
     }
 
@@ -483,7 +480,7 @@ fn main() -> Result<()> {
         cli.intent_confidence,
         show_intent,
         &cli.system,
-        cli.curate,
+        !cli.no_curate,
         &cli.aux_model,
         cli.max_tokens,
     )
