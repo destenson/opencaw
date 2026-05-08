@@ -170,13 +170,16 @@ impl ModelAdapter for LlamaCppAdapter {
         let prompt = format_prompt(&state, &req)?;
         let raw = run_generation(&mut state, &self.config, &prompt, usize::MAX, 0, None)?;
         let truncated = truncate_at_chat_boundary(&raw);
-        if is_looping(truncated) {
+        let (thinking, answer) = split_thinking(truncated);
+        // Check for degenerate output on the extracted answer, not the raw
+        // text. Running is_looping before split_thinking would flag valid
+        // responses whose <think> tags contain repeated XML tokens.
+        if is_looping(&answer) {
             return Err(CawError::DegenerateOutput {
                 model: self.model_name.clone(),
-                sample: truncated.chars().take(120).collect(),
+                sample: answer.chars().take(120).collect(),
             });
         }
-        let (thinking, answer) = split_thinking(truncated);
         Ok(CompletionResponse {
             answer,
             thinking,
@@ -206,13 +209,13 @@ impl ModelAdapter for LlamaCppAdapter {
             Some(on_window),
         )?;
         let truncated = truncate_at_chat_boundary(&raw);
-        if is_looping(truncated) {
+        let (thinking, answer) = split_thinking(truncated);
+        if is_looping(&answer) {
             return Err(CawError::DegenerateOutput {
                 model: self.model_name.clone(),
-                sample: truncated.chars().take(120).collect(),
+                sample: answer.chars().take(120).collect(),
             });
         }
-        let (thinking, answer) = split_thinking(truncated);
         Ok(CompletionResponse {
             answer,
             thinking,

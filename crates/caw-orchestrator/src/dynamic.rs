@@ -510,117 +510,154 @@ where
             workspace_guidance: guidance.to_vec(),
         };
 
-        let mut last_response = if caps.supports_passive_injection {
-            self.run_with_passive_injection(initial_req)?
+        // Degenerate output from any adapter call should not skip session
+        // logging: record the best response we have, then propagate the error.
+        let mut degenerate_err: Option<CawError> = None;
+
+        let initial_result = if caps.supports_passive_injection {
+            self.run_with_passive_injection(initial_req)
         } else {
-            self.adapter.complete(initial_req)?
+            self.adapter.complete(initial_req)
+        };
+        let mut last_response = match initial_result {
+            Ok(r) => r,
+            Err(e) => {
+                if matches!(e, CawError::DegenerateOutput { .. }) {
+                    warn!(turn = self.session_turn + 1, "degenerate output on initial completion — turn will be recorded before propagating");
+                    degenerate_err = Some(e);
+                    CompletionResponse { answer: String::new(), thinking: None, usage: None }
+                } else {
+                    return Err(e);
+                }
+            }
         };
 
         // When the candidate list was shown, check if the model's response
         // mentions any candidate file paths explicitly. If so, load those files
         // and re-complete so the final answer is grounded in actual content.
-        if let Some(ref hits) = candidate_initial_hits {
-            let search_text = match &last_response.thinking {
-                Some(t) => format!("{}\n{}", t, last_response.answer),
-                None => last_response.answer.clone(),
-            };
-            let mut seen_paths = std::collections::HashSet::new();
-            let mentioned: Vec<(StubId, f32)> = hits
-                .iter()
-                .filter(|h| h.score >= self.config.thresholds.load)
-                .filter(|h| {
-                    let norm = h.stub.path.trim_start_matches("./");
-                    search_text.contains(norm) || search_text.contains(&h.stub.path)
-                })
-                .filter(|h| seen_paths.insert(h.stub.path.clone()))
-                .map(|h| (h.stub.id.clone(), h.score))
-                .collect();
-            if !mentioned.is_empty() {
-                debug!(
-                    count = mentioned.len(),
-                    "loading files mentioned in response to candidate list"
-                );
-                self.load_fragments(mentioned)?;
-                last_response = self.adapter.complete(CompletionRequest {
-                    system: system_prompt.clone(),
-                    user: user.to_string(),
-                    workspace_fragments: self.loaded.clone(),
-                    workspace_guidance: guidance.to_vec(),
-                })?;
+        if degenerate_err.is_none() {
+            if let Some(ref hits) = candidate_initial_hits {
+                let search_text = match &last_response.thinking {
+                    Some(t) => format!("{}\n{}", t, last_response.answer),
+                    None => last_response.answer.clone(),
+                };
+                let mut seen_paths = std::collections::HashSet::new();
+                let mentioned: Vec<(StubId, f32)> = hits
+                    .iter()
+                    .filter(|h| h.score >= self.config.thresholds.load)
+                    .filter(|h| {
+                        let norm = h.stub.path.trim_start_matches("./");
+                        search_text.contains(norm) || search_text.contains(&h.stub.path)
+                    })
+                    .filter(|h| seen_paths.insert(h.stub.path.clone()))
+                    .map(|h| (h.stub.id.clone(), h.score))
+                    .collect();
+                if !mentioned.is_empty() {
+                    debug!(
+                        count = mentioned.len(),
+                        "loading files mentioned in response to candidate list"
+                    );
+                    self.load_fragments(mentioned)?;
+                    let result = self.adapter.complete(CompletionRequest {
+                        system: system_prompt.clone(),
+                        user: user.to_string(),
+                        workspace_fragments: self.loaded.clone(),
+                        workspace_guidance: guidance.to_vec(),
+                    });
+                    match result {
+                        Ok(r) => last_response = r,
+                        Err(e) if matches!(e, CawError::DegenerateOutput { .. }) => {
+                            warn!(turn = self.session_turn + 1, "degenerate output on candidate re-complete");
+                            degenerate_err = Some(e);
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
             }
         }
 
         // Phase 2: Iterative recall refinement
-        for i in 0..self.config.max_recall_iterations {
-            let loaded_before = self.loaded.len();
-            let tokens_before: usize = self.loaded.iter().map(|f| f.tokens).sum();
-            debug!(
-                iteration = i + 1,
-                loaded = loaded_before,
-                tokens = tokens_before,
-                "refinement iteration start"
-            );
-
-            self.decay_relevance_scores();
-            self.refresh_relevance_scores(user, &last_response.answer);
-
-            // Automatic recall only runs when the monitor permits it
-            if self.auto_recall_enabled() {
-                if self.config.enable_thinking_trace_recall {
-                    self.process_thinking_trace(&last_response.answer)?;
-                }
-
-                if self.config.enable_probe_recall {
-                    self.process_probes(&last_response.answer)?;
-                }
-
-                if self.config.enable_line_reference_recall {
-                    let text = match &last_response.thinking {
-                        Some(t) => format!("{}\n{}", t, last_response.answer),
-                        None => last_response.answer.clone(),
-                    };
-                    self.process_line_references(&text)?;
-                }
-            }
-
-            self.process_annotations(&last_response.answer);
-            self.evict_stale_fragments(user, signals);
-
-            let tokens_now: usize = self.loaded.iter().map(|f| f.tokens).sum();
-            let net_new_tokens = tokens_now.saturating_sub(tokens_before);
-            let net_new_frags = self.loaded.len().saturating_sub(loaded_before);
-            if self.loaded.len() == loaded_before
-                || net_new_tokens < self.config.convergence_min_new_tokens
-            {
+        if degenerate_err.is_none() {
+            for i in 0..self.config.max_recall_iterations {
+                let loaded_before = self.loaded.len();
+                let tokens_before: usize = self.loaded.iter().map(|f| f.tokens).sum();
                 debug!(
                     iteration = i + 1,
-                    net_new_frags,
-                    net_new_tokens,
-                    threshold = self.config.convergence_min_new_tokens,
-                    "refinement converged",
+                    loaded = loaded_before,
+                    tokens = tokens_before,
+                    "refinement iteration start"
                 );
-                break;
+
+                self.decay_relevance_scores();
+                self.refresh_relevance_scores(user, &last_response.answer);
+
+                // Automatic recall only runs when the monitor permits it
+                if self.auto_recall_enabled() {
+                    if self.config.enable_thinking_trace_recall {
+                        self.process_thinking_trace(&last_response.answer)?;
+                    }
+
+                    if self.config.enable_probe_recall {
+                        self.process_probes(&last_response.answer)?;
+                    }
+
+                    if self.config.enable_line_reference_recall {
+                        let text = match &last_response.thinking {
+                            Some(t) => format!("{}\n{}", t, last_response.answer),
+                            None => last_response.answer.clone(),
+                        };
+                        self.process_line_references(&text)?;
+                    }
+                }
+
+                self.process_annotations(&last_response.answer);
+                self.evict_stale_fragments(user, signals);
+
+                let tokens_now: usize = self.loaded.iter().map(|f| f.tokens).sum();
+                let net_new_tokens = tokens_now.saturating_sub(tokens_before);
+                let net_new_frags = self.loaded.len().saturating_sub(loaded_before);
+                if self.loaded.len() == loaded_before
+                    || net_new_tokens < self.config.convergence_min_new_tokens
+                {
+                    debug!(
+                        iteration = i + 1,
+                        net_new_frags,
+                        net_new_tokens,
+                        threshold = self.config.convergence_min_new_tokens,
+                        "refinement converged",
+                    );
+                    break;
+                }
+
+                debug!(
+                    new_fragments = self.loaded.len() - loaded_before,
+                    total_loaded = self.loaded.len(),
+                    "new context admitted — re-completing"
+                );
+
+                let warnings = self.provenance.format_overlap_warnings();
+                let enriched_system = if warnings.is_empty() {
+                    system_prompt.clone()
+                } else {
+                    format!("{}\n\n{}", system_prompt, warnings)
+                };
+
+                let result = self.adapter.complete(CompletionRequest {
+                    system: enriched_system,
+                    user: user.to_string(),
+                    workspace_fragments: self.loaded.clone(),
+                    workspace_guidance: guidance.to_vec(),
+                });
+                match result {
+                    Ok(r) => last_response = r,
+                    Err(e) if matches!(e, CawError::DegenerateOutput { .. }) => {
+                        warn!(turn = self.session_turn + 1, iteration = i + 1, "degenerate output during refinement — stopping iterations");
+                        degenerate_err = Some(e);
+                        break;
+                    }
+                    Err(e) => return Err(e),
+                }
             }
-
-            debug!(
-                new_fragments = self.loaded.len() - loaded_before,
-                total_loaded = self.loaded.len(),
-                "new context admitted — re-completing"
-            );
-
-            let warnings = self.provenance.format_overlap_warnings();
-            let enriched_system = if warnings.is_empty() {
-                system_prompt.clone()
-            } else {
-                format!("{}\n\n{}", system_prompt, warnings)
-            };
-
-            last_response = self.adapter.complete(CompletionRequest {
-                system: enriched_system,
-                user: user.to_string(),
-                workspace_fragments: self.loaded.clone(),
-                workspace_guidance: guidance.to_vec(),
-            })?;
         }
 
         info!(
@@ -672,6 +709,12 @@ where
 
         if let Some(eval) = &mut self.evaluator {
             eval.record_turn(count_tokens_cl100k(&last_response.answer));
+        }
+
+        // Propagate any degenerate-output error now that the session turn has
+        // been written. The session log records the turn even for failed completions.
+        if let Some(e) = degenerate_err {
+            return Err(e);
         }
 
         Ok(last_response)

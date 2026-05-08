@@ -845,7 +845,14 @@ pub fn split_thinking(raw: &str) -> (Option<String>, String) {
         (Some(o), Some(c)) if c > o => {
             let thinking = raw[o + "<think>".len()..c].trim().to_string();
             let answer = raw[c + "</think>".len()..].trim().to_string();
-            (Some(thinking), answer)
+            // An empty think block is a model formatting artifact (e.g. Qwen3
+            // emitting <think>\n\n</think> before the real answer). Treat it as
+            // a no-op so callers see a plain response without a thinking trace.
+            if thinking.is_empty() {
+                (None, answer)
+            } else {
+                (Some(thinking), answer)
+            }
         }
         (Some(o), _) => {
             let thinking = raw[o + "<think>".len()..].trim().to_string();
