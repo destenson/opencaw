@@ -1,5 +1,15 @@
 # A place to record bugs as they're found
 
+## B00. REGRESSION: caw-cli failed on first run.
+
+Between .caw00013 and .caw00014, a regression was introduced that causes `caw-cli` to fail on the first run of a session. The latest error message is:
+
+```
+Error: degenerate output from Qwen3.6-35B-A3B-UD-Q2_K_XL: ").unwrap());
+static ANNOTATION_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"<note id="([^"]+)">(.*?)</...
+```
+
 ## B0. qa/0001.txt sometimes misses the first user turn (critical)
 
 `.caw0008/session-20260508-055328.md` shows the first user turn "what is opencaw
@@ -117,79 +127,211 @@ tags would eliminate the generation incentive entirely.
 
 ## B8. Model produces blank response after identifying an information gap in its thinking trace (high)
 
-Session-074559 turn 3 ("how many todos are left?") shows the model generating 580 lines of correct reasoning — it accurately identified that only chunk 16/22 of TODO.md was retrieved, that chunk contains a narrative description rather than a parseable item list, and that it cannot produce a count from the available evidence. After this sound reasoning the model produced an empty final answer. The session log records a blank response for that turn.
+Session-074559 turn 3 ("how many todos are left?") shows the model generating
+580 lines of correct reasoning — it accurately identified that only chunk 16/22
+of TODO.md was retrieved, that chunk contains a narrative description rather
+than a parseable item list, and that it cannot produce a count from the
+available evidence. After this sound reasoning the model produced an empty final
+answer. The session log records a blank response for that turn.
 
-This is distinct from B2 (session log truncation) — the session log for this session correctly captured turns 1 and 2; turn 3's model response was genuinely empty. The model's thinking was not captured as the answer; the answer itself was empty.
+This is distinct from B2 (session log truncation) — the session log for this
+session correctly captured turns 1 and 2; turn 3's model response was genuinely
+empty. The model's thinking was not captured as the answer; the answer itself
+was empty.
 
-The failure mode: exhaustive reasoning about why an answer is impossible can lead to no answer at all. The system prompt does not instruct the model to produce a minimal hedged response when evidence is insufficient.
+The failure mode: exhaustive reasoning about why an answer is impossible can
+lead to no answer at all. The system prompt does not instruct the model to
+produce a minimal hedged response when evidence is insufficient.
 
 ## B9. Consolidation notes accumulate recursively — outer note includes full text of prior note (medium)
 
-In session-074559 prompt turn-10, the fragment for `caw-orchestrator/src/probe_recall.rs` has a consolidation note whose topic field contains a full prior consolidation note: "Evicted (relevance decayed to 0.51)... Topic: Chunk 1/5... [Prior session notes for this source: - Evicted (relevance decayed to 0.51)... Topic: Chunk 1/5... [Prior session notes for this source: ...]]".
+In session-074559 prompt turn-10, the fragment for
+`caw-orchestrator/src/probe_recall.rs` has a consolidation note whose topic
+field contains a full prior consolidation note: "Evicted (relevance decayed to
+0.51)... Topic: Chunk 1/5... [Prior session notes for this source: - Evicted
+(relevance decayed to 0.51)... Topic: Chunk 1/5... [Prior session notes for this
+source: ...]]".
 
-When appending a new eviction note, the implementation is including the prior note (which contains the prior-prior note) as the "Topic" context for the new note. After enough eviction cycles, a stub's consolidation header grows without bound. Observed with 2 levels of nesting; the pattern will continue recursively.
+When appending a new eviction note, the implementation is including the prior
+note (which contains the prior-prior note) as the "Topic" context for the new
+note. After enough eviction cycles, a stub's consolidation header grows without
+bound. Observed with 2 levels of nesting; the pattern will continue recursively.
 
 ## B10. Session history fragments remain large despite B7 summarization fix (high)
 
-QA 0012 sessions show session-history fragments at 468 tokens and 1092 tokens respectively — far above the ≤300-character (≈50 token) target from the B7 fix. In session 080631 turn 1, session history consumed 1560/2694 workspace tokens (58%) before a single workspace stub was loaded. The B7 fix is marked done in TODO.md, but the actual prompt sizes suggest either: (a) the sessions ran against a build before the fix was active, (b) the fix applies only to model responses but not to full turn blocks injected by `collect_previous_stubs`, or (c) there is a code path that bypasses the compression. The consequence is that B7's echo-chamber effect is still fully present in QA 0012: session 080631 turn 2 gives an answer nearly verbatim identical to session 080400 turn 2, and turn 3's caw-curation query retrieved zero caw-curation stubs because the history fragments consumed the budget. Observed in QA 0012 (recommendations 1, 2).
+QA 0012 sessions show session-history fragments at 468 tokens and 1092 tokens
+respectively — far above the ≤300-character (≈50 token) target from the B7 fix.
+In session 080631 turn 1, session history consumed 1560/2694 workspace tokens
+(58%) before a single workspace stub was loaded. The B7 fix is marked done in
+TODO.md, but the actual prompt sizes suggest either: (a) the sessions ran
+against a build before the fix was active, (b) the fix applies only to model
+responses but not to full turn blocks injected by `collect_previous_stubs`, or
+(c) there is a code path that bypasses the compression. The consequence is that
+B7's echo-chamber effect is still fully present in QA 0012: session 080631 turn
+2 gives an answer nearly verbatim identical to session 080400 turn 2, and turn
+3's caw-curation query retrieved zero caw-curation stubs because the history
+fragments consumed the budget. Observed in QA 0012 (recommendations 1, 2).
 
 ## B7. Prior session model responses flood context in follow-on sessions (high)
 
-When a new session starts on the same topic as a recent session, `collect_previous_stubs` loads the prior session log into the in-memory HNSW index. The prior session's full model responses (400–450 tokens each) then score as the highest-ranked semantic matches for queries using the same terminology. In QA loop 0009, session 065934's turn-3 context ("how many todos are left?") contained 2500+ tokens of session 065745's model responses — about 40% of the total context budget — with only a single TODO.md chunk retrieved for the actual query.
+When a new session starts on the same topic as a recent session,
+`collect_previous_stubs` loads the prior session log into the in-memory HNSW
+index. The prior session's full model responses (400–450 tokens each) then score
+as the highest-ranked semantic matches for queries using the same terminology.
+In QA loop 0009, session 065934's turn-3 context ("how many todos are left?")
+contained 2500+ tokens of session 065745's model responses — about 40% of the
+total context budget — with only a single TODO.md chunk retrieved for the actual
+query.
 
-The fix for B3 correctly prevents prior session stubs from persisting to SQLite, but the in-memory path still loads full model response text into the retrieval pool. Because model responses contain every relevant concept in polished prose, they outcompete workspace stubs for retrieval slots. The effect is that the model answers the current session based on what it said in the prior session rather than from the workspace, creating a self-reinforcing loop: prior answer → indexed → retrieved → used as authoritative context → new answer echoes prior answer.
+The fix for B3 correctly prevents prior session stubs from persisting to SQLite,
+but the in-memory path still loads full model response text into the retrieval
+pool. Because model responses contain every relevant concept in polished prose,
+they outcompete workspace stubs for retrieval slots. The effect is that the
+model answers the current session based on what it said in the prior session
+rather than from the workspace, creating a self-reinforcing loop: prior answer →
+indexed → retrieved → used as authoritative context → new answer echoes prior
+answer.
 
-Distinguish this from intentional session continuity (loading prior user queries as context hints): the problem is the model's verbose *responses*, not the user queries, dominating the context.
+Distinguish this from intentional session continuity (loading prior user queries
+as context hints): the problem is the model's verbose _responses_, not the user
+queries, dominating the context.
 
-QA 0010 quantified the scale: in session 072432 (which ran 13 minutes after sessions 071921 and 072123 on identical questions), the very first retrieval call contained 7 session history fragments totaling ~2713 tokens out of 3375 total workspace tokens — 80% of the initial context budget consumed by prior-session model responses before a single workspace stub was loaded. The effect compounds with each successive session on the same topic: session N retrieves from sessions N-1 and N-2, each of which already retrieved from its predecessors.
+QA 0010 quantified the scale: in session 072432 (which ran 13 minutes after
+sessions 071921 and 072123 on identical questions), the very first retrieval
+call contained 7 session history fragments totaling ~2713 tokens out of 3375
+total workspace tokens — 80% of the initial context budget consumed by
+prior-session model responses before a single workspace stub was loaded. The
+effect compounds with each successive session on the same topic: session N
+retrieves from sessions N-1 and N-2, each of which already retrieved from its
+predecessors.
 
 ## B11. Qwen3 chat-template tokens leaking into session history and re-injected as context (critical)
 
-Observed in QA loop 0013 session 082520, confirmed by grep showing 4 occurrences of the same assistant response sentence in a single prompt file, and the presence of `<|im_end|>`, `<|im_start|>user`, `<|im_start|>assistant`, and `</think>` tokens inline in the prompt's response section.
+Observed in QA loop 0013 session 082520, confirmed by grep showing 4 occurrences
+of the same assistant response sentence in a single prompt file, and the
+presence of `<|im_end|>`, `<|im_start|>user`, `<|im_start|>assistant`, and
+`</think>` tokens inline in the prompt's response section.
 
-The Qwen3 adapter is returning the raw model completion string — including chat-template control tokens and the `<think>...</think>` extended-thinking block — rather than just the decoded final answer text. When this raw output is stored as a session turn and later loaded as session history, the history fragment contains these control tokens verbatim. The model then sees what appears to be a second instance of the same Q&A cycle replayed inside its context window, causing it to generate the same answer again.
+The Qwen3 adapter is returning the raw model completion string — including
+chat-template control tokens and the `<think>...</think>` extended-thinking
+block — rather than just the decoded final answer text. When this raw output is
+stored as a session turn and later loaded as session history, the history
+fragment contains these control tokens verbatim. The model then sees what
+appears to be a second instance of the same Q&A cycle replayed inside its
+context window, causing it to generate the same answer again.
 
 Effects:
-1. The prior assistant response appears 3–4 times in a single prompt, wasting ~3000 tokens.
-2. Chat-template control tokens in session logs corrupt automated log parsing.
-3. The model's reasoning trace (`<think>...</think>`) is stored as the answer text when the extended-thinking block precedes the final response — causing the session log to record reasoning rather than the answer.
 
-The fix is to strip chat-template tokens and `<think>...</think>` blocks from the raw completion string before constructing `CompletionResponse.answer`. This should apply to all Qwen3-family models (and any future model that emits visible reasoning or chat-format tokens in its completion).
+1. The prior assistant response appears 3–4 times in a single prompt, wasting
+   ~3000 tokens.
+2. Chat-template control tokens in session logs corrupt automated log parsing.
+3. The model's reasoning trace (`<think>...</think>`) is stored as the answer
+   text when the extended-thinking block precedes the final response — causing
+   the session log to record reasoning rather than the answer.
+
+The fix is to strip chat-template tokens and `<think>...</think>` blocks from
+the raw completion string before constructing `CompletionResponse.answer`. This
+should apply to all Qwen3-family models (and any future model that emits visible
+reasoning or chat-format tokens in its completion).
 
 ## B12. Qwen3 `<think>` section stored as answer text when extended thinking is active (high)
 
-Related to B11. In session 082520 turn 4, the logged response begins with `<think>` rather than with the answer. The model's internal reasoning (which can be hundreds of tokens) is stored as the turn's answer, making the session log misleading and the history injection actively harmful — subsequent sessions will retrieve the prior reasoning as if it were a factual answer.
+Related to B11. In session 082520 turn 4, the logged response begins with
+`<think>` rather than with the answer. The model's internal reasoning (which can
+be hundreds of tokens) is stored as the turn's answer, making the session log
+misleading and the history injection actively harmful — subsequent sessions will
+retrieve the prior reasoning as if it were a factual answer.
 
-Distinct from B11 in that B12 is specifically about the `<think>...</think>` prefix being treated as the answer rather than as a separate artifact to be discarded. The adapter needs to detect whether the model output starts with a thinking block and, if so, extract only the content after `</think>` as the answer.
+Distinct from B11 in that B12 is specifically about the `<think>...</think>`
+prefix being treated as the answer rather than as a separate artifact to be
+discarded. The adapter needs to detect whether the model output starts with a
+thinking block and, if so, extract only the content after `</think>` as the
+answer.
 
 ## B13. `truncate_at_chat_boundary` does not strip trailing `<|im_end|>` stop tokens, causing `is_looping` to flag valid Qwen3 responses as degenerate (critical)
 
-Observed in QA loop 0014: every Qwen3 response was flagged as degenerate, aborting the session after 1 question. The `<|im_end|>` token Qwen3 emits at the end of a proper generation is the normal chat-template stop sentinel. `truncate_at_chat_boundary` only strips it when there is content after it — the guard `if !after.is_empty()` causes a bare trailing `<|im_end|>` to pass through unchanged. `is_looping` then unconditionally returns `true` on `text.contains("<|im_end|>")`, flagging the response as a runaway generation even though the answer text before the stop token is valid.
+Observed in QA loop 0014: every Qwen3 response was flagged as degenerate,
+aborting the session after 1 question. The `<|im_end|>` token Qwen3 emits at the
+end of a proper generation is the normal chat-template stop sentinel.
+`truncate_at_chat_boundary` only strips it when there is content after it — the
+guard `if !after.is_empty()` causes a bare trailing `<|im_end|>` to pass through
+unchanged. `is_looping` then unconditionally returns `true` on
+`text.contains("<|im_end|>")`, flagging the response as a runaway generation
+even though the answer text before the stop token is valid.
 
-The fix is to remove the `if !after.is_empty()` condition for the trailing-stop-token case and strip `<|im_end|>` unconditionally. The runaway-generation case (model generating additional conversation turns) is already handled by the `<|im_start|>` check earlier in the function.
+The fix is to remove the `if !after.is_empty()` condition for the
+trailing-stop-token case and strip `<|im_end|>` unconditionally. The
+runaway-generation case (model generating additional conversation turns) is
+already handled by the `<|im_start|>` check earlier in the function.
 
 ## B14. Degenerate detection fires on empty `<think></think>` block followed by valid answer (high) — FIXED
 
-Observed in QA loop 0015 session-20260508-084805 turn 7. Qwen3 emitted `<think>\n\n</think>\n\nYes, the context is helpful...` — an empty thinking block immediately followed by a valid answer. The degenerate-output detector flagged the whole response, aborting the session before `write_turn` could record the second query's answer. The answer text itself was valid and coherent.
+Observed in QA loop 0015 session-20260508-084805 turn 7. Qwen3 emitted
+`<think>\n\n</think>\n\nYes, the context is helpful...` — an empty thinking
+block immediately followed by a valid answer. The degenerate-output detector
+flagged the whole response, aborting the session before `write_turn` could
+record the second query's answer. The answer text itself was valid and coherent.
 
-B13 fixed trailing `<|im_end|>` tokens; B12 fixed `<think>…</think>` stored as the answer when the block has content. Neither handles the empty-think case. `split_thinking` should treat a `<think></think>` block with only whitespace as a no-op and return the content after `</think>` unchanged, without raising a degenerate error.
+B13 fixed trailing `<|im_end|>` tokens; B12 fixed `<think>…</think>` stored as
+the answer when the block has content. Neither handles the empty-think case.
+`split_thinking` should treat a `<think></think>` block with only whitespace as
+a no-op and return the content after `</think>` unchanged, without raising a
+degenerate error.
 
 ## B15. Session log truncation (B2) traces to degenerate-response error path, not flush timing (high) — FIXED
 
-QA loop 0015 session-20260508-084805 recorded only 1 turn despite processing 2 queries across 7 prompt files. The per-turn flush fix from QA 0003 should have written each turn before the next begins. The second turn was not written, and the session's second query triggered a degenerate-response error (B14). This strongly suggests `write_turn` is not called before the error propagates — the degenerate-response handler exits the turn-processing path before the write. Fix: call `write_turn` with whatever response text was received (including partial or error-annotated text) before raising or propagating the degenerate-output error. The session log should capture every turn attempted, even failed ones.
+QA loop 0015 session-20260508-084805 recorded only 1 turn despite processing 2
+queries across 7 prompt files. The per-turn flush fix from QA 0003 should have
+written each turn before the next begins. The second turn was not written, and
+the session's second query triggered a degenerate-response error (B14). This
+strongly suggests `write_turn` is not called before the error propagates — the
+degenerate-response handler exits the turn-processing path before the write.
+Fix: call `write_turn` with whatever response text was received (including
+partial or error-annotated text) before raising or propagating the
+degenerate-output error. The session log should capture every turn attempted,
+even failed ones.
 
 ## B16. Valid prefix of a degenerate response is discarded — session records empty answer (high) — FIXED
 
-Observed in QA loop 0016 session-20260508-090505. When `is_looping` fires on the answer text, `run_turn` creates `CompletionResponse { answer: String::new() }` and writes that to the session log. The degenerate error message format includes a 120-char sample of the answer ("OpenCAW (Context as Workspace) is a framework that treats the workspace..."), which is a coherent, correct opening. The model looped somewhere after that point, but the valid prefix is discarded entirely.
+Observed in QA loop 0016 session-20260508-090505. When `is_looping` fires on the
+answer text, `run_turn` creates `CompletionResponse { answer: String::new() }`
+and writes that to the session log. The degenerate error message format includes
+a 120-char sample of the answer ("OpenCAW (Context as Workspace) is a framework
+that treats the workspace..."), which is a coherent, correct opening. The model
+looped somewhere after that point, but the valid prefix is discarded entirely.
 
-For aggressively quantized models (e.g., Q2_K_XL MoE) that start correctly and loop partway through, the valid prefix before the repetition began is often sufficient to give the user a useful answer. The `is_looping` checks identify which pattern triggered (trigram collapse, line repetition, word dominance). For trigram collapse and line repetition, the collapse point is approximately identifiable — the response could be truncated there rather than discarded. At minimum, the pre-loop portion should be stored in the session log instead of an empty string, so the user sees something and session history carries a real answer forward.
+For aggressively quantized models (e.g., Q2_K_XL MoE) that start correctly and
+loop partway through, the valid prefix before the repetition began is often
+sufficient to give the user a useful answer. The `is_looping` checks identify
+which pattern triggered (trigram collapse, line repetition, word dominance). For
+trigram collapse and line repetition, the collapse point is approximately
+identifiable — the response could be truncated there rather than discarded. At
+minimum, the pre-loop portion should be stored in the session log instead of an
+empty string, so the user sees something and session history carries a real
+answer forward.
 
-Fixed in `dynamic.rs`: when `DegenerateOutput` is caught on initial completion, the `sample` field (first ~120 chars of the answer) is now extracted and used as `last_response.answer` instead of `String::new()`. The session log records the valid prefix rather than a blank turn.
+Fixed in `dynamic.rs`: when `DegenerateOutput` is caught on initial completion,
+the `sample` field (first ~120 chars of the answer) is now extracted and used as
+`last_response.answer` instead of `String::new()`. The session log records the
+valid prefix rather than a blank turn.
 
 ## B17. Blank model response not treated as degenerate — silently accepted and bypasses retry logic (high) — FIXED
 
-Observed in QA loop 0016 prompt-turn-2.txt (search-candidates pass). The model emitted only a `<think>...</think>` reasoning block with an empty answer after `</think>`. `split_thinking` correctly returns `answer = ""`. `is_looping("")` returns `false` because the length check (`words.len() < 20`) short-circuits before any loop detection. The blank answer passes through without error and is written to the session log, bypassing any retry or fallback.
+Observed in QA loop 0016 prompt-turn-2.txt (search-candidates pass). The model
+emitted only a `<think>...</think>` reasoning block with an empty answer after
+`</think>`. `split_thinking` correctly returns `answer = ""`. `is_looping("")`
+returns `false` because the length check (`words.len() < 20`) short-circuits
+before any loop detection. The blank answer passes through without error and is
+written to the session log, bypassing any retry or fallback.
 
-A blank answer after `split_thinking` is structurally indistinct from a response where the model simply failed to generate any text. Both should be treated as degenerate output and route through the same retry/fallback path as `DegenerateOutput`. The existing "always produce a visible response" system prompt instruction is insufficient — the model ignored it. The system needs to enforce non-blank answers mechanically, not by instruction.
+A blank answer after `split_thinking` is structurally indistinct from a response
+where the model simply failed to generate any text. Both should be treated as
+degenerate output and route through the same retry/fallback path as
+`DegenerateOutput`. The existing "always produce a visible response" system
+prompt instruction is insufficient — the model ignored it. The system needs to
+enforce non-blank answers mechanically, not by instruction.
 
-Fixed in `llama_cpp.rs` and `ollama.rs`: both adapters now check `answer.trim().is_empty()` alongside `is_looping(&answer)` after `split_thinking`, and return `DegenerateOutput` for a blank answer. This applies to both `complete` and `generate_passive` in the llama.cpp adapter.
+Fixed in `llama_cpp.rs` and `ollama.rs`: both adapters now check
+`answer.trim().is_empty()` alongside `is_looping(&answer)` after
+`split_thinking`, and return `DegenerateOutput` for a blank answer. This applies
+to both `complete` and `generate_passive` in the llama.cpp adapter.
