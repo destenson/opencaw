@@ -142,3 +142,22 @@ The fix for B3 correctly prevents prior session stubs from persisting to SQLite,
 Distinguish this from intentional session continuity (loading prior user queries as context hints): the problem is the model's verbose *responses*, not the user queries, dominating the context.
 
 QA 0010 quantified the scale: in session 072432 (which ran 13 minutes after sessions 071921 and 072123 on identical questions), the very first retrieval call contained 7 session history fragments totaling ~2713 tokens out of 3375 total workspace tokens — 80% of the initial context budget consumed by prior-session model responses before a single workspace stub was loaded. The effect compounds with each successive session on the same topic: session N retrieves from sessions N-1 and N-2, each of which already retrieved from its predecessors.
+
+## B11. Qwen3 chat-template tokens leaking into session history and re-injected as context (critical)
+
+Observed in QA loop 0013 session 082520, confirmed by grep showing 4 occurrences of the same assistant response sentence in a single prompt file, and the presence of `<|im_end|>`, `<|im_start|>user`, `<|im_start|>assistant`, and `</think>` tokens inline in the prompt's response section.
+
+The Qwen3 adapter is returning the raw model completion string — including chat-template control tokens and the `<think>...</think>` extended-thinking block — rather than just the decoded final answer text. When this raw output is stored as a session turn and later loaded as session history, the history fragment contains these control tokens verbatim. The model then sees what appears to be a second instance of the same Q&A cycle replayed inside its context window, causing it to generate the same answer again.
+
+Effects:
+1. The prior assistant response appears 3–4 times in a single prompt, wasting ~3000 tokens.
+2. Chat-template control tokens in session logs corrupt automated log parsing.
+3. The model's reasoning trace (`<think>...</think>`) is stored as the answer text when the extended-thinking block precedes the final response — causing the session log to record reasoning rather than the answer.
+
+The fix is to strip chat-template tokens and `<think>...</think>` blocks from the raw completion string before constructing `CompletionResponse.answer`. This should apply to all Qwen3-family models (and any future model that emits visible reasoning or chat-format tokens in its completion).
+
+## B12. Qwen3 `<think>` section stored as answer text when extended thinking is active (high)
+
+Related to B11. In session 082520 turn 4, the logged response begins with `<think>` rather than with the answer. The model's internal reasoning (which can be hundreds of tokens) is stored as the turn's answer, making the session log misleading and the history injection actively harmful — subsequent sessions will retrieve the prior reasoning as if it were a factual answer.
+
+Distinct from B11 in that B12 is specifically about the `<think>...</think>` prefix being treated as the answer rather than as a separate artifact to be discarded. The adapter needs to detect whether the model output starts with a thinking block and, if so, extract only the content after `</think>` as the answer.
