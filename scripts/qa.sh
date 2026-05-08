@@ -182,6 +182,7 @@ CODING CONSTRAINTS:
 - SQLite schema changes require inline migrations (CREATE TABLE IF NOT EXISTS, ALTER TABLE with guards)
 - Do not restructure crates or move modules
 - Implement only changes with clear, demonstrable benefit
+- If fixing a bug, write a test that reproduces the bug before fixing it. Do not stop until the test fails, then implement the fix and verify the test passes.
 
 YOUR TASK:
 1. Read qa/recommendations/${LOOP_NUMBER}.md
