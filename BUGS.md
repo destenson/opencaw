@@ -2,7 +2,7 @@
 
 ## B0. qa/0001.txt sometimes misses the first user turn (critical)
 
-.caw0008/session-20260508-055328.md shows the first user turn "what is opencaw
+`.caw0008/session-20260508-055328.md` shows the first user turn "what is opencaw
 and why should I use it?" is missing from the session log, even though the
 corresponding prompt file `-turn-1.txt` contains that turn. Turn 2 contains the
 very next user query, so the first turn is effectively lost. This is a major
@@ -77,3 +77,12 @@ mechanism to honor this request — the model's mention of a file name does not
 trigger a follow-up retrieval call. The model is told it can request content but
 the infrastructure to fulfill that request doesn't exist in the QA loop, leading
 to the model either hallucinating or answering from stub metadata alone.
+
+## B5. Sometimes model generated hallucinated injected context (high)
+
+`.caw0006/prompt-20260508-063609-turn-14.txt` contains evidence that the model
+is responding with hallucinated injected content. We need to detect that it's
+generating content that looks like injected context and not just hallucinating
+an answer. This is a critical failure mode because it means the model is
+treating the retrieval substrate as a scratch pad for its own generation, which
+can lead to self-reinforcing hallucinations and loss of grounding.
