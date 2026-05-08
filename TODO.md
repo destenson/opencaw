@@ -73,6 +73,7 @@ LLM calls entirely; LLM variants route through any configured `ModelAdapter`.
 - [x] **Tool output compression**: `ToolOutputCompressor` trait with extractive + LLM variants. Individual turn metadata (`inline_required`) lets specific tool outputs bypass compression. Config threshold controls when compression fires.
 - [x] **System prompt budgeting**: `SystemPromptBudget` with `from_context_window()` constructor and `check_budget()` / `check_system_prompt()` functions returning `Ok` / `Warning` / `Exceeded`. Callers decide whether to truncate or just warn.
 - [ ] **Few-shot management**: Not explicit. Callers can use `caw_core::Tokenizer` to measure individual example costs, but no framework-level utility surfaces the delta.
+- [ ] **Curated context in system prompt**: The design doc describes a "curated context" surface in the system prompt for important facts or instructions distilled from conversation history. Not implemented yet — the current approach is to inject summaries and compressed tool outputs directly into the user prompt, but a separate system prompt section with explicit instructions to treat it as authoritative reference material is still open.
 
 ## Measurement (design doc section 10)
 
