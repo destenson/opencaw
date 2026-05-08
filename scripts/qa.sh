@@ -8,6 +8,7 @@ MODEL_GGUF="${MODEL_GGUF:-$HOME/models/Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf}"
 LOC="${LOC:-.}"
 CONTEXT_LENGTH=${CONTEXT_LENGTH:-102400}
 MAX_FIX_ATTEMPTS=${MAX_FIX_ATTEMPTS:-3}
+REGENERATE=${REGENERATE:-1}
 
 export CUDA_VISIBLE_DEVICES=1,0
 
@@ -104,6 +105,13 @@ for n in $(seq 1 "$NLOOPS"); do
     done
 
     mv .caw ".caw${LOOP_NUMBER}"
+    if [ "${REGENERATE:-1}" -eq 1 ]; then
+        echo "Regenerating index.db for loop $LOOP_NUMBER to ensure it reflects the final session artifacts..."
+    else
+        echo "NOTE: Skipping index.db regeneration for loop $LOOP_NUMBER; if session artifacts changed during generation, the index may be out of sync."
+        mkdir -p .caw/
+        cp ".caw${LOOP_NUMBER}/index.db" .caw/ || echo "No index.db found in .caw${LOOP_NUMBER}, skipping copy to .caw/"
+    fi
 
     # ----------------------------------------------------------------
     # REVIEW PASS: Claude reads the session output and DB to assess
