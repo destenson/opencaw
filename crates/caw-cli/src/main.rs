@@ -808,7 +808,7 @@ fn run_interactive(
         let signals = actionable.map(|i| i.augmentation_signals());
 
         // TODO: This is *ABSOLUTELY WRONG* THE INTENT CLASSIFIER SHOULD BE A SIGNAL, NOT A GATING FACTOR.
-
+        /*
         // Skip the retrieval cycle when the intent classifier confirms no substantive
         // query signal AND the message is short. Casual acknowledgments ("nice to know",
         // "got it", "ok") would otherwise surface lexically similar but off-topic fragments
@@ -823,6 +823,7 @@ fn run_interactive(
                 continue;
             }
         }
+        */
 
         let response = match orchestrator.run_turn(&effective_system, query, &guidance, signals.as_ref()) {
             Ok(r) => r,
