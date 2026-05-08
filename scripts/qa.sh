@@ -44,7 +44,7 @@ build_or_fix() {
         fi
 
         echo "Build failed — launching Claude to fix compilation errors..."
-        claude --dangerously-skip-permissions <<BUGFIX_PROMPT || true
+        CLAUDE_BUGFIX_PROMPT=$(cat <<BUGFIX_PROMPT
 The opencaw Rust codebase at $(pwd) does not compile.
 
 opencaw is a workspace-aware LLM context augmentation system. Crate layout:
@@ -58,6 +58,8 @@ Run: cargo build --release --bin caw-cli --features llama
 Fix ONLY the compilation errors it reports. Do not refactor, add features, or touch unrelated code.
 Do not stop until the build succeeds.
 BUGFIX_PROMPT
+        )
+        claude --dangerously-skip-permissions -p "$CLAUDE_BUGFIX_PROMPT" || true
 
         attempt=$((attempt + 1))
     done
@@ -106,7 +108,7 @@ for n in $(seq 1 "$NLOOPS"); do
     # behavioral observations to qa/recommendations/NNNN.md
     # ----------------------------------------------------------------
     echo "--- Review pass (Claude) ---"
-    claude --dangerously-skip-permissions <<REVIEW_PROMPT || true
+    CLAUDE_REVIEW_PROMPT=$(cat <<REVIEW_PROMPT
 You are reviewing the opencaw Rust codebase to identify specific improvements after QA generation loop $LOOP_NUMBER.
 
 WHAT OPENCAW DOES:
@@ -139,6 +141,7 @@ YOUR TASK:
      SELECT COUNT(*) FROM stubs WHERE ignored = 1;
 2. Browse the codebase to understand how stubs are generated, retrieved, and assembled into context
 3. Write a numbered, prioritized list of behavioral problems and quality observations to: qa/recommendations/${LOOP_NUMBER}.md
+4. Add your recommendations to TODO.md, and add bugs to be fixed to BUGS.md.
 
 Evaluate and report on these dimensions:
 - Stub quality: are summaries/outlines genuinely useful for retrieval? too verbose? losing signal?
@@ -149,6 +152,8 @@ Evaluate and report on these dimensions:
 Write behavioral observations and diagnoses — what is going wrong and why it matters.
 Each recommendation should describe a problem clearly enough that an implementer can find and fix it independently.
 REVIEW_PROMPT
+    )
+    claude --dangerously-skip-permissions -p "$CLAUDE_REVIEW_PROMPT" || true
 
     if [ ! -f "qa/recommendations/${LOOP_NUMBER}.md" ]; then
         echo "WARNING: Claude did not write qa/recommendations/${LOOP_NUMBER}.md — skipping implementation pass."
@@ -159,7 +164,7 @@ REVIEW_PROMPT
     # IMPLEMENTATION PASS: Claude implements the reviewed recommendations.
     # ----------------------------------------------------------------
     echo "--- Implementation pass (Claude) ---"
-    claude --dangerously-skip-permissions <<IMPL_PROMPT || true
+    CLAUDE_IMPLEMENTATION_PROMPT=$(cat <<IMPL_PROMPT
 You are implementing improvements to the opencaw Rust codebase at $(pwd).
 
 WHAT OPENCAW DOES:
@@ -187,7 +192,10 @@ YOUR TASK:
 2. Implement the highest-priority feasible recommendations
 3. Run: cargo build --release --bin caw-cli --features llama
 4. Fix any compilation errors before finishing — do not stop until it compiles cleanly
+5. Mark the item as completed in TODO.md
 IMPL_PROMPT
+    )
+    claude --dangerously-skip-permissions -p "$CLAUDE_IMPLEMENTATION_PROMPT" || true
 
     # Rebuild after implementation. If Claude left the code broken, the bugfix loop recovers it.
     build_or_fix "post-impl-${LOOP_NUMBER}"
