@@ -82,59 +82,81 @@ pub fn truncate_at_chat_boundary(text: &str) -> &str {
     text
 }
 
-pub fn is_looping(text: &str) -> bool {
-    // Chat-template tokens leaking into output are an unambiguous runaway signal
-    // regardless of response length.
-    if text.contains("<|im_end|>") || text.contains("<|im_start|>") {
-        return true;
+/// Inspect `text` for degenerate looping patterns and return a human-readable
+/// description of the first pattern that fires, or `None` if the text looks
+/// clean. This companion to `is_looping` is intended for logging: callers
+/// that want to know *why* a response was flagged should call this and emit
+/// the reason at `warn!` level so subsequent QA runs can diagnose false
+/// positives.
+pub fn detect_loop(text: &str) -> Option<String> {
+    if text.contains("<|im_end|>") {
+        return Some("chat_template_token: <|im_end|>".into());
+    }
+    if text.contains("<|im_start|>") {
+        return Some("chat_template_token: <|im_start|>".into());
     }
 
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.len() < 20 {
-        return false;
+        return None;
     }
 
-    // Single-word dominance
-    let modal_count = {
-        let mut counts = std::collections::HashMap::new();
+    // Single-word dominance: one word accounts for >70% of tokens.
+    let (modal_word, modal_count) = {
+        let mut counts = HashMap::new();
         for &w in &words {
             *counts.entry(w).or_insert(0usize) += 1;
         }
-        counts.into_values().max().unwrap_or(0)
+        counts.into_iter().max_by_key(|&(_, c)| c).unwrap_or(("", 0))
     };
-    if modal_count * 100 / words.len() > 70 {
-        return true;
+    let pct = modal_count * 100 / words.len();
+    if pct > 70 {
+        return Some(format!(
+            "word_dominance: '{modal_word}' at {pct}% of {} tokens",
+            words.len()
+        ));
     }
 
-    // Trigram diversity collapse
+    // Trigram diversity collapse: unique trigrams < 10% of total with ≥30 words.
     if words.len() >= 30 {
         let total = words.len() - 2;
-        let unique: std::collections::HashSet<[&str; 3]> =
+        let unique: HashSet<[&str; 3]> =
             words.windows(3).map(|w| [w[0], w[1], w[2]]).collect();
         if unique.len() * 10 < total {
-            return true;
+            let unique_pct = unique.len() * 100 / total;
+            return Some(format!(
+                "trigram_collapse: {}/{} unique trigrams ({unique_pct}%)",
+                unique.len(),
+                total
+            ));
         }
     }
 
-    // Sentence-level repetition: 4× sentence repetition at the trigram level
-    // won't collapse diversity below 10%, but repeating any substantial line
-    // ≥3 times is still pathological output.
+    // Sentence-level repetition: any substantial line (>30 chars) appearing ≥3 times.
     let long_lines: Vec<&str> = text
         .lines()
         .map(str::trim)
         .filter(|l| l.len() > 30)
         .collect();
     if long_lines.len() >= 6 {
-        let mut counts = std::collections::HashMap::new();
+        let mut counts = HashMap::new();
         for &line in &long_lines {
             *counts.entry(line).or_insert(0usize) += 1;
         }
-        if counts.values().any(|&c| c >= 3) {
-            return true;
+        if let Some((&repeated_line, &count)) = counts.iter().find(|&(_, &c)| c >= 3) {
+            let preview: String = repeated_line.chars().take(60).collect();
+            let byte_pos = text.find(repeated_line).unwrap_or(0);
+            return Some(format!(
+                "line_repetition: '{preview}...' ×{count} (first at byte {byte_pos})"
+            ));
         }
     }
 
-    false
+    None
+}
+
+pub fn is_looping(text: &str) -> bool {
+    detect_loop(text).is_some()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

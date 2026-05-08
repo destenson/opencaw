@@ -1,5 +1,5 @@
 use caw_core::{
-    is_looping, split_thinking, truncate_at_chat_boundary, CawError, CawResult, CompletionRequest,
+    detect_loop, split_thinking, truncate_at_chat_boundary, CawError, CawResult, CompletionRequest,
     CompletionResponse, ModelAdapter, ModelCapabilities, ProvenanceFormat,
 };
 use caw_llama_sys::*;
@@ -174,9 +174,17 @@ impl ModelAdapter for LlamaCppAdapter {
         // A blank answer after split_thinking means the model emitted only a
         // <think> block with no visible response — functionally degenerate.
         // Check for degenerate output on the extracted answer, not the raw
-        // text. Running is_looping before split_thinking would flag valid
+        // text. Running detect_loop before split_thinking would flag valid
         // responses whose <think> tags contain repeated XML tokens.
-        if answer.trim().is_empty() || is_looping(&answer) {
+        if answer.trim().is_empty() {
+            tracing::warn!(model = %self.model_name, "degenerate output: blank answer after split_thinking");
+            return Err(CawError::DegenerateOutput {
+                model: self.model_name.clone(),
+                sample: answer.chars().take(120).collect(),
+            });
+        }
+        if let Some(reason) = detect_loop(&answer) {
+            tracing::warn!(model = %self.model_name, reason = %reason, "degenerate output: loop detected in complete()");
             return Err(CawError::DegenerateOutput {
                 model: self.model_name.clone(),
                 sample: answer.chars().take(120).collect(),
@@ -212,7 +220,15 @@ impl ModelAdapter for LlamaCppAdapter {
         )?;
         let truncated = truncate_at_chat_boundary(&raw);
         let (thinking, answer) = split_thinking(truncated);
-        if answer.trim().is_empty() || is_looping(&answer) {
+        if answer.trim().is_empty() {
+            tracing::warn!(model = %self.model_name, "degenerate output: blank answer after split_thinking");
+            return Err(CawError::DegenerateOutput {
+                model: self.model_name.clone(),
+                sample: answer.chars().take(120).collect(),
+            });
+        }
+        if let Some(reason) = detect_loop(&answer) {
+            tracing::warn!(model = %self.model_name, reason = %reason, "degenerate output: loop detected in generate_passive()");
             return Err(CawError::DegenerateOutput {
                 model: self.model_name.clone(),
                 sample: answer.chars().take(120).collect(),

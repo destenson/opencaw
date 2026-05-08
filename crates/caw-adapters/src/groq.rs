@@ -1,6 +1,6 @@
 use caw_core::{
     CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities,
-    ProvenanceFormat, TokenUsage, is_looping,
+    ProvenanceFormat, TokenUsage, detect_loop,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -148,7 +148,8 @@ impl ModelAdapter for GroqAdapter {
             .map(|c| c.message.content.clone())
             .unwrap_or_default();
 
-        if is_looping(&answer) {
+        if let Some(reason) = detect_loop(&answer) {
+            tracing::warn!(model = %self.model, reason = %reason, "degenerate output: loop detected");
             return Err(CawError::DegenerateOutput {
                 model: self.model.clone(),
                 sample: answer.chars().take(120).collect(),

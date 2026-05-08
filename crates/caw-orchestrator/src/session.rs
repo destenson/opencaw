@@ -23,6 +23,21 @@ impl SessionFile {
     /// Format the turn, append to the session file, and return the formatted text.
     pub fn write_turn(&mut self, turn: usize, user: &str, answer: &str) -> CawResult<String> {
         let text = format!("## Turn {turn}\n\n[User]: {user}\n\n[Assistant]: {answer}\n\n---\n\n");
+        self.write_text(text)
+    }
+
+    /// Write a turn where the model failed to produce a valid answer. The
+    /// `sample` is stored for human inspection but is prefixed with a sentinel
+    /// so the history-injection path can identify and skip it. Subsequent
+    /// sessions will see a one-line placeholder instead of the truncated prose.
+    pub fn write_degenerate_turn(&mut self, turn: usize, user: &str, sample: &str) -> CawResult<String> {
+        let text = format!(
+            "## Turn {turn}\n\n[User]: {user}\n\n[Assistant]: [DEGENERATE] {sample}\n\n---\n\n"
+        );
+        self.write_text(text)
+    }
+
+    fn write_text(&mut self, text: String) -> CawResult<String> {
         let file = self.file.get_or_insert(
             OpenOptions::new()
                 .create(true)
@@ -153,11 +168,19 @@ pub fn collect_previous_stubs(
         debug!(file = %p.display(), turns = turns.len(), "collected prior session turns");
 
         for (turn_idx, (user, assistant)) in turns.into_iter().enumerate() {
-            let compressed = compress_assistant(&assistant);
-            let embed_text = if compressed.is_empty() {
-                format!("User: {user}")
-            } else {
-                format!("User: {user}\nAssistant: {compressed}")
+            // Degenerate turns (None) are represented by a one-line placeholder
+            // so subsequent sessions know the model failed without receiving the
+            // truncated mid-sentence sample as if it were a real answer.
+            let embed_text = match assistant {
+                None => format!("User: {user}\nAssistant: [turn skipped — model failed to produce a valid response]"),
+                Some(ref a) => {
+                    let compressed = compress_assistant(a);
+                    if compressed.is_empty() {
+                        format!("User: {user}")
+                    } else {
+                        format!("User: {user}\nAssistant: {compressed}")
+                    }
+                }
             };
             let token_estimate = embed_text.len() / 4;
             let stub = Stub {
@@ -183,20 +206,33 @@ pub fn collect_previous_stubs(
     result
 }
 
-/// Parse a session markdown file into (user_query, assistant_response) pairs.
-/// Session format written by `SessionFile::write_turn`:
+/// Sentinel prefix written by `write_degenerate_turn` to mark turns where
+/// the model failed to produce a valid response. The history-injection path
+/// uses this to replace the truncated degenerate sample with a placeholder.
+const DEGENERATE_SENTINEL: &str = "[DEGENERATE] ";
+
+/// Parse a session markdown file into (user_query, Option<assistant_response>) pairs.
+/// A `None` assistant response indicates a degenerate turn that should be
+/// represented as a placeholder in history rather than injected verbatim.
+///
+/// Session format written by `SessionFile::write_turn` / `write_degenerate_turn`:
 ///   `## Turn N\n\n[User]: ...\n\n[Assistant]: ...\n\n---\n\n`
-fn parse_session_turns(content: &str) -> Vec<(String, String)> {
+fn parse_session_turns(content: &str) -> Vec<(String, Option<String>)> {
     let mut turns = Vec::new();
-    // Each "## Turn N" header starts a new turn section
     for section in content.split("\n## Turn ") {
-        // Skip preamble before the first ## Turn marker
         if !section.chars().next().map_or(false, |c| c.is_ascii_digit()) {
             continue;
         }
         let user = extract_field(section, "[User]: ");
-        let assistant = extract_field(section, "[Assistant]: ");
+        let assistant_raw = extract_field(section, "[Assistant]: ");
         if !user.is_empty() {
+            let assistant = if assistant_raw.starts_with(DEGENERATE_SENTINEL) {
+                None
+            } else if assistant_raw.is_empty() {
+                None
+            } else {
+                Some(assistant_raw)
+            };
             turns.push((user, assistant));
         }
     }

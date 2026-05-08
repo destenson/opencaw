@@ -617,6 +617,13 @@ where
         }
 
         // Phase 2: Iterative recall refinement
+        //
+        // Track the best response across all iterations. A later iteration
+        // with more context can sometimes produce a worse answer (e.g., the
+        // model denies the existence of a crate it was just shown). Keeping
+        // the best-scoring answer prevents a weaker refinement pass from
+        // overwriting a good initial answer.
+        let mut best_response = last_response.clone();
         if degenerate_err.is_none() {
             for i in 0..self.config.max_recall_iterations {
                 let loaded_before = self.loaded.len();
@@ -689,7 +696,23 @@ where
                     workspace_guidance: guidance.to_vec(),
                 });
                 match result {
-                    Ok(r) => last_response = r,
+                    Ok(r) => {
+                        let new_score = answer_quality_score(&r.answer);
+                        let best_score = answer_quality_score(&best_response.answer);
+                        if new_score >= best_score {
+                            best_response = r.clone();
+                        } else {
+                            warn!(
+                                iteration = i + 1,
+                                new_score,
+                                best_score,
+                                "refinement produced lower-quality answer — keeping prior best"
+                            );
+                        }
+                        // Always advance last_response so the next iteration
+                        // uses the most recent output for context extraction.
+                        last_response = r;
+                    }
                     Err(e) if matches!(e, CawError::DegenerateOutput { .. }) => {
                         warn!(turn = self.session_turn + 1, iteration = i + 1, "degenerate output during refinement — stopping iterations");
                         degenerate_err = Some(e);
@@ -698,6 +721,11 @@ where
                     Err(e) => return Err(e),
                 }
             }
+        }
+        // Use the best answer seen across all refinement iterations, not
+        // necessarily the last one. Degenerate errors are handled below.
+        if degenerate_err.is_none() {
+            last_response = best_response;
         }
 
         info!(
@@ -720,7 +748,15 @@ where
         // self so the borrow checker allows simultaneous access to other fields.
         if let Some(mut sf) = self.session.take() {
             self.session_turn += 1;
-            match sf.write_turn(self.session_turn, user, &last_response.answer) {
+            // Degenerate turns are written with a sentinel prefix so the
+            // history-injection path can replace them with a placeholder rather
+            // than injecting the truncated mid-sentence sample verbatim.
+            let write_result = if degenerate_err.is_some() {
+                sf.write_degenerate_turn(self.session_turn, user, &last_response.answer)
+            } else {
+                sf.write_turn(self.session_turn, user, &last_response.answer)
+            };
+            match write_result {
                 Ok(text) => {
                     let stub_id = StubId(format!("session-turn-{}", self.session_turn));
                     // Embed the full turn for recall accuracy, but store only a compact
@@ -1383,4 +1419,32 @@ fn current_timestamp() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Heuristic quality score for a model answer, used to pick the best response
+/// across multi-pass refinement iterations. A higher score is better.
+///
+/// Word count is the primary signal. Responses that consist mainly of
+/// uncertainty hedges ("no information available", "I don't have") are
+/// penalised because they are factually weaker than substantive answers of
+/// equal length — a longer hedge is not better than a shorter grounded answer.
+fn answer_quality_score(answer: &str) -> f32 {
+    let words = answer.split_whitespace().count();
+    // Penalty multiplier for responses that express inability to answer.
+    // These phrases are generic model uncertainty expressions that indicate
+    // the model did not ground its answer in the provided context.
+    let hedge_phrases = [
+        "no specific information",
+        "no information available",
+        "no information provided",
+        "I don't have",
+        "I cannot find",
+        "there is no information",
+        "there is no specific",
+    ];
+    let has_hedge = hedge_phrases
+        .iter()
+        .any(|&phrase| answer.to_lowercase().contains(phrase));
+    let penalty = if has_hedge { 0.3 } else { 1.0 };
+    words as f32 * penalty
 }

@@ -1,5 +1,5 @@
 use caw_core::{
-    is_looping, split_thinking, truncate_at_chat_boundary, CawError, CawResult, CompletionRequest,
+    detect_loop, split_thinking, truncate_at_chat_boundary, CawError, CawResult, CompletionRequest,
     CompletionResponse, ModelAdapter, ModelCapabilities, ProvenanceFormat, TokenUsage,
 };
 use futures_util::StreamExt;
@@ -278,7 +278,15 @@ impl ModelAdapter for OllamaAdapter {
             Ok(parsed) => {
                 let raw = truncate_at_chat_boundary(&parsed.message.content);
                 let (thinking, answer) = split_thinking(raw);
-                if answer.trim().is_empty() || is_looping(&answer) {
+                if answer.trim().is_empty() {
+                    tracing::warn!(model = %self.model, "degenerate output: blank answer after split_thinking");
+                    return Err(CawError::DegenerateOutput {
+                        model: self.model.clone(),
+                        sample: answer.chars().take(120).collect(),
+                    });
+                }
+                if let Some(reason) = detect_loop(&answer) {
+                    tracing::warn!(model = %self.model, reason = %reason, "degenerate output: loop detected");
                     return Err(CawError::DegenerateOutput {
                         model: self.model.clone(),
                         sample: answer.chars().take(120).collect(),

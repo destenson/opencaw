@@ -1,5 +1,5 @@
 use caw_core::{
-    is_looping, truncate_at_chat_boundary, CawError, CawResult, CompletionRequest,
+    detect_loop, truncate_at_chat_boundary, CawError, CawResult, CompletionRequest,
     CompletionResponse, ModelAdapter, ModelCapabilities, ProvenanceFormat, TokenUsage,
 };
 use tracing::trace;
@@ -312,7 +312,8 @@ impl ModelAdapter for OpenAiCompatibleAdapter {
             .unwrap_or_default();
         let answer = truncate_at_chat_boundary(&raw).to_string();
 
-        if is_looping(&answer) {
+        if let Some(reason) = detect_loop(&answer) {
+            tracing::warn!(model = %self.model, reason = %reason, "degenerate output: loop detected");
             return Err(CawError::DegenerateOutput {
                 model: self.model.clone(),
                 sample: answer.chars().take(120).collect(),

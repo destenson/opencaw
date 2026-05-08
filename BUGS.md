@@ -37,6 +37,10 @@ so remaining queries are processed.
 
 The current implementation finds the model is almost always degenerate.
 
+QA 0020: 8 of 9 answer-phase turns flagged as degenerate. The flagged text is coherent prose — not blank, not Rust code. The samples ("Based on the provided context, OpenCAW is...") confirm the model was producing valid content. Whether the loop detector fires on the prefix or on content later in the response is unknown.
+
+Diagnostic logging added (2026-05-08): `is_looping` was replaced by `detect_loop` in all adapters. Each adapter now calls `detect_loop` and logs the trigger name (`word_dominance`, `trigram_collapse`, `line_repetition`, or `chat_template_token`) and approximate position at `warn!` level before raising `DegenerateOutput`. The next QA run will show which check fires and where, enabling threshold adjustments if any checks are false positives.
+
 ## B0. qa/0001.txt sometimes misses the first user turn (critical)
 
 `.caw0008/session-20260508-055328.md` shows the first user turn "what is opencaw
@@ -363,16 +367,16 @@ Fixed in `llama_cpp.rs` and `ollama.rs`: both adapters now check
 `split_thinking`, and return `DegenerateOutput` for a blank answer. This applies
 to both `complete` and `generate_passive` in the llama.cpp adapter
 
-## B20. Multi-pass refinement can overwrite a good initial answer with a worse one (high)
+## B20. Multi-pass refinement can overwrite a good initial answer with a worse one (high) — FIXED
 
 Observed in QA loop 0020 session 095219, question 3 ("what can we do to improve on the caw-curation crate?"). The initial completion (turn 6, 8 fragments) produced a coherent, evidence-grounded answer synthesizing caw-core and caw-orchestrator context. The refinement iteration (turn 7, 11 fragments, now including caw-curation stubs) produced an incorrect answer claiming no information was available for caw-curation. The session log recorded the turn-7 answer, discarding the better turn-6 answer.
 
-The refinement loop replaces `last_response` with each successful (non-degenerate) completion, regardless of whether the new completion is better than the prior one. There is no quality signal distinguishing the two passes — both complete without degenerate error, so the last one wins.
+The refinement loop replaced `last_response` with each successful (non-degenerate) completion, regardless of whether the new completion is better than the prior one. There was no quality signal distinguishing the two passes — both complete without degenerate error, so the last one won.
 
-Fix: track a "best answer" across refinement iterations, using a heuristic such as answer length, presence of specific source citations, or absence of hedged "I don't know" phrases, and return the best rather than the last.
+Fixed in `dynamic.rs` (2026-05-08): the refinement loop now tracks a `best_response` across iterations using `answer_quality_score` (word count × penalty for "no information available" hedges). Each iteration only updates `best_response` if the new completion scores at least as well as the current best. `last_response` still advances to the latest completion for next-iteration context extraction. After the loop, `last_response` is set to `best_response` before writing the session turn.
 
-## B21. Session history injects truncated mid-sentence degenerate prefixes as prior assistant answers (high)
+## B21. Session history injects truncated mid-sentence degenerate prefixes as prior assistant answers (high) — FIXED
 
 Observed in QA loop 0020. The B16 fix stores the first ~120 chars of a degenerate response as the turn answer in the session log. When a subsequent session loads that session log as history, the truncated mid-sentence prefix is injected verbatim as the model's prior answer. In 0020, sessions 2 and 3 both received `"As an AI assistant operating within the OpenCAW framework, I can evaluate the context window you are currently seeing (w"` as the prior response to "you're using it right now…" — a mid-sentence truncation that adds no signal and implies the model was interrupted.
 
-The B16 fix conflates two distinct purposes: storing a debugging sample in the session log (for human inspection) and storing the canonical answer text (for history injection). These should be separate: the log entry can include the degenerate sample for debugging, but the history-injection path should recognize degenerate turns and replace them with a one-line `[turn skipped — model failed to produce a valid response]` placeholder rather than injecting the truncated prose.
+Fixed in `session.rs` and `dynamic.rs` (2026-05-08): `SessionFile::write_degenerate_turn` writes the 120-char sample (for human inspection) with a `[DEGENERATE] ` sentinel prefix on the `[Assistant]:` line. `dynamic.rs` calls `write_degenerate_turn` instead of `write_turn` when `degenerate_err.is_some()`. `parse_session_turns` detects the sentinel and returns `None` for the assistant field. `collect_previous_stubs` represents `None` turns with the one-line placeholder `[turn skipped — model failed to produce a valid response]` in the embedded text, preventing the truncated prose from being injected as prior context.

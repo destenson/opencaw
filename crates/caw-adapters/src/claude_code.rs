@@ -1,5 +1,5 @@
 use caw_core::{
-    is_looping, CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
+    detect_loop, CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
     ModelCapabilities, ProvenanceFormat,
 };
 use tracing::trace;
@@ -367,7 +367,8 @@ impl ModelAdapter for ClaudeCodeAdapter {
         }
 
         let answer = parsed.result;
-        if is_looping(&answer) {
+        if let Some(reason) = detect_loop(&answer) {
+            tracing::warn!(model = %self.model, reason = %reason, "degenerate output: loop detected");
             return Err(CawError::DegenerateOutput {
                 model: self.model.clone(),
                 sample: answer.chars().take(120).collect(),
