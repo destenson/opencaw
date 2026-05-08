@@ -167,3 +167,13 @@ Distinct from B11 in that B12 is specifically about the `<think>...</think>` pre
 Observed in QA loop 0014: every Qwen3 response was flagged as degenerate, aborting the session after 1 question. The `<|im_end|>` token Qwen3 emits at the end of a proper generation is the normal chat-template stop sentinel. `truncate_at_chat_boundary` only strips it when there is content after it — the guard `if !after.is_empty()` causes a bare trailing `<|im_end|>` to pass through unchanged. `is_looping` then unconditionally returns `true` on `text.contains("<|im_end|>")`, flagging the response as a runaway generation even though the answer text before the stop token is valid.
 
 The fix is to remove the `if !after.is_empty()` condition for the trailing-stop-token case and strip `<|im_end|>` unconditionally. The runaway-generation case (model generating additional conversation turns) is already handled by the `<|im_start|>` check earlier in the function.
+
+## B14. Degenerate detection fires on empty `<think></think>` block followed by valid answer (high)
+
+Observed in QA loop 0015 session-20260508-084805 turn 7. Qwen3 emitted `<think>\n\n</think>\n\nYes, the context is helpful...` — an empty thinking block immediately followed by a valid answer. The degenerate-output detector flagged the whole response, aborting the session before `write_turn` could record the second query's answer. The answer text itself was valid and coherent.
+
+B13 fixed trailing `<|im_end|>` tokens; B12 fixed `<think>…</think>` stored as the answer when the block has content. Neither handles the empty-think case. `split_thinking` should treat a `<think></think>` block with only whitespace as a no-op and return the content after `</think>` unchanged, without raising a degenerate error.
+
+## B15. Session log truncation (B2) traces to degenerate-response error path, not flush timing (high)
+
+QA loop 0015 session-20260508-084805 recorded only 1 turn despite processing 2 queries across 7 prompt files. The per-turn flush fix from QA 0003 should have written each turn before the next begins. The second turn was not written, and the session's second query triggered a degenerate-response error (B14). This strongly suggests `write_turn` is not called before the error propagates — the degenerate-response handler exits the turn-processing path before the write. Fix: call `write_turn` with whatever response text was received (including partial or error-annotated text) before raising or propagating the degenerate-output error. The session log should capture every turn attempted, even failed ones.
