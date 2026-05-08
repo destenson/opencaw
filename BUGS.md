@@ -115,6 +115,20 @@ failure visible in session logs. The root cause (model learning the injection
 format from context) remains — switching to UUID-delimited or XML-namespaced
 tags would eliminate the generation incentive entirely.
 
+## B8. Model produces blank response after identifying an information gap in its thinking trace (high)
+
+Session-074559 turn 3 ("how many todos are left?") shows the model generating 580 lines of correct reasoning — it accurately identified that only chunk 16/22 of TODO.md was retrieved, that chunk contains a narrative description rather than a parseable item list, and that it cannot produce a count from the available evidence. After this sound reasoning the model produced an empty final answer. The session log records a blank response for that turn.
+
+This is distinct from B2 (session log truncation) — the session log for this session correctly captured turns 1 and 2; turn 3's model response was genuinely empty. The model's thinking was not captured as the answer; the answer itself was empty.
+
+The failure mode: exhaustive reasoning about why an answer is impossible can lead to no answer at all. The system prompt does not instruct the model to produce a minimal hedged response when evidence is insufficient.
+
+## B9. Consolidation notes accumulate recursively — outer note includes full text of prior note (medium)
+
+In session-074559 prompt turn-10, the fragment for `caw-orchestrator/src/probe_recall.rs` has a consolidation note whose topic field contains a full prior consolidation note: "Evicted (relevance decayed to 0.51)... Topic: Chunk 1/5... [Prior session notes for this source: - Evicted (relevance decayed to 0.51)... Topic: Chunk 1/5... [Prior session notes for this source: ...]]".
+
+When appending a new eviction note, the implementation is including the prior note (which contains the prior-prior note) as the "Topic" context for the new note. After enough eviction cycles, a stub's consolidation header grows without bound. Observed with 2 levels of nesting; the pattern will continue recursively.
+
 ## B7. Prior session model responses flood context in follow-on sessions (high)
 
 When a new session starts on the same topic as a recent session, `collect_previous_stubs` loads the prior session log into the in-memory HNSW index. The prior session's full model responses (400–450 tokens each) then score as the highest-ranked semantic matches for queries using the same terminology. In QA loop 0009, session 065934's turn-3 context ("how many todos are left?") contained 2500+ tokens of session 065745's model responses — about 40% of the total context budget — with only a single TODO.md chunk retrieved for the actual query.
