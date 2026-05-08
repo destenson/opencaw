@@ -13,6 +13,12 @@ static ANNOTATION_PATTERN: LazyLock<Regex> =
 static LINE_REF_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"((?:[\w./\-]+/)?[\w\-]+\.[a-zA-Z]+):(\d+)(?:-(\d+))?").unwrap()
 });
+// Matches entire `[recalled from path]\n...\n[end recall]` blocks that the model
+// generates verbatim by mimicking the injection format. These are never valid answer
+// text — they are a generation artefact from the model having seen the format string.
+static FAKE_RECALL_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?s)\[recalled from [^\]]+\].*?\[end recall\]").unwrap()
+});
 
 /// Extract probe markers from model output
 pub fn extract_probes(text: &str) -> Vec<ProbeMarker> {
@@ -88,10 +94,17 @@ pub fn apply_range(content: &str, range: &Range) -> CawResult<String> {
     Ok(range.apply(content))
 }
 
+/// Count occurrences of `[recalled from ...]` in model output. Values above ~10 suggest the model is overusing the format as a generation scaffold rather than producing valid answer text, and logs should be inspected for corruption from fake recall blocks. This is a heuristic signal of degenerate output when the model mimics the injection format verbatim.
+/// indicate the model is generating fake provenance blocks rather than answering.
+pub fn count_fake_recall_markers(text: &str) -> usize {
+    FAKE_RECALL_PATTERN.find_iter(text).count()
+}
+
 /// Strip cooperation-protocol markers from the final answer before returning
 /// it to the caller. Note content is kept inline (small models often wrap their
-/// entire answer in a note tag). Probe markers, thinking traces, and leaked
-/// chat-template tokens are discarded — they are not answer text.
+/// entire answer in a note tag). Probe markers, thinking traces, leaked
+/// chat-template tokens, and model-generated fake `[recalled from]` blocks ***SHOULD NOT BE***
+/// discarded — they indicated BAD MODEL BEHAVIOR THAT MUST BE DEALT WITH.
 pub fn strip_markers(text: &str) -> String {
     let text = ANNOTATION_PATTERN.replace_all(text, "$2");
     let text = PROBE_PATTERN.replace_all(&text, "");
@@ -102,6 +115,10 @@ pub fn strip_markers(text: &str) -> String {
         Some(pos) => std::borrow::Cow::Owned(text[..pos].to_string()),
         None => text,
     };
+    // Strip model-generated fake recall blocks. The model sometimes reproduces
+    // the injection format verbatim as a generation scaffold — these blocks are
+    // never valid answer text and corrupt logs if left in.
+    let text = FAKE_RECALL_PATTERN.replace_all(&text, "");
     // Chat-template sentinel tokens that leak when stop sequences aren't
     // configured correctly are an unambiguous sign of a degenerate response.
     let text = text.replace("<|im_end|>", "").replace("<|im_start|>", "");

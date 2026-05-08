@@ -87,7 +87,7 @@ an answer. This is a critical failure mode because it means the model is
 treating the retrieval substrate as a scratch pad for its own generation, which
 can lead to self-reinforcing hallucinations and loss of grounding.
 
-## B6. Model generates fake `[recalled from ...]` markers in output (critical)
+## B6. Model generates fake `[recalled from ...]` markers in output (critical) — PARTIALLY FIXED
 
 `.caw0006/prompt-20260508-063609-turn-14.txt` shows the model's response to
 "what can we do to improve on the caw-curation crate?" consisting almost
@@ -108,7 +108,9 @@ Consequences:
    indexed and later retrieved, the model receives its own fabricated recall
    output as authoritative source material.
 
-Mitigations to consider: use a provenance format the model is unlikely to
-generate (e.g., UUID-delimited tags); add a post-processing step that flags
-`[recalled from ...]` patterns appearing in model output; detect when a response
-is dominated by injection-format text and abort/retry.
+Partially fixed: `strip_markers()` in `caw-transform` now strips complete
+`[recalled from …]…[end recall]` blocks from model output before the answer is
+logged or returned. `run_turn` logs a `warn!` when any are stripped, making the
+failure visible in session logs. The root cause (model learning the injection
+format from context) remains — switching to UUID-delimited or XML-namespaced
+tags would eliminate the generation incentive entirely.

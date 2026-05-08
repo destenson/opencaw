@@ -18,17 +18,19 @@ pub struct MechanicalConsolidation;
 impl ConsolidationSynthesizer for MechanicalConsolidation {
     fn synthesize_eviction_note(
         &self,
-        _fragment_content: &str,
+        fragment_content: &str,
         query_context: &str,
         decayed_score: f32,
         source: &str,
         _annotations: &[ConsolidationNote],
     ) -> CawResult<String> {
+        let topic = truncate_str(fragment_content.trim(), 120);
         Ok(format!(
-            "Evicted (relevance decayed to {:.2}) during query about '{}'. Source: {}",
+            "Evicted (relevance decayed to {:.2}) during query about '{}'. Source: {}. Topic: {}",
             decayed_score,
             truncate_str(query_context, 100),
             source,
+            topic,
         ))
     }
 }

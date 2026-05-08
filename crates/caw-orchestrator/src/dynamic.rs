@@ -9,7 +9,7 @@ use caw_core::{
 };
 use caw_eval::SessionEvaluator;
 use caw_ingest::IngestionPipeline;
-use caw_transform::{extract_annotations, extract_line_references, extract_probes, extract_thinking_steps, strip_markers};
+use caw_transform::{count_fake_recall_markers, extract_annotations, extract_line_references, extract_probes, extract_thinking_steps, strip_markers};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
@@ -357,9 +357,23 @@ where
             } else {
                 user.into()
             };
-        let initial_hits = self
+        let mut initial_hits = self
             .retriever
             .search(&retrieval_query, self.config.max_candidates)?;
+        // For explanation queries, boost markdown documentation sources above
+        // implementation files. Bench code, source files, and config all contain
+        // architecture vocabulary that scores well for "what is X?" queries but
+        // produces a worse answer than the actual design docs.
+        if signals.map_or(false, |s| s.wants_explanation) {
+            const MD_BOOST: f32 = 1.5;
+            for hit in &mut initial_hits {
+                if hit.stub.path.ends_with(".md") {
+                    hit.score = (hit.score * MD_BOOST).min(1.0);
+                }
+            }
+            initial_hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+            debug!("applied .md documentation boost for explanation query");
+        }
         let above_threshold = initial_hits
             .iter()
             .filter(|h| h.score >= self.config.thresholds.load)
@@ -554,6 +568,14 @@ where
             workspace_tokens = self.loaded.iter().map(|f| f.tokens).sum::<usize>(),
             "run_turn complete"
         );
+        let fake_recall_count = count_fake_recall_markers(&last_response.answer);
+        if fake_recall_count > 0 {
+            warn!(
+                count = fake_recall_count,
+                turn = self.session_turn,
+                "model generated fake [recalled from] blocks — stripped from answer",
+            );
+        }
         last_response.answer = strip_markers(&last_response.answer);
 
         // Record completed turn to session history. Take the SessionFile out of

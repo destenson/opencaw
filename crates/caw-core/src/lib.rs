@@ -444,6 +444,9 @@ pub struct AugmentationSignals {
     pub is_status_request: bool,
     pub is_next_step_request: bool,
     pub wants_latest_run_only: bool,
+    /// When true the query asks for an overview, explanation, or description — weight
+    /// documentation sources (`.md` files) above implementation files during retrieval.
+    pub wants_explanation: bool,
     /// Model-defined augmentation hints from extra fields (e.g. "needs_git_status").
     pub extra_hints: Vec<String>,
 }
@@ -538,6 +541,7 @@ impl QueryIntent {
             is_status_request: self.is_status_request,
             is_next_step_request: self.is_next_step_request,
             wants_latest_run_only: self.wants_latest_run_only,
+            wants_explanation: self.wants_explanation,
             extra_hints: self
                 .extra
                 .iter()
