@@ -134,12 +134,18 @@ SESSION ARTIFACTS in .caw${LOOP_NUMBER}/:
     consolidation_notes(id, stub_id, content, source, created_at_secs)
 
 YOUR TASK:
-1. Read the session files in .caw${LOOP_NUMBER}/ to see what was asked, what context was injected, and what the model said
+1. Read the session files in .caw${LOOP_NUMBER}/ to see what was asked, what context was injected, and what the model said.
 2. Query .caw${LOOP_NUMBER}/index.db to understand what stubs were available and whether the right ones were retrieved:
-     SELECT path, kind, summary, token_estimate FROM stubs ORDER BY token_estimate DESC LIMIT 30;
-     SELECT content, source FROM consolidation_notes LIMIT 10;
+    SELECT path, kind, summary, token_estimate FROM stubs ORDER BY token_estimate DESC LIMIT 30;
+    SELECT content, source FROM consolidation_notes LIMIT 10;
 3. Write a numbered, prioritized list of observations to: qa/recommendations/${LOOP_NUMBER}.md
-4. Add improvement recommendations to TODO.md, and add bugs found to BUGS.md
+4. Treat this as a QA review, not an implementation pass. Prioritize bugs, regressions, and critical deficiencies first. For each finding, state:
+   - severity (`critical`, `high`, `medium`, or `low`)
+   - whether it is a bug/regression, critical deficiency, or follow-up improvement
+   - the concrete evidence from the session output or index contents
+   - the specific next action an implementer should take
+5. Update BUGS.md with newly confirmed bugs/regressions and update TODO.md with non-bug follow-up work that remains after the top-priority fixes.
+6. Make the ordering implementable: the first item in qa/recommendations/${LOOP_NUMBER}.md must be the single most important bug, regression, or critical deficiency for the implementer to fix next.
 
 Evaluate on these dimensions:
 - Were the model's answers accurate and grounded in the injected context?
@@ -194,11 +200,19 @@ CODING CONSTRAINTS:
 - If fixing a bug, write a test that reproduces the bug before fixing it. Do not stop until the test fails, then implement the fix and verify the test passes.
 
 YOUR TASK:
-1. Read qa/recommendations/${LOOP_NUMBER}.md
-2. Implement the highest-priority feasible recommendations
-3. Run: cargo build --release --bin caw-cli --features llama
-4. Fix any compilation errors before finishing — do not stop until it compiles cleanly
-5. Mark the item as completed in TODO.md
+1. Read qa/recommendations/${LOOP_NUMBER}.md.
+2. Treat the review as authoritative triage. Implement the highest-priority bug, regression, or critical deficiency first.
+3. If multiple top items are listed, prefer this order:
+    - confirmed bugs/regressions
+    - critical deficiencies that break or materially weaken QA sessions
+    - other follow-up improvements
+4. After implementing the top-priority item, update the tracking docs before stopping:
+    - BUGS.md: mark fixed bugs/regressions clearly, and add any newly discovered remaining bugs
+    - TODO.md: record remaining follow-up work and the next most important item still open
+5. Then pick the next most important remaining bug and/or TODO item only if the first fix is complete and the build is still clean.
+6. Run: cargo build --release --bin caw-cli --features llama
+7. Fix any compilation errors before finishing — do not stop until it compiles cleanly.
+8. Do not stop after code changes without leaving BUGS.md and TODO.md in a state that tells the next implementer what remains.
 IMPL_PROMPT
     )
     claude --dangerously-skip-permissions -p "$CLAUDE_IMPLEMENTATION_PROMPT" \
