@@ -1065,14 +1065,24 @@ where
                         if let Some(store) = &self.store {
                             if let Ok(notes) = store.load_consolidation(&stub_id) {
                                 if !notes.is_empty() {
-                                    let notes_block = notes
-                                        .iter()
-                                        .map(|n| format!("- {}", n.content))
-                                        .collect::<Vec<_>>()
-                                        .join("\n");
+                                    // Show only the most recent N notes. Older mechanical
+                                    // eviction notes add token cost without improving model
+                                    // understanding — they just document eviction history.
+                                    const MAX_NOTES: usize = 2;
+                                    let collapsed = notes.len().saturating_sub(MAX_NOTES);
+                                    let shown = &notes[notes.len().saturating_sub(MAX_NOTES)..];
+                                    let mut notes_block = if collapsed > 0 {
+                                        format!("- ({collapsed} older eviction(s) omitted)\n")
+                                    } else {
+                                        String::new()
+                                    };
+                                    for note in shown {
+                                        notes_block.push_str(&format!("- {}\n", note.content));
+                                    }
+                                    let notes_block = notes_block.trim_end();
                                     f.content = format!(
-                                        "[Prior session notes for this source:\n{}\n]\n\n{}",
-                                        notes_block, f.content
+                                        "[Prior session notes for this source:\n{notes_block}\n]\n\n{}",
+                                        f.content
                                     );
                                     f.tokens = count_tokens_cl100k(&f.content);
                                 }

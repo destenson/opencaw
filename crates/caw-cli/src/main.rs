@@ -283,14 +283,20 @@ fn main() -> Result<()> {
         .ingest_directory(&cli.dir, !cli.gitignore, &already_indexed)
         .context("Failed to ingest directory")?;
 
-    // Chunks whose content is below this threshold carry no retrieval signal.
-    // The canonical case is a Cargo.toml whose first chunk is only `[package]`
-    // (3 tokens) — it consumes an index slot while never helping answer any query.
+    // Chunks whose content is below these thresholds carry no retrieval signal.
+    // token_estimate catches tiny raw files; summary_chars catches stubs where the
+    // deterministic summarizer produced a near-empty string (e.g. Cargo.toml stubs
+    // whose summary is "[package]" — 9 chars, well above MIN_INDEX_TOKENS but
+    // useless as context). Both filters must pass to be indexed.
     const MIN_INDEX_TOKENS: usize = 10;
+    const MIN_SUMMARY_CHARS: usize = 15;
 
     let ingested = documents.len();
     for (stub, embed_text) in documents {
         if stub.token_estimate < MIN_INDEX_TOKENS {
+            continue;
+        }
+        if stub.summary.trim().len() < MIN_SUMMARY_CHARS {
             continue;
         }
         // embed_text is the actual chunk content (or full doc for small files).
