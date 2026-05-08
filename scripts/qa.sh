@@ -121,11 +121,6 @@ for n in $(seq 1 "$NLOOPS"); do
     CLAUDE_REVIEW_PROMPT=$(cat <<REVIEW_PROMPT
 You are reviewing the output of QA sessions run by opencaw (loop $LOOP_NUMBER) to identify what can be learned about context quality and retrieval effectiveness.
 
-WHAT OPENCAW DOES:
-opencaw is a workspace-aware context augmentation system for LLMs. It retrieves relevant code summaries
-(stubs) from a local index and injects them as context during model queries. The goal is to give the
-model accurate, relevant workspace context so its answers are grounded and useful.
-
 SESSION ARTIFACTS in .caw${LOOP_NUMBER}/:
 - session-*.md files — the actual QA session logs: prompts sent to the model, context injected, and model responses
 - prompt-*.txt files — the actual context sent to the model for each turn
@@ -146,6 +141,7 @@ YOUR TASK:
    - the specific next action an implementer should take
 5. Update BUGS.md with newly confirmed bugs/regressions and update TODO.md with non-bug follow-up work that remains after the top-priority fixes.
 6. Make the ordering implementable: the first item in qa/recommendations/${LOOP_NUMBER}.md must be the single most important bug, regression, or critical deficiency for the implementer to fix next.
+7. Implement the fix for the single highest-priority item you identified in step 6.
 
 Evaluate on these dimensions:
 - Were the model's answers accurate and grounded in the injected context?
