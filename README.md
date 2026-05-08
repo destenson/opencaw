@@ -90,7 +90,7 @@ focus on durability and the index on search performance.
 
 ### SQLite (default)
 
-- Single-file database; in-memory variant for tests
+- Single-file database; in-memory variant for tests (NO FILE CONTENT STORED IN THE DATABASE)
 - Persists stubs, embeddings, content, and consolidation notes
 - Works for datasets up to ~100k stubs without special tuning
 
