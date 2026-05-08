@@ -73,13 +73,11 @@ pub fn truncate_at_chat_boundary(text: &str) -> &str {
     if let Some(pos) = text.find("<|im_start|>") {
         return text[..pos].trim_end();
     }
-    // <|im_end|> in the middle of the response (not as a trailing stop token)
-    // also indicates the model is generating conversation structure.
+    // A bare trailing <|im_end|> (nothing after it) is the normal Qwen3/ChatML stop
+    // token — not runaway generation. Strip it unconditionally. The <|im_start|> check
+    // above already handles the case where the model is generating additional turns.
     if let Some(pos) = text.find("<|im_end|>") {
-        let after = text[pos + "<|im_end|>".len()..].trim();
-        if !after.is_empty() {
-            return text[..pos].trim_end();
-        }
+        return text[..pos].trim_end();
     }
     text
 }
