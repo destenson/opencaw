@@ -10,7 +10,7 @@ CONTEXT_LENGTH=${CONTEXT_LENGTH:-102400}
 MAX_FIX_ATTEMPTS=${MAX_FIX_ATTEMPTS:-3}
 REGENERATE=${REGENERATE:-0}
 
-export CUDA_VISIBLE_DEVICES=1,0 RUST_LOG="debug"
+export CUDA_VISIBLE_DEVICES=1,0 RUST_LOG="debug" RUST_BACKTRACE=1
 
 # Kill the entire process group on Ctrl-C so claude subprocesses don't linger.
 trap 'kill 0' INT TERM
@@ -99,10 +99,11 @@ for n in $(seq 1 "$NLOOPS"); do
             --save-prompt \
             --verbose \
             < "$QA_FILE" \
-            >> qa/log.txt || {
-            echo "caw-cli failed on prompt $j, stopping inner loop."
-            break
-        }
+            >> qa/log.txt
+        #|| {
+        #     echo "caw-cli failed on prompt $j, stopping inner loop."
+        #     break
+        # }
     done
 
     mv .caw ".caw${LOOP_NUMBER}"
@@ -197,19 +198,20 @@ CODING CONSTRAINTS:
 - If fixing a bug, write a test that reproduces the bug before fixing it. Do not stop until the test fails, then implement the fix and verify the test passes.
 
 YOUR TASK:
-1. Read qa/recommendations/${LOOP_NUMBER}.md.
-2. Treat the review as authoritative triage. Implement the highest-priority bug, regression, or critical deficiency first.
-3. If multiple top items are listed, prefer this order:
+1. run /codebase-review-report to understand the current state of the code.
+2. Read qa/recommendations/${LOOP_NUMBER}.md.
+3. Treat the review as authoritative triage. Implement the highest-priority bug, regression, or critical deficiency first.
+4. If multiple top items are listed, prefer this order:
     - confirmed bugs/regressions
     - critical deficiencies that break or materially weaken QA sessions
     - other follow-up improvements
-4. After implementing the top-priority item, update the tracking docs before stopping:
+5. After implementing the top-priority item, update the tracking docs before stopping:
     - BUGS.md: mark fixed bugs/regressions clearly, and add any newly discovered remaining bugs
     - TODO.md: record remaining follow-up work and the next most important item still open
-5. Then pick the next most important remaining bug and/or TODO item only if the first fix is complete and the build is still clean.
-6. Run: cargo build --release --bin caw-cli --features llama
-7. Fix any compilation errors before finishing — do not stop until it compiles cleanly.
-8. Do not stop after code changes without leaving BUGS.md and TODO.md in a state that tells the next implementer what remains.
+6. Then pick the next most important remaining bug and/or TODO item only if the first fix is complete and the build is still clean.
+7. Run: cargo build --release --bin caw-cli --features llama
+8. Fix any compilation errors before finishing — do not stop until it compiles cleanly.
+9. Do not stop after code changes without leaving BUGS.md and TODO.md in a state that tells the next implementer what remains.
 IMPL_PROMPT
     )
     claude --dangerously-skip-permissions -p "$CLAUDE_IMPLEMENTATION_PROMPT" \
