@@ -114,3 +114,11 @@ logged or returned. `run_turn` logs a `warn!` when any are stripped, making the
 failure visible in session logs. The root cause (model learning the injection
 format from context) remains — switching to UUID-delimited or XML-namespaced
 tags would eliminate the generation incentive entirely.
+
+## B7. Prior session model responses flood context in follow-on sessions (high)
+
+When a new session starts on the same topic as a recent session, `collect_previous_stubs` loads the prior session log into the in-memory HNSW index. The prior session's full model responses (400–450 tokens each) then score as the highest-ranked semantic matches for queries using the same terminology. In QA loop 0009, session 065934's turn-3 context ("how many todos are left?") contained 2500+ tokens of session 065745's model responses — about 40% of the total context budget — with only a single TODO.md chunk retrieved for the actual query.
+
+The fix for B3 correctly prevents prior session stubs from persisting to SQLite, but the in-memory path still loads full model response text into the retrieval pool. Because model responses contain every relevant concept in polished prose, they outcompete workspace stubs for retrieval slots. The effect is that the model answers the current session based on what it said in the prior session rather than from the workspace, creating a self-reinforcing loop: prior answer → indexed → retrieved → used as authoritative context → new answer echoes prior answer.
+
+Distinguish this from intentional session continuity (loading prior user queries as context hints): the problem is the model's verbose *responses*, not the user queries, dominating the context.
