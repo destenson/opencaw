@@ -140,6 +140,7 @@ Evaluate on these dimensions:
 - Did consolidation notes add useful cross-stub context, or were they redundant?
 - Any patterns in what the model got wrong that point to retrieval or summarization problems?
 - Every qa session should contain 3 turns. Are there any turns missing?
+- The model should have all the information it needs to respond accurately in the injected context. Are there any cases where the model's response indicates it lacked necessary information that should have been retrieved?
 
 Write observations about what the session output reveals — what is going wrong and why it matters.
 You may look at the Rust source to understand why something behaves the way it does, but the session output is your primary evidence.
