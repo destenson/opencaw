@@ -91,6 +91,12 @@ orchestrator runs at full capability unconditionally.
 - [x] **Per-component health checks**: `ComponentHealth` tracks latency and error rate for the embedding service and summary generator independently. `ProbeRateLimiter` tracks probe frequency within a sliding window. Each has configurable thresholds and hysteresis (N consecutive successes to recover).
 - [x] **Tiered fallback**: `OperatingTier::{FullRecall, StubsAndToolsOnly, PassThrough}`. `DegradationMonitor::effective_tier()` combines component health into the current tier. Orchestrator skips automatic recall and/or stub generation based on tier. Recovery is automatic when components return to healthy.
 - [x] **Probe rate limiting**: `ProbeRateLimiter` with configurable window + max probes. When tripped, the effective tier drops to `StubsAndToolsOnly` until old probes age out of the window.
+- [ ] **Continuous improvements**:
+  - [ ] Improve the prompt logging to include any metadata that may be helpful for debugging and troubleshooting.
+  - [ ] Improve logging with timestamps and component tags to better understand the sequence of events leading to degradation.
+  - [ ] Add more detailed error messages and actionable insights in the logs to facilitate faster debugging and resolution of issues.
+  - [ ] Implement a notification system to alert developers when degradation is detected, including details about the affected components and potential causes.
+  - [ ] Regularly review and analyze degradation incidents to identify common patterns and areas for improvement in the system's robustness and reliability.
 
 ## Infrastructure
 
@@ -116,4 +122,4 @@ orchestrator runs at full capability unconditionally.
 - [ ] **Intent-driven proactive context injection**: `AugmentationSignals` is defined and extracted from `QueryIntent`, but the orchestrator/CLI does not yet act on it. For `is_status_request` / `is_next_step_request` queries where the top-k hits are fragments of the same document file, load all remaining chunks of that file up to the token budget — this is required for count and status queries against TODO.md, SCOPE.md, etc. to be answerable at all (observed failure in QA loop 0003). Wire augmentation signals into the retrieval path so that e.g. `is_status_request` biases retrieval toward status/todo docs and triggers a `git status` inject, `is_results_request` proactively loads recent bench result files, and `is_inventory_request` injects a file/artifact listing — all before the answer model runs. The goal is that queries like "what's uncommitted?" get the relevant context surfaced automatically without the model needing to invoke tools.
 - [ ] Add a `caw-bench-sweep` config for systematically benchmarking more models + workloads + parameter variations.
 - [ ] Add a `caw-bench-intent` binary for evaluating small models as query intent classifiers, to help pick a cheap model for routing inventory vs. results vs. comparison vs. explanation queries before the main answer model runs.
-
+- [ ] Consider adding a `caw-bench-probe` binary for evaluating small models as probe responders, to help pick a cheap model for detecting when retrieved context is relevant to the model's current line of reasoning.
