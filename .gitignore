@@ -8,3 +8,4 @@ opencaw-corpora/
 **/*.local.*
 .caw*/
 qa/log.txt
+qa/claude_*.txt
