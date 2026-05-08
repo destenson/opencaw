@@ -1,14 +1,22 @@
 # A place to record bugs as they're found
 
-## B00. REGRESSION: caw-cli failed on first run.
+## B00. REGRESSION: caw-cli fails on first run with degenerate Rust code output.
 
-Between .caw00013 and .caw00014, a regression was introduced that causes `caw-cli` to fail on the first run of a session. The latest error message is:
+Between .caw00013 and .caw00014, a regression was introduced that causes `caw-cli` to fail on the first run of a session. Still active in QA 0018: the session produced identical degenerate output on the "what is opencaw?" query, aborting after 1 of 3 expected turns. The error message is:
 
 ```
 Error: degenerate output from Qwen3.6-35B-A3B-UD-Q2_K_XL: ").unwrap());
 static ANNOTATION_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"<note id="([^"]+)">(.*?)</...
 ```
+
+The degenerate content is verbatim Rust source from `crates/caw-transform/src/recall.rs:6-10` — the tail of `PROBE_PATTERN` followed by `ANNOTATION_PATTERN`. The model is code-completing opencaw source instead of answering in prose. Whether this is training-data leakage or context contamination from indexed recall.rs stubs is unconfirmed, but recall.rs is in the indexed workspace.
+
+## B18. QA harness aborts the entire session on a single degenerate response (high) — FIXED
+
+When `run_turn` raises `DegenerateOutput` and the error propagates past the per-turn handler, the QA session loop exits rather than advancing to the next question. In QA 0018, this left turns 2 and 3 unexecuted. The session produced 2 prompt files instead of 6, and 0 of 3 questions received a valid answer.
+
+Fixed in `caw-cli/src/main.rs`: the `run_turn` call in `run_interactive` now catches `DegenerateOutput` per-turn, prints a diagnostic, and continues the loop so remaining queries are processed.
 
 ## B0. qa/0001.txt sometimes misses the first user turn (critical)
 
