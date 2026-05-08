@@ -104,53 +104,43 @@ for n in $(seq 1 "$NLOOPS"); do
     mv .caw ".caw${LOOP_NUMBER}"
 
     # ----------------------------------------------------------------
-    # REVIEW PASS: Claude inspects the session DB and codebase, writes
-    # behavioral observations to qa/recommendations/NNNN.md
+    # REVIEW PASS: Claude reads the session output and DB to assess
+    # what the QA runs reveal about context quality and retrieval.
     # ----------------------------------------------------------------
     echo "--- Review pass (Claude) ---"
     CLAUDE_REVIEW_PROMPT=$(cat <<REVIEW_PROMPT
-You are reviewing the opencaw Rust codebase to identify specific improvements after QA generation loop $LOOP_NUMBER.
+You are reviewing the output of QA sessions run by opencaw (loop $LOOP_NUMBER) to identify what can be learned about context quality and retrieval effectiveness.
 
 WHAT OPENCAW DOES:
-opencaw is a workspace-aware context augmentation system for LLMs, written in Rust. It:
-- Indexes a codebase by chunking source files and generating summaries (stubs) of each chunk
-- Stores stubs in a local SQLite database (.caw/index.db) with tables: stubs, embeddings, consolidation_notes
-- At query time, retrieves relevant stubs by embedding similarity and assembles them into LLM context
-- Supports multi-turn sessions with memory consolidation across turns
+opencaw is a workspace-aware context augmentation system for LLMs. It retrieves relevant code summaries
+(stubs) from a local index and injects them as context before each model query. The goal is to give the
+model accurate, relevant workspace context so its answers are grounded and useful.
 
-CODEBASE LAYOUT:
-- caw-orchestrator: core retrieval, session management, memory consolidation
-- caw-adapters: LLM adapter implementations (llama.cpp, anthropic, save-prompt)
-- caw-workspace: workspace indexing, stub generation, content chunking
-- caw-cli: CLI entry point
-- caw-index, caw-ingest, caw-transform: indexing pipeline stages
-- caw-core: shared types and traits
-- caw-curation, caw-eval, caw-bench: evaluation and curation tools
-
-SESSION ARTIFACTS from loop $LOOP_NUMBER:
-- .caw${LOOP_NUMBER}/index.db — SQLite DB produced by this run:
-    stubs(id, path, token_estimate, kind, summary, outline, content_hash, mtime_unix_secs, byte_offset, byte_length, stub_json, stale, ignored)
-    embeddings(stub_id, embedding BLOB)
+SESSION ARTIFACTS in .caw${LOOP_NUMBER}/:
+- session-*.md files — the actual QA session logs: prompts sent to the model, context injected, and model responses
+- prompt-*.txt files — the actual context sent to the model for each turn
+- index.db — SQLite DB with the stubs that were available for retrieval:
+    stubs(id, path, token_estimate, kind, summary, outline, ...)
     consolidation_notes(id, stub_id, content, source, created_at_secs)
 
 YOUR TASK:
-1. Query .caw${LOOP_NUMBER}/index.db to understand what was indexed and how:
-     SELECT path, kind, summary, outline, token_estimate FROM stubs ORDER BY token_estimate DESC LIMIT 30;
+1. Read the session files in .caw${LOOP_NUMBER}/ to see what was asked, what context was injected, and what the model said
+2. Query .caw${LOOP_NUMBER}/index.db to understand what stubs were available and whether the right ones were retrieved:
+     SELECT path, kind, summary, token_estimate FROM stubs ORDER BY token_estimate DESC LIMIT 30;
      SELECT content, source FROM consolidation_notes LIMIT 10;
-     SELECT COUNT(*) FROM stubs WHERE stale = 1;
-     SELECT COUNT(*) FROM stubs WHERE ignored = 1;
-2. Browse the codebase to understand how stubs are generated, retrieved, and assembled into context
-3. Write a numbered, prioritized list of behavioral problems and quality observations to: qa/recommendations/${LOOP_NUMBER}.md
-4. Add your recommendations to TODO.md, and add bugs to be fixed to BUGS.md.
+3. Write a numbered, prioritized list of observations to: qa/recommendations/${LOOP_NUMBER}.md
+4. Add improvement recommendations to TODO.md, and add bugs found to BUGS.md
 
-Evaluate and report on these dimensions:
-- Stub quality: are summaries/outlines genuinely useful for retrieval? too verbose? losing signal?
-- Coverage: are important code paths being indexed? what is stale or ignored and why?
-- Consolidation: do the consolidation_notes capture meaningful cross-stub relationships?
-- Retrieval behavior: based on what you see in the stubs, would similarity search surface the right context for a typical query?
+Evaluate on these dimensions:
+- Were the model's answers accurate and grounded in the injected context?
+- Did the retrieved stubs match what the queries needed? Any obvious misses or irrelevant inclusions?
+- Was the injected context too verbose, noisy, or missing key signal?
+- Did consolidation notes add useful cross-stub context, or were they redundant?
+- Any patterns in what the model got wrong that point to retrieval or summarization problems?
 
-Write behavioral observations and diagnoses — what is going wrong and why it matters.
-Each recommendation should describe a problem clearly enough that an implementer can find and fix it independently.
+Write observations about what the session output reveals — what is going wrong and why it matters.
+You may look at the Rust source to understand why something behaves the way it does, but the session output is your primary evidence.
+Each observation should be concrete enough that an implementer can act on it.
 REVIEW_PROMPT
     )
     claude --dangerously-skip-permissions -p "$CLAUDE_REVIEW_PROMPT" || true
