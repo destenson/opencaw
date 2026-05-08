@@ -123,7 +123,7 @@ You are reviewing the output of QA sessions run by opencaw (loop $LOOP_NUMBER) t
 
 WHAT OPENCAW DOES:
 opencaw is a workspace-aware context augmentation system for LLMs. It retrieves relevant code summaries
-(stubs) from a local index and injects them as context before each model query. The goal is to give the
+(stubs) from a local index and injects them as context during model queries. The goal is to give the
 model accurate, relevant workspace context so its answers are grounded and useful.
 
 SESSION ARTIFACTS in .caw${LOOP_NUMBER}/:
@@ -155,7 +155,7 @@ Evaluate on these dimensions:
 - Any patterns in what the model got wrong that point to retrieval or summarization problems?
 - Every QA session should contain 3 turns. Are there any turns missing?
 - The model should have all the information it needs to respond accurately in the injected context. Are there any cases where the model's response indicates it lacked necessary information that should have been retrieved?
-- Did the generation fail prematurely? Check the last few lines of qa/log.txt to see if there's any indication of why.
+- Did the generation fail prematurely? Check the last few lines of \`qa/log.txt\` to see if there's any indication of why.
 
 Write observations about what the session output reveals — what is going wrong and why it matters.
 You may look at the Rust source to understand why something behaves the way it does, but the session output is your primary evidence.
