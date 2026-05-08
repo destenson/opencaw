@@ -129,6 +129,10 @@ In session-074559 prompt turn-10, the fragment for `caw-orchestrator/src/probe_r
 
 When appending a new eviction note, the implementation is including the prior note (which contains the prior-prior note) as the "Topic" context for the new note. After enough eviction cycles, a stub's consolidation header grows without bound. Observed with 2 levels of nesting; the pattern will continue recursively.
 
+## B10. Session history fragments remain large despite B7 summarization fix (high)
+
+QA 0012 sessions show session-history fragments at 468 tokens and 1092 tokens respectively — far above the ≤300-character (≈50 token) target from the B7 fix. In session 080631 turn 1, session history consumed 1560/2694 workspace tokens (58%) before a single workspace stub was loaded. The B7 fix is marked done in TODO.md, but the actual prompt sizes suggest either: (a) the sessions ran against a build before the fix was active, (b) the fix applies only to model responses but not to full turn blocks injected by `collect_previous_stubs`, or (c) there is a code path that bypasses the compression. The consequence is that B7's echo-chamber effect is still fully present in QA 0012: session 080631 turn 2 gives an answer nearly verbatim identical to session 080400 turn 2, and turn 3's caw-curation query retrieved zero caw-curation stubs because the history fragments consumed the budget. Observed in QA 0012 (recommendations 1, 2).
+
 ## B7. Prior session model responses flood context in follow-on sessions (high)
 
 When a new session starts on the same topic as a recent session, `collect_previous_stubs` loads the prior session log into the in-memory HNSW index. The prior session's full model responses (400–450 tokens each) then score as the highest-ranked semantic matches for queries using the same terminology. In QA loop 0009, session 065934's turn-3 context ("how many todos are left?") contained 2500+ tokens of session 065745's model responses — about 40% of the total context budget — with only a single TODO.md chunk retrieved for the actual query.
