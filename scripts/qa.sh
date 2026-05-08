@@ -18,6 +18,20 @@ LOOP_NUMBER_STRING() {
     printf "%04d" "$1"
 }
 
+LOOP_START() {
+    # find the last .cawNNNN directory and extract the number, or return 0 if none found
+    local last_loop=0
+    for dir in .caw*/; do
+        if [[ "$dir" =~ \.caw([0-9]{4})/ ]]; then
+            num="${BASH_REMATCH[1]}"
+            if (( num > last_loop )); then
+                last_loop="$num"
+            fi
+        fi
+    done
+    echo "$last_loop"
+}
+
 # Build caw-cli; on failure invoke Claude to fix errors and retry.
 # Usage: build_or_fix <label>
 build_or_fix() {
@@ -53,11 +67,13 @@ mkdir -p qa/recommendations
 
 build_or_fix "initial"
 
-for i in $(seq 1 "$NLOOPS"); do
+END_LOOP=$((NLOOPS + $(LOOP_START)))
+for n in $(seq 1 "$NLOOPS"); do
+    i=$((n + $(LOOP_START)))
     LOOP_NUMBER=$(LOOP_NUMBER_STRING "$i")
     echo ""
     echo "========================================================"
-    echo "=== OUTER LOOP $LOOP_NUMBER ==="
+    echo "=== OUTER LOOP $LOOP_NUMBER of $END_LOOP ==="
     echo "========================================================"
 
     # Run each QA prompt through caw-cli, accumulating session artifacts in .caw
