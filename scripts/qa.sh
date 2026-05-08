@@ -8,9 +8,9 @@ MODEL_GGUF="${MODEL_GGUF:-$HOME/models/Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf}"
 LOC="${LOC:-.}"
 CONTEXT_LENGTH=${CONTEXT_LENGTH:-102400}
 MAX_FIX_ATTEMPTS=${MAX_FIX_ATTEMPTS:-3}
-REGENERATE=${REGENERATE:-1}
+REGENERATE=${REGENERATE:-0}
 
-export CUDA_VISIBLE_DEVICES=1,0
+export CUDA_VISIBLE_DEVICES=1,0 RUST_LOG="debug"
 
 # Kill the entire process group on Ctrl-C so claude subprocesses don't linger.
 trap 'kill 0' INT TERM
@@ -106,9 +106,9 @@ for n in $(seq 1 "$NLOOPS"); do
 
     mv .caw ".caw${LOOP_NUMBER}"
     if [ "${REGENERATE:-1}" -eq 1 ]; then
-        echo "Regenerating index.db for loop $((10#$LOOP_NUMBER + 1)) to ensure it reflects the final session artifacts..."
+        echo "Will regenerating index.db in the next loop $((10#$LOOP_NUMBER + 1)) to ensure it reflects the final session artifacts..."
     else
-        echo "NOTE: Skipping index.db regeneration for loop $((10#$LOOP_NUMBER + 1)); if session artifacts changed during generation, the index may be out of sync."
+        echo "NOTE: Skipping index.db regeneration for the next loop $((10#$LOOP_NUMBER + 1)); if session artifacts changed during generation, the index may be out of sync."
         mkdir -p .caw/
         cp ".caw${LOOP_NUMBER}/index.db" .caw/ || echo "No index.db found in .caw${LOOP_NUMBER}, skipping copy to .caw/"
     fi
@@ -147,8 +147,9 @@ Evaluate on these dimensions:
 - Was the injected context too verbose, noisy, or missing key signal?
 - Did consolidation notes add useful cross-stub context, or were they redundant?
 - Any patterns in what the model got wrong that point to retrieval or summarization problems?
-- Every qa session should contain 3 turns. Are there any turns missing?
+- Every QA session should contain 3 turns. Are there any turns missing?
 - The model should have all the information it needs to respond accurately in the injected context. Are there any cases where the model's response indicates it lacked necessary information that should have been retrieved?
+- Did the generation fail prematurely? Check the last few lines of qa/log.txt to see if there's any indication of why.
 
 Write observations about what the session output reveals — what is going wrong and why it matters.
 You may look at the Rust source to understand why something behaves the way it does, but the session output is your primary evidence.
