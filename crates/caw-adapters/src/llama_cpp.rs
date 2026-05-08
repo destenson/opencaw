@@ -1,6 +1,6 @@
 use caw_core::{
-    split_thinking, CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
-    ModelCapabilities, ProvenanceFormat,
+    is_looping, split_thinking, truncate_at_chat_boundary, CawError, CawResult, CompletionRequest,
+    CompletionResponse, ModelAdapter, ModelCapabilities, ProvenanceFormat,
 };
 use caw_llama_sys::*;
 use std::collections::VecDeque;
@@ -169,7 +169,14 @@ impl ModelAdapter for LlamaCppAdapter {
 
         let prompt = format_prompt(&state, &req)?;
         let raw = run_generation(&mut state, &self.config, &prompt, usize::MAX, 0, None)?;
-        let (thinking, answer) = split_thinking(&raw);
+        let truncated = truncate_at_chat_boundary(&raw);
+        if is_looping(truncated) {
+            return Err(CawError::DegenerateOutput {
+                model: self.model_name.clone(),
+                sample: truncated.chars().take(120).collect(),
+            });
+        }
+        let (thinking, answer) = split_thinking(truncated);
         Ok(CompletionResponse {
             answer,
             thinking,
@@ -198,7 +205,14 @@ impl ModelAdapter for LlamaCppAdapter {
             window_size,
             Some(on_window),
         )?;
-        let (thinking, answer) = split_thinking(&raw);
+        let truncated = truncate_at_chat_boundary(&raw);
+        if is_looping(truncated) {
+            return Err(CawError::DegenerateOutput {
+                model: self.model_name.clone(),
+                sample: truncated.chars().take(120).collect(),
+            });
+        }
+        let (thinking, answer) = split_thinking(truncated);
         Ok(CompletionResponse {
             answer,
             thinking,
@@ -617,8 +631,9 @@ fn run_thinking_steps(
 
     unsafe { llama_sampler_free(smpl) };
 
+    let answer = truncate_at_chat_boundary(&step_buf).to_string();
     Ok(CompletionResponse {
-        answer: step_buf,
+        answer,
         thinking: None,
         usage: None,
     })

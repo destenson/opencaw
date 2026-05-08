@@ -257,8 +257,11 @@ where
         let response_requirement = concat!(
             "\n\nIMPORTANT: Always produce a visible response, even when the retrieved context",
             " does not fully cover the question. If retrieved evidence is insufficient, say so",
-            " explicitly: describe what information is missing and offer to load more context.",
+            " explicitly and describe what is missing.",
             " A blank or empty response is never acceptable.",
+            " Context loading is handled automatically by the system — do not offer to load",
+            " additional files or documents (e.g. 'Would you like me to load ./SCOPE.md?').",
+            " Such offers cannot be fulfilled here.",
         );
 
         let inject = match self.config.cooperation_mode {
@@ -408,7 +411,7 @@ where
         let lower_query = user.to_lowercase();
         let is_bench_query = BENCH_TERMS.iter().any(|t| lower_query.contains(t));
         if !is_bench_query {
-            const BENCH_PENALTY: f32 = 0.5;
+            const BENCH_PENALTY: f32 = 0.25;
             let mut penalized = false;
             for hit in &mut initial_hits {
                 if hit.stub.path.contains("caw-bench") {

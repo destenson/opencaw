@@ -835,6 +835,11 @@ pub struct CompletionResponse {
 
 /// Split a raw model response into (thinking, answer) by extracting the first
 /// `<think>...</think>` block. Returns `(None, raw)` if no block is found.
+///
+/// If `<think>` is present but `</think>` is absent (context window exceeded
+/// mid-reasoning), the partial thinking trace is returned and the answer is
+/// whatever preceded `<think>` (usually empty). This prevents storing raw
+/// `<think>…` text as the visible answer, which would corrupt session history.
 pub fn split_thinking(raw: &str) -> (Option<String>, String) {
     let open = raw.find("<think>");
     let close = raw.find("</think>");
@@ -842,6 +847,11 @@ pub fn split_thinking(raw: &str) -> (Option<String>, String) {
         (Some(o), Some(c)) if c > o => {
             let thinking = raw[o + "<think>".len()..c].trim().to_string();
             let answer = raw[c + "</think>".len()..].trim().to_string();
+            (Some(thinking), answer)
+        }
+        (Some(o), _) => {
+            let thinking = raw[o + "<think>".len()..].trim().to_string();
+            let answer = raw[..o].trim().to_string();
             (Some(thinking), answer)
         }
         _ => (None, raw.to_string()),
