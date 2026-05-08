@@ -283,8 +283,16 @@ fn main() -> Result<()> {
         .ingest_directory(&cli.dir, !cli.gitignore, &already_indexed)
         .context("Failed to ingest directory")?;
 
+    // Chunks whose content is below this threshold carry no retrieval signal.
+    // The canonical case is a Cargo.toml whose first chunk is only `[package]`
+    // (3 tokens) — it consumes an index slot while never helping answer any query.
+    const MIN_INDEX_TOKENS: usize = 10;
+
     let ingested = documents.len();
     for (stub, embed_text) in documents {
+        if stub.token_estimate < MIN_INDEX_TOKENS {
+            continue;
+        }
         // embed_text is the actual chunk content (or full doc for small files).
         // Prepend the path so the embedder can orient to the source location;
         // the chunking pipeline budgets ~100 tokens of headroom for this prefix.
@@ -338,6 +346,14 @@ fn main() -> Result<()> {
     } else if budget_check.is_warning() {
         eprintln!("NOTE: system prompt is approaching budget limit");
     }
+
+    // Second connection to the same database, used by the orchestrator to
+    // persist consolidation notes. The retriever already owns the first
+    // connection; SQLite WAL mode allows multiple concurrent readers + one
+    // writer safely. Without this, consolidation notes are written only to
+    // in-memory provenance and are lost at session end.
+    let consolidation_store = SqliteStubStore::new(&db_path, dimension)
+        .context("Failed to open consolidation store")?;
 
     let retriever = SemanticRetriever::new(embedder, store, vector_index);
     let trace_embedder = LazyFastEmbedProvider::new();
@@ -425,7 +441,8 @@ fn main() -> Result<()> {
         provenance,
         adapter,
         config,
-    );
+    )
+    .with_store(consolidation_store);
 
     if cli.llm_consolidation {
         eprintln!(

@@ -1,4 +1,4 @@
-use caw_core::{CawResult, ContentKind, Retriever};
+use caw_core::{CawResult, ContentKind, Retriever, Stub};
 use caw_ingest::{DocumentIdSet, IngestionPipeline, SourceDocument};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -88,6 +88,59 @@ impl SessionFile {
         }
         Ok(count)
     }
+}
+
+/// Collect (stub, embed_text) pairs from all previous session `.md` files in
+/// `session_dir` without inserting them into any retriever or store. Callers
+/// embed and index these in-memory only, so prior session content never leaks
+/// into the persistent SQLite store and cannot propagate hallucinations across
+/// sessions via the authoritative index path.
+pub fn collect_previous_stubs(
+    session_dir: &Path,
+    current_path: &Path,
+    pipeline: &IngestionPipeline,
+) -> Vec<(Stub, String)> {
+    let entries = match std::fs::read_dir(session_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            warn!(dir = %session_dir.display(), error = %e, "could not read session dir");
+            return Vec::new();
+        }
+    };
+
+    let mut result = Vec::new();
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        if p == current_path {
+            continue;
+        }
+        let content = match std::fs::read_to_string(&p) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(file = %p.display(), error = %e, "failed to read session file");
+                continue;
+            }
+        };
+        let mtime = std::fs::metadata(&p)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let doc = SourceDocument {
+            path: p.to_string_lossy().into_owned(),
+            content,
+            kind: ContentKind::Markdown,
+            mtime_unix_secs: mtime,
+        };
+        let stubs = pipeline.ingest(doc);
+        debug!(file = %p.display(), chunks = stubs.len(), "collected prior session stubs");
+        result.extend(stubs);
+    }
+    result
 }
 
 fn load_session_file<R: Retriever>(

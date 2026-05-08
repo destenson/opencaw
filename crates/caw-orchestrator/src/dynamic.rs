@@ -8,7 +8,7 @@ use caw_core::{
     StubStore, VectorIndex, candidate_list_fragment, count_tokens_cl100k, tokenize_terms,
 };
 use caw_eval::SessionEvaluator;
-use caw_ingest::{DocumentIdSet, IngestionPipeline};
+use caw_ingest::IngestionPipeline;
 use caw_transform::{extract_annotations, extract_line_references, extract_probes, extract_thinking_steps, strip_markers};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -196,21 +196,33 @@ where
 
     /// Enable session history: write each turn to an append-only file in
     /// `session_dir` and recall them semantically in future turns.
-    /// Previous runs' session files in the same directory are ingested
-    /// read-only at startup so prior exchanges are immediately retrievable.
+    /// Previous runs' session files in the same directory are loaded into the
+    /// in-memory vector index only — they are never written to the persistent
+    /// store. This prevents prior sessions' improvised answers from being
+    /// retrieved as authoritative documentation in subsequent sessions.
     pub fn with_session(mut self, session_dir: &Path) -> CawResult<Self> {
         std::fs::create_dir_all(session_dir).map_err(|e| caw_core::CawError::Io(e.to_string()))?;
         let pipeline = IngestionPipeline::new();
         let file_name = format!("session-{}.md", session::timestamp_str());
         let file_path = session_dir.join(file_name);
-        let loaded = SessionFile::load_previous(
-            session_dir,
-            &file_path,
-            &pipeline,
-            &mut self.retriever,
-            &DocumentIdSet::new(),
-        )?;
-        debug!(dir = %session_dir.display(), stubs = loaded, "loaded prior session history");
+
+        let prior_stubs = session::collect_previous_stubs(session_dir, &file_path, &pipeline);
+        let mut loaded_count = 0;
+        for (stub, embed_text) in prior_stubs {
+            match self.embedder.embed_document(vec![embed_text.as_str()]) {
+                Ok(embeddings) => {
+                    if let Some(emb) = embeddings.into_iter().next() {
+                        // embed_text is the chunk content — it's what the model
+                        // should see when this prior session chunk is recalled.
+                        self.session_content.insert(stub.id.clone(), embed_text);
+                        self.vector_index.add(stub.id, emb);
+                        loaded_count += 1;
+                    }
+                }
+                Err(e) => warn!(error = %e, "prior session stub embedding failed"),
+            }
+        }
+        debug!(dir = %session_dir.display(), stubs = loaded_count, "loaded prior session history into memory");
         self.session = Some(SessionFile::create(file_path)?);
         Ok(self)
     }
