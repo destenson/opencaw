@@ -59,7 +59,8 @@ Fix ONLY the compilation errors it reports. Do not refactor, add features, or to
 Do not stop until the build succeeds.
 BUGFIX_PROMPT
         )
-        claude --dangerously-skip-permissions -p "$CLAUDE_BUGFIX_PROMPT" || true
+        claude --dangerously-skip-permissions -p "$CLAUDE_BUGFIX_PROMPT" \
+            || echo "Claude failed to fix the build, but retrying build loop anyway."
 
         attempt=$((attempt + 1))
     done
@@ -143,7 +144,9 @@ You may look at the Rust source to understand why something behaves the way it d
 Each observation should be concrete enough that an implementer can act on it.
 REVIEW_PROMPT
     )
-    claude --dangerously-skip-permissions -p "$CLAUDE_REVIEW_PROMPT" || true
+    claude --dangerously-skip-permissions -p "$CLAUDE_REVIEW_PROMPT" \
+        | tee qa/claude_review_${LOOP_NUMBER}.txt \
+        || echo "Claude failed during review pass, but continuing to implementation."
 
     if [ ! -f "qa/recommendations/${LOOP_NUMBER}.md" ]; then
         echo "WARNING: Claude did not write qa/recommendations/${LOOP_NUMBER}.md — skipping implementation pass."
@@ -185,7 +188,9 @@ YOUR TASK:
 5. Mark the item as completed in TODO.md
 IMPL_PROMPT
     )
-    claude --dangerously-skip-permissions -p "$CLAUDE_IMPLEMENTATION_PROMPT" || true
+    claude --dangerously-skip-permissions -p "$CLAUDE_IMPLEMENTATION_PROMPT" \
+        | tee qa/claude_impl_${LOOP_NUMBER}.txt \
+        || echo "Claude failed during implementation pass, but continuing to bugfix."
 
     # Rebuild after implementation. If Claude left the code broken, the bugfix loop recovers it.
     build_or_fix "post-impl-${LOOP_NUMBER}"
