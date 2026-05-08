@@ -563,8 +563,9 @@ impl QueryIntent {
             "- is_status_request: the query asks about PROGRESS or COMPLETION STATE — what is done, pending, or in-flight. ",
             "Examples: 'is benchmarking finished?', 'how many items remain?', 'what percentage is complete?', 'how much is done?'\n",
             "- is_next_step_request: the query asks what to DO NEXT. Example: 'what should I work on?'\n",
+            "- wants_explanation: the query asks WHY or HOW something works, or requests a description/overview of a concept or system. Examples: 'what is X?', 'how does Y work?', 'why should I use Z?'\n",
             "- wants_latest_run_only: the query is scoped to the most recent run or timestamp.\n\n",
-            "Schema: {\"is_inventory_request\":bool,\"is_results_request\":bool,\"is_status_request\":bool,\"is_next_step_request\":bool,\"wants_latest_run_only\":bool}"
+            "Schema: {\"is_inventory_request\":bool,\"is_results_request\":bool,\"is_status_request\":bool,\"is_next_step_request\":bool,\"wants_explanation\":bool,\"wants_latest_run_only\":bool}"
         )
     }
 
