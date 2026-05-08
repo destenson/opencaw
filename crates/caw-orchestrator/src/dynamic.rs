@@ -821,7 +821,12 @@ where
         self.provenance
             .record_consolidation(stub_id.clone(), note.clone());
         if let Some(store) = &mut self.store {
-            let _ = store.save_consolidation(stub_id, note);
+            match store.save_consolidation(stub_id, note) {
+                Ok(()) => debug!(stub_id = stub_id.0.as_str(), source = ?note.source, "consolidation note persisted to store"),
+                Err(e) => warn!(stub_id = stub_id.0.as_str(), error = %e, "consolidation note persist failed"),
+            }
+        } else {
+            debug!(stub_id = stub_id.0.as_str(), source = ?note.source, "consolidation note recorded in memory (no persistent store configured)");
         }
     }
 
@@ -902,6 +907,7 @@ where
         }
 
         // Remove in reverse index order to preserve indices
+        let eviction_count = to_evict.len();
         to_evict.sort_unstable_by(|a, b| b.cmp(a));
         for idx in to_evict {
             let fragment = self.loaded.remove(idx);
@@ -949,11 +955,29 @@ where
 
             self.persist_consolidation(&fragment.stub_id, &note);
         }
+
+        if eviction_count > 0 {
+            info!(
+                evictions = eviction_count,
+                turn = self.session_turn,
+                has_persistent_store = self.store.is_some(),
+                "eviction pass complete",
+            );
+        }
     }
 
     fn load_fragments(&mut self, hits: Vec<(StubId, f32)>) -> CawResult<()> {
         for (stub_id, score) in hits {
             if self.loaded_ids.contains(&stub_id) {
+                // Fragment already in workspace — update relevance score if the
+                // new retrieval hit scored higher. This keeps the fragment fresh
+                // without creating a duplicate in self.loaded.
+                if let Some(current) = self.relevance_scores.get_mut(&stub_id) {
+                    if score > *current {
+                        debug!(stub_id = stub_id.0.as_str(), old_score = *current, new_score = score, "refreshing relevance on re-hit");
+                        *current = score;
+                    }
+                }
                 continue;
             }
 

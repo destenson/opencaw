@@ -711,6 +711,24 @@ impl QueryIntent {
         !self.abstain && self.confidence.map_or(true, |c| c >= min_confidence)
     }
 
+    /// Returns true if any retrieval-relevant intent flag is set, meaning the
+    /// query carries a clear signal worth running a retrieval cycle for.
+    /// All-false + short message = casual acknowledgment, not a query.
+    pub fn is_substantive(&self) -> bool {
+        self.is_inventory_request
+            || self.is_results_request
+            || self.is_status_request
+            || self.is_next_step_request
+            || self.wants_exact_names_or_paths
+            || self.wants_numeric_values
+            || self.wants_latest_run_only
+            || self.wants_comparison
+            || self.wants_explanation
+            || self.wants_completion_state
+            || self.wants_recommended_actions
+            || self.needs_grounded_evidence_only
+    }
+
     /// Merge multiple classifier votes by strict majority (> half must agree for a field
     /// to be set). Returns the default intent if `votes` is empty.
     pub fn majority_vote(votes: &[QueryIntent]) -> QueryIntent {

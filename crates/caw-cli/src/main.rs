@@ -759,6 +759,20 @@ fn run_interactive(
             .unwrap_or_default();
         let signals = actionable.map(|i| i.augmentation_signals());
 
+        // Skip the retrieval cycle when the intent classifier confirms no substantive
+        // query signal AND the message is short. Casual acknowledgments ("nice to know",
+        // "got it", "ok") would otherwise surface lexically similar but off-topic fragments
+        // and generate a misleading substantive response.
+        if let Some(ref intent) = query_intent {
+            if !intent.is_substantive() && query.split_whitespace().count() < 15 {
+                if show_intent {
+                    eprintln!("[intent] short non-substantive input — skipping retrieval");
+                }
+                println!("\nGot it.\n");
+                continue;
+            }
+        }
+
         let response =
             orchestrator.run_turn(&effective_system, query, &guidance, signals.as_ref())?;
 
