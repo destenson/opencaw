@@ -12,9 +12,13 @@ Session log files (`session-20260508-050942.md`, `session-20260508-051313.md`) r
 
 Despite `should_skip` in `caw-ingest/src/lib.rs` filtering paths with a `.caw` component, session log files from `.caw/session-*.md` appear in the retrieval index for 0003 (same finding as 0002). The CLI ingestion path or the bench index builder is apparently not activating the skip correctly — either `skip_gitignore` is overriding the hidden-dir walk suppression, or `should_skip` is not being called on the walk results before insertion.
 
-## B5. `scripts/qa.sh` indexed and surfaced as authoritative architecture documentation (medium)
+Partially fixed: `build_index.rs::should_skip` now checks all path components for hidden dirs (`.caw*`) instead of only the filename. The CLI-path issue (session logs inserted via `SessionFile::load_previous` into the SQLite store) remains open — this requires a transient insert path that adds only to the in-memory HNSW index, not the persistent store.
+
+## B5. `scripts/qa.sh` indexed and surfaced as authoritative architecture documentation (medium) — FIXED
 
 `scripts/qa.sh` chunk 6/7 appears as a top-ranked retrieval result for nearly every query across all three QA loop 0005 sessions — architecture queries, status queries, metacommentary queries. The chunk contains a CODEBASE LAYOUT section and QA prompt templates that the retrieval engine treats as architecture documentation. The CODEBASE LAYOUT in qa.sh is stale (wrong crate names, missing crates) and injects misleading context. The `.caw/` skip filter handles session logs but leaves shell scripts in the index. No skip rule currently targets `scripts/` or shell scripts generally.
+
+Fixed: added `"scripts"` to the path-component skip list in both `caw-ingest/src/lib.rs::should_skip` and `build_index.rs::should_skip`.
 
 ## B4. Search-candidates mode fails silently when model cannot request file loads (low)
 

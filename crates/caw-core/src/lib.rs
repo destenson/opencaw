@@ -557,9 +557,11 @@ impl QueryIntent {
             "You are a context-augmentation classifier. ",
             "Given a user query, identify what types of information should be loaded into the context workspace before answering. ",
             "Return exactly one JSON object — no prose, no markdown fences, no explanation.\n\n",
-            "- is_inventory_request: the query asks WHAT EXISTS — artifacts, files, or a list of runs. Example: 'what benchmarks have been run?'\n",
+            "- is_inventory_request: the query asks WHAT EXISTS — artifacts, files, a list of runs, or a COUNT of items. ",
+            "Examples: 'what benchmarks have been run?', 'how many todos are left?', 'how many open bugs?', 'total remaining items?'\n",
             "- is_results_request: the query asks for METRIC VALUES or data from something that ran — numbers, scores, timings. Example: 'what throughput numbers were reported?'\n",
-            "- is_status_request: the query asks about PROGRESS or COMPLETION STATE — what is done, pending, or in-flight. Example: 'is benchmarking finished?'\n",
+            "- is_status_request: the query asks about PROGRESS or COMPLETION STATE — what is done, pending, or in-flight. ",
+            "Examples: 'is benchmarking finished?', 'how many items remain?', 'what percentage is complete?', 'how much is done?'\n",
             "- is_next_step_request: the query asks what to DO NEXT. Example: 'what should I work on?'\n",
             "- wants_latest_run_only: the query is scoped to the most recent run or timestamp.\n\n",
             "Schema: {\"is_inventory_request\":bool,\"is_results_request\":bool,\"is_status_request\":bool,\"is_next_step_request\":bool,\"wants_latest_run_only\":bool}"
@@ -567,7 +569,12 @@ impl QueryIntent {
     }
 
     pub fn augmentation_user_prompt(query: &str) -> String {
-        format!("Classify the user's query for context augmentation.\n\nUser query:\n{query}\n")
+        format!(
+            "Classify the user's query for context augmentation.\n\n\
+             Note: count queries ('how many X?', 'total remaining', 'how much is left?') \
+             should set is_inventory_request=true and/or is_status_request=true.\n\n\
+             User query:\n{query}\n"
+        )
     }
 
     /// Full 13-field system prompt covering both augmentation and guidance signals.
@@ -578,9 +585,9 @@ impl QueryIntent {
             "You are a query-intent classifier for retrieval planning. ",
             "Return exactly one JSON object — no prose, no markdown fences, no explanation. ",
             "\n\nField definitions:\n",
-            "- is_inventory_request: the query asks WHAT EXISTS — names, paths, files, or a list of artifacts that have been created or run. Example: 'what benchmarks have been run?'\n",
+            "- is_inventory_request: the query asks WHAT EXISTS or HOW MANY EXIST — names, paths, files, a list of artifacts, or a count of items. Examples: 'what benchmarks have been run?', 'how many todos are left?', 'how many open bugs?'\n",
             "- is_results_request: the query asks for METRIC VALUES or data from something that ran — numbers, scores, timings. Example: 'what throughput numbers were reported?'\n",
-            "- is_status_request: the query asks about PROGRESS or COMPLETION STATE of work — what is done, pending, or in-flight. Example: 'is benchmarking finished?'\n",
+            "- is_status_request: the query asks about PROGRESS or COMPLETION STATE of work — what is done, pending, or in-flight. Examples: 'is benchmarking finished?', 'how many items remain?', 'how much is done?'\n",
             "- is_next_step_request: the query asks what to DO NEXT. Example: 'what should I work on?'\n",
             "- wants_exact_names_or_paths: the answer requires precise artifact names, file paths, or model identifiers (not paraphrases).\n",
             "- wants_numeric_values: the answer requires exact numbers with units.\n",

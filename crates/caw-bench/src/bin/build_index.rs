@@ -660,9 +660,16 @@ fn flush_batch(
 /// Archives are handled separately (see `is_archive`) so they can be counted
 /// and surfaced in the run summary rather than silently dropped.
 fn should_skip(path: &Path) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    if name.starts_with('.') {
-        return true;
+    for component in path.components() {
+        if let std::path::Component::Normal(c) = component {
+            let s = c.to_str().unwrap_or("");
+            // Skip hidden dirs (including .caw* session/index dirs) and
+            // the scripts/ directory which contains qa.sh with stale
+            // codebase-layout text that pollutes retrieval rankings.
+            if s.starts_with('.') || s == "scripts" || s == "target" || s == "node_modules" {
+                return true;
+            }
+        }
     }
     matches!(
         path.extension().and_then(|e| e.to_str()),

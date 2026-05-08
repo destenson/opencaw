@@ -399,6 +399,11 @@ fn should_skip(path: &Path) -> bool {
                 || s == "dist"
                 || s == "build"
                 || s == "vendor"
+                // QA and automation scripts that contain project-structure
+                // descriptions (crate lists, qa prompts) — indexing them injects
+                // stale architecture text that outranks primary sources like
+                // README.md and SCOPE.md.
+                || s == "scripts"
                 // Runtime index/session directories produced by opencaw itself
                 || s.starts_with(".caw")
             {
