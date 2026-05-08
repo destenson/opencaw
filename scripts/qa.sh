@@ -140,7 +140,7 @@ YOUR TASK:
     SELECT content, source FROM consolidation_notes LIMIT 10;
 3. Write a numbered, prioritized list of observations to: qa/recommendations/${LOOP_NUMBER}.md
 4. Treat this as a QA review, not an implementation pass. Prioritize bugs, regressions, and critical deficiencies first. For each finding, state:
-   - severity (`critical`, `high`, `medium`, or `low`)
+   - severity (\`critical\`, \`high\`, \`medium\`, or \`low\`)
    - whether it is a bug/regression, critical deficiency, or follow-up improvement
    - the concrete evidence from the session output or index contents
    - the specific next action an implementer should take
@@ -172,9 +172,9 @@ REVIEW_PROMPT
     fi
 
     # ----------------------------------------------------------------
-    # IMPLEMENTATION PASS: Claude implements the reviewed recommendations.
+    # IMPLEMENTATION FIRST PASS: Claude implements the reviewed recommendations.
     # ----------------------------------------------------------------
-    echo "--- Implementation pass (Claude) ---"
+    echo "--- Implementation first pass (Claude) ---"
     CLAUDE_IMPLEMENTATION_PROMPT=$(cat <<IMPL_PROMPT
 You are implementing improvements to the opencaw Rust codebase at $(pwd).
 
@@ -216,11 +216,22 @@ YOUR TASK:
 IMPL_PROMPT
     )
     claude --dangerously-skip-permissions -p "$CLAUDE_IMPLEMENTATION_PROMPT" \
-        | tee qa/claude_impl_${LOOP_NUMBER}.txt \
-        || echo "Claude failed during implementation pass, but continuing to bugfix."
+        | tee qa/claude_impl1_${LOOP_NUMBER}.txt \
+        || echo "Claude failed during first implementation pass, but continuing to bugfix."
 
     # Rebuild after implementation. If Claude left the code broken, the bugfix loop recovers it.
-    build_or_fix "post-impl-${LOOP_NUMBER}"
+    build_or_fix "post-impl1-${LOOP_NUMBER}"
+
+    # ----------------------------------------------------------------
+    # IMPLEMENTATION SECOND PASS: Claude implements the reviewed recommendations.
+    # ----------------------------------------------------------------
+    echo "--- Implementation second pass (Claude) ---"
+    claude --dangerously-skip-permissions -p "$CLAUDE_IMPLEMENTATION_PROMPT" \
+        | tee qa/claude_impl2_${LOOP_NUMBER}.txt \
+        || echo "Claude failed during second implementation pass, but continuing to bugfix."
+
+    # Rebuild after implementation. If Claude left the code broken, the bugfix loop recovers it.
+    build_or_fix "post-impl2-${LOOP_NUMBER}"
 
     # Commit Claude's changes so they carry forward into the next loop's generation.
     # Use -u to stage only tracked modified files; qa/ logs are gitignored.
