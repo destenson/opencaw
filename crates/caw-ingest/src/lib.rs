@@ -152,9 +152,13 @@ impl IngestionPipeline {
 
                         let summary = if position_summary.is_empty() {
                             base_summary
-                        } else if base_summary.is_empty() {
+                        } else if base_summary.is_empty() || !chunk.outline_entries.is_empty() {
+                            // position_summary already lists the symbols ("contains fn_x, fn_y")
+                            // so appending base_summary ("Defines: fn_x, fn_y") just repeats them.
                             position_summary
                         } else {
+                            // Tail chunk: position_summary is just "Chunk N/M of path",
+                            // base_summary adds a snippet of actual code for a retrieval hint.
                             format!("{} — {}", position_summary, base_summary)
                         };
 
@@ -395,6 +399,8 @@ fn should_skip(path: &Path) -> bool {
                 || s == "dist"
                 || s == "build"
                 || s == "vendor"
+                // Runtime index/session directories produced by opencaw itself
+                || s.starts_with(".caw")
             {
                 return true;
             }

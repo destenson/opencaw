@@ -284,8 +284,13 @@ fn main() -> Result<()> {
         .context("Failed to ingest directory")?;
 
     let ingested = documents.len();
-    for (stub, _embed_text) in documents {
-        let text = format!("{} {} {}", stub.path, stub.summary, stub.outline.join(" "));
+    for (stub, embed_text) in documents {
+        // embed_text is the actual chunk content (or full doc for small files).
+        // Prepend the path so the embedder can orient to the source location;
+        // the chunking pipeline budgets ~100 tokens of headroom for this prefix.
+        // The old approach (path + summary + outline) repeated every symbol name
+        // 2-3x and discarded the actual code content entirely.
+        let text = format!("{}\n{}", stub.path, embed_text);
         let embeddings = embedder
             .embed_document(vec![text.as_str()])
             .context("Failed to generate embedding")?;

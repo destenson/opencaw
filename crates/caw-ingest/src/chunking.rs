@@ -372,7 +372,15 @@ fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
 fn outline_entries_for_chunk(chunk_text: &str, outline: &[String]) -> Vec<String> {
     outline
         .iter()
-        .filter(|entry| chunk_text.contains(entry.as_str()))
+        .filter(|entry| {
+            // tree-sitter may produce multi-line signatures (wrapped arg lists).
+            // A full-string contains check fails when a chunk boundary falls inside
+            // the signature — the chunk starts at a wrapped arg line, not the `fn`
+            // keyword. Matching the first line correctly attributes the chunk that
+            // opens the function even when the closing paren lands in the next chunk.
+            let first_line = entry.lines().next().unwrap_or(entry.as_str());
+            chunk_text.contains(first_line)
+        })
         .cloned()
         .collect()
 }
