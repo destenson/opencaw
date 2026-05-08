@@ -1,6 +1,6 @@
 use caw_core::{
-    detect_loop, CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter,
-    ModelCapabilities, ProvenanceFormat, TokenUsage,
+    detect_loop, strip_fake_recall_blocks, CawError, CawResult, CompletionRequest,
+    CompletionResponse, ModelAdapter, ModelCapabilities, ProvenanceFormat, TokenUsage,
 };
 use tracing::trace;
 use reqwest::Client;
@@ -140,7 +140,8 @@ impl ModelAdapter for AnthropicAdapter {
             .map(|c| c.text.clone())
             .unwrap_or_default();
 
-        if let Some(reason) = detect_loop(&answer) {
+        let answer_for_loop_check = strip_fake_recall_blocks(&answer);
+        if let Some(reason) = detect_loop(&answer_for_loop_check) {
             tracing::warn!(model = %self.model, reason = %reason, "degenerate output: loop detected");
             return Err(CawError::DegenerateOutput {
                 model: self.model.clone(),

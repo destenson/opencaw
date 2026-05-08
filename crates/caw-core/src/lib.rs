@@ -82,6 +82,33 @@ pub fn truncate_at_chat_boundary(text: &str) -> &str {
     text
 }
 
+/// Strip `[recalled from path]\n...\n[end recall]` blocks from text.
+///
+/// Models that have seen the provenance injection format sometimes generate
+/// fake recall blocks verbatim. These blocks contain repeated code and corrupt
+/// degeneracy detection: `detect_loop` fires on the repetitive code content
+/// rather than on the actual answer prose. Stripping them before detection
+/// avoids false positives from B6-style fake-marker output.
+pub fn strip_fake_recall_blocks(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut remaining = text;
+    while let Some(start) = remaining.find("[recalled from ") {
+        result.push_str(&remaining[..start]);
+        let after_start = &remaining[start..];
+        if let Some(end_rel) = after_start.find("[end recall]") {
+            let end = start + end_rel + "[end recall]".len();
+            remaining = &remaining[end..];
+        } else {
+            // No closing marker — keep everything from start onward to avoid
+            // silently truncating a response that just happened to contain the phrase.
+            result.push_str(&remaining[start..]);
+            return result;
+        }
+    }
+    result.push_str(remaining);
+    result
+}
+
 /// Inspect `text` for degenerate looping patterns and return a human-readable
 /// description of the first pattern that fires, or `None` if the text looks
 /// clean. This companion to `is_looping` is intended for logging: callers

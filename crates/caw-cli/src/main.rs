@@ -546,10 +546,16 @@ fn build_completion_adapter(
         "claude-code-haiku" => Box::new(caw_adapters::ClaudeCodeAdapter::haiku()),
         "ollama" => {
             let rt = caw_adapters::create_runtime()?;
-            match model.unwrap_or("qwen3.6:35b") {
-                "haiku" => Box::new(caw_adapters::OllamaAdapter::llama3_2(rt)),
-                m => Box::new(caw_adapters::OllamaAdapter::local(m, rt)),
-            }
+            let adapter = match model.unwrap_or("qwen3.6:35b") {
+                "haiku" => caw_adapters::OllamaAdapter::llama3_2(rt),
+                m => caw_adapters::OllamaAdapter::local(m, rt),
+            };
+            let adapter = if let Some(t) = temperature {
+                adapter.with_temperature(t)
+            } else {
+                adapter
+            };
+            Box::new(adapter)
         }
         "perplexity" => {
             let rt = caw_adapters::create_runtime()?;
@@ -611,14 +617,23 @@ fn build_completion_adapter(
         other => {
             let rt = caw_adapters::create_runtime()?;
             let m = model.unwrap_or(other);
-            Box::new(caw_adapters::OllamaAdapter::local(m, rt))
+            let adapter = caw_adapters::OllamaAdapter::local(m, rt);
+            let adapter = if let Some(t) = temperature {
+                adapter.with_temperature(t)
+            } else {
+                adapter
+            };
+            Box::new(adapter)
         }
     };
     Ok(adapter)
 }
 
 fn build_intent_adapter(adapter_name: &str, model: &str) -> Result<Box<dyn ModelAdapter>> {
-    build_completion_adapter(adapter_name, Some(model), None, None, None, None)
+    // Temperature 0 for deterministic JSON output — stochastic sampling at the
+    // classifier's default (~0.8) produces formatting variations that cause
+    // parse failures and degenerate detection false positives.
+    build_completion_adapter(adapter_name, Some(model), None, Some(0.0), None, None)
 }
 
 fn classify_query_intent(adapter: &dyn ModelAdapter, query: &str) -> Result<QueryIntent> {
@@ -749,20 +764,30 @@ fn run_interactive(
         let query_intent = if intent_adapters.is_empty() {
             None
         } else {
-            let votes: Vec<(String, QueryIntent)> = intent_adapters
-                .iter()
-                .filter_map(|a| {
-                    classify_query_intent(a.as_ref(), query)
-                        .ok()
-                        .map(|v| (a.model_name().to_string(), v))
-                })
-                .collect();
+            let mut votes: Vec<(String, QueryIntent)> = Vec::new();
+            let mut failed_classifiers: Vec<String> = Vec::new();
+            for a in &intent_adapters {
+                match classify_query_intent(a.as_ref(), query) {
+                    Ok(v) => votes.push((a.model_name().to_string(), v)),
+                    Err(e) => {
+                        failed_classifiers.push(a.model_name().to_string());
+                        eprintln!("[intent] classifier {} failed: {}", a.model_name(), e);
+                    }
+                }
+            }
             if show_intent && votes.len() > 1 {
                 for (name, v) in &votes {
                     eprintln!("[intent {name}] {}", v);
                 }
             }
             if votes.is_empty() {
+                // All classifiers failed — log the fallback so QA sessions can diagnose
+                // whether the failure is systematic (e.g. all-degenerate, wrong temperature).
+                eprintln!(
+                    "[intent] all {} classifier(s) failed — falling back to no-intent (full retrieval, no guidance): {:?}",
+                    failed_classifiers.len(),
+                    failed_classifiers,
+                );
                 None
             } else {
                 let intents: Vec<QueryIntent> = votes.into_iter().map(|(_, v)| v).collect();

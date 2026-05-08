@@ -33,13 +33,11 @@ Fixed in `caw-cli/src/main.rs`: the `run_turn` call in `run_interactive` now
 catches `DegenerateOutput` per-turn, prints a diagnostic, and continues the loop
 so remaining queries are processed.
 
-## B19. Model degeneracy detection is too sensitive.
+## B19. Model degeneracy detection fires on fake recall blocks — FIXED
 
-The current implementation finds the model is almost always degenerate.
+QA 0020: 8 of 9 answer-phase turns flagged as degenerate. Root cause identified by inspecting prompt files: the model (Qwen3 Q2_K_XL) generates B6-style fake `[recalled from ...]...[end recall]` blocks inside its answer. These blocks contain repetitive code that collapses trigram diversity and triggers `detect_loop` before `strip_markers` in `dynamic.rs` can clean them. The valid prose prefix (first ~120 chars) is coherent, but the fake-block-laden tail causes the false positive.
 
-QA 0020: 8 of 9 answer-phase turns flagged as degenerate. The flagged text is coherent prose — not blank, not Rust code. The samples ("Based on the provided context, OpenCAW is...") confirm the model was producing valid content. Whether the loop detector fires on the prefix or on content later in the response is unknown.
-
-Diagnostic logging added (2026-05-08): `is_looping` was replaced by `detect_loop` in all adapters. Each adapter now calls `detect_loop` and logs the trigger name (`word_dominance`, `trigram_collapse`, `line_repetition`, or `chat_template_token`) and approximate position at `warn!` level before raising `DegenerateOutput`. The next QA run will show which check fires and where, enabling threshold adjustments if any checks are false positives.
+Fixed (2026-05-08): `strip_fake_recall_blocks` added to `caw-core/src/lib.rs`. All six adapters now call `strip_fake_recall_blocks(&answer)` before `detect_loop`. The stripped text is used only for the loop check; the original answer is still returned and cleaned by `strip_markers` in `dynamic.rs`. Also added: diagnostic `detect_loop` logging (trigger name + position at `warn!` level) in all adapters. Classifier intent adapter now runs at temperature 0 (`build_intent_adapter` passes `Some(0.0)`), and temperature is propagated through the `ollama` and `other` branches of `build_completion_adapter`.
 
 ## B0. qa/0001.txt sometimes misses the first user turn (critical)
 

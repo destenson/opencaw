@@ -1,6 +1,7 @@
 use caw_core::{
-    detect_loop, split_thinking, truncate_at_chat_boundary, CawError, CawResult, CompletionRequest,
-    CompletionResponse, ModelAdapter, ModelCapabilities, ProvenanceFormat,
+    detect_loop, split_thinking, strip_fake_recall_blocks, truncate_at_chat_boundary, CawError,
+    CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities,
+    ProvenanceFormat,
 };
 use caw_llama_sys::*;
 use std::collections::VecDeque;
@@ -183,7 +184,13 @@ impl ModelAdapter for LlamaCppAdapter {
                 sample: answer.chars().take(120).collect(),
             });
         }
-        if let Some(reason) = detect_loop(&answer) {
+        // Strip fake recall blocks before loop detection: models that have seen
+        // the provenance injection format sometimes echo it verbatim. The fake
+        // blocks contain repetitive code that would collapse trigram diversity and
+        // trigger a false positive. After stripping, detect_loop sees only the
+        // real answer prose.
+        let answer_for_loop_check = strip_fake_recall_blocks(&answer);
+        if let Some(reason) = detect_loop(&answer_for_loop_check) {
             tracing::warn!(model = %self.model_name, reason = %reason, "degenerate output: loop detected in complete()");
             return Err(CawError::DegenerateOutput {
                 model: self.model_name.clone(),
@@ -227,7 +234,8 @@ impl ModelAdapter for LlamaCppAdapter {
                 sample: answer.chars().take(120).collect(),
             });
         }
-        if let Some(reason) = detect_loop(&answer) {
+        let answer_for_loop_check = strip_fake_recall_blocks(&answer);
+        if let Some(reason) = detect_loop(&answer_for_loop_check) {
             tracing::warn!(model = %self.model_name, reason = %reason, "degenerate output: loop detected in generate_passive()");
             return Err(CawError::DegenerateOutput {
                 model: self.model_name.clone(),

@@ -1,6 +1,7 @@
 use caw_core::{
-    detect_loop, split_thinking, truncate_at_chat_boundary, CawError, CawResult, CompletionRequest,
-    CompletionResponse, ModelAdapter, ModelCapabilities, ProvenanceFormat, TokenUsage,
+    detect_loop, split_thinking, strip_fake_recall_blocks, truncate_at_chat_boundary, CawError,
+    CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities,
+    ProvenanceFormat, TokenUsage,
 };
 use futures_util::StreamExt;
 use tracing::{debug, info, trace};
@@ -285,7 +286,8 @@ impl ModelAdapter for OllamaAdapter {
                         sample: answer.chars().take(120).collect(),
                     });
                 }
-                if let Some(reason) = detect_loop(&answer) {
+                let answer_for_loop_check = strip_fake_recall_blocks(&answer);
+                if let Some(reason) = detect_loop(&answer_for_loop_check) {
                     tracing::warn!(model = %self.model, reason = %reason, "degenerate output: loop detected");
                     return Err(CawError::DegenerateOutput {
                         model: self.model.clone(),
