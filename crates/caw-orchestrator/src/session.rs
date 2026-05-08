@@ -239,16 +239,23 @@ fn parse_session_turns(content: &str) -> Vec<(String, Option<String>)> {
     turns
 }
 
-/// Extract the content after `marker` up to the next blank-line-delimited
-/// section (`\n\n---` or end of string).
+/// Extract the content after `marker` up to the next field boundary.
+///
+/// Stops at whichever comes first: the turn separator `\n\n---`, or the start
+/// of another `[Role]:` header (`\n\n[`). The second stop prevents user-field
+/// extraction from accidentally including the assistant response when the
+/// session format is `[User]: ...\n\n[Assistant]: ...\n\n---`.
 fn extract_field(section: &str, marker: &str) -> String {
     let start = match section.find(marker) {
         Some(i) => i + marker.len(),
         None => return String::new(),
     };
     let rest = &section[start..];
-    // Content ends at "\n\n---" (turn separator) or end of string
-    let end = rest.find("\n\n---").unwrap_or(rest.len());
+    let end = [rest.find("\n\n---"), rest.find("\n\n[")]
+        .iter()
+        .filter_map(|&p| p)
+        .min()
+        .unwrap_or(rest.len());
     rest[..end].trim().to_string()
 }
 
