@@ -196,6 +196,11 @@ struct Cli {
     /// Useful for inspecting exactly what context the model receives.
     #[arg(long, default_value_t = false)]
     show_prompt: bool,
+
+    /// Save the full formatted prompt to a file before each llama generation.
+    /// Useful for inspecting exactly what context the model receives.
+    #[arg(long, default_value_t = false)]
+    save_prompt: bool,
 }
 
 fn main() -> Result<()> {
@@ -366,11 +371,17 @@ fn main() -> Result<()> {
         cli.max_new_tokens,
     )?;
     let adapter: Arc<dyn ModelAdapter> = if cli.show_prompt {
-        let mut show = caw_adapters::ShowPromptAdapter::new(raw_adapter);
+        let mut show = caw_adapters::ShowPromptAdapter::new(raw_adapter, cli.save_prompt);
         if let Some(sdir) = cli.session_dir.as_deref() {
             show = show.saving_to(sdir.to_path_buf());
         }
         Arc::new(show)
+    } else if cli.save_prompt {
+        let mut save = caw_adapters::SavePromptAdapter::new(raw_adapter);
+        if let Some(sdir) = cli.session_dir.as_deref() {
+            save = save.saving_to(sdir.to_path_buf());
+        }
+        Arc::new(save)
     } else {
         Arc::new(raw_adapter)
     };

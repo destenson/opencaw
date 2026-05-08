@@ -79,6 +79,54 @@ impl ModelAdapter for MockAdapter {
     }
 }
 
+pub struct SavePromptAdapter {
+    inner: Box<dyn ModelAdapter>,
+    prompt_dir: PathBuf,
+    timestamp: String,
+    turn: Mutex<usize>,
+}
+
+impl SavePromptAdapter {
+        pub fn new(inner: Box<dyn ModelAdapter>) -> Self {
+        let prompt_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        Self {
+            inner,
+            prompt_dir,
+            timestamp: prompt_timestamp(),
+            turn: Mutex::new(0),
+        }
+    }
+
+    /// Also save each prompt as a file in `dir` beside the session files.
+    pub fn saving_to(mut self, dir: PathBuf) -> Self {
+        self.prompt_dir = dir;
+        self
+    }
+
+    fn log_prompt(&self, req: &CompletionRequest, res: CawResult<CompletionResponse>) -> CawResult<CompletionResponse> {
+        let fragment_tokens: usize = req.workspace_fragments.iter().map(|f| f.tokens).sum();
+        let mut out = String::new();
+        writeln!(out, "\n─── PROMPT ({} workspace tokens across {} fragments) [MODEL: {}] ───", fragment_tokens, req.workspace_fragments.len(), self.inner.model_name())?;
+        writeln!(out, "[system]\n{}", req.system)?;
+        writeln!(out, "[user]\n{}", req.user)?;
+        for frag in &req.workspace_fragments {
+            writeln!(out, "[fragment: {} | {} tokens]\n{}", frag.locator.source, frag.tokens, frag.content)?;
+        }
+        writeln!(out, "─────────────────────────")?;
+        writeln!(out, "Response: {}", res.as_ref().map(|r| r.answer.clone()).unwrap_or_else(|e| format!("Error: {}", e)))?;
+        writeln!(out, "─────────────────────────")?;
+
+        let mut turn = self.turn.lock().unwrap();
+        *turn += 1;
+        let path = self.prompt_dir.join(format!("prompt-{}-turn-{}.txt", self.timestamp, *turn));
+        if let Ok(mut f) = std::fs::File::create(&path) {
+            std::io::Write::write_all(&mut f, out.as_bytes())?;
+        }
+        res
+    }
+
+}
+
 /// Wraps any adapter and prints the contents of each CompletionRequest to
 /// stderr before delegating. Lets you verify exactly what context the model
 /// receives — system prompt, user message, and every loaded workspace fragment.
@@ -93,10 +141,15 @@ pub struct ShowPromptAdapter {
 }
 
 impl ShowPromptAdapter {
-    pub fn new(inner: Box<dyn ModelAdapter>) -> Self {
+    pub fn new(inner: Box<dyn ModelAdapter>, save_prompt: bool) -> Self {
+        let prompt_dir = if save_prompt {
+            Some(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        } else {
+            None
+        };
         Self {
             inner,
-            prompt_dir: None,
+            prompt_dir,
             timestamp: prompt_timestamp(),
             turn: Mutex::new(0),
         }
@@ -170,6 +223,38 @@ fn epoch_days_to_ymd(days: u64) -> (u64, u64, u64) {
 }
 
 impl ModelAdapter for ShowPromptAdapter {
+    fn model_name(&self) -> &str {
+        self.inner.model_name()
+    }
+
+    fn capabilities(&self) -> ModelCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
+        self.log_prompt(&req, self.inner.complete(req.clone()))
+    }
+
+    fn generate_passive(
+        &self,
+        req: CompletionRequest,
+        check_interval: usize,
+        window_size: usize,
+        on_window: &mut dyn FnMut(&str) -> CawResult<Option<String>>,
+    ) -> CawResult<CompletionResponse> {
+        self.log_prompt(&req, self.inner.generate_passive(req.clone(), check_interval, window_size, on_window))
+    }
+
+    fn thinking_with_steps(
+        &self,
+        req: CompletionRequest,
+        on_step: &mut dyn FnMut(&str) -> CawResult<bool>,
+    ) -> CawResult<CompletionResponse> {
+        self.log_prompt(&req, self.inner.thinking_with_steps(req.clone(), on_step))
+    }
+}
+
+impl ModelAdapter for SavePromptAdapter {
     fn model_name(&self) -> &str {
         self.inner.model_name()
     }
