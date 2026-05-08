@@ -12,6 +12,10 @@ Session log files (`session-20260508-050942.md`, `session-20260508-051313.md`) r
 
 Despite `should_skip` in `caw-ingest/src/lib.rs` filtering paths with a `.caw` component, session log files from `.caw/session-*.md` appear in the retrieval index for 0003 (same finding as 0002). The CLI ingestion path or the bench index builder is apparently not activating the skip correctly — either `skip_gitignore` is overriding the hidden-dir walk suppression, or `should_skip` is not being called on the walk results before insertion.
 
+## B5. `scripts/qa.sh` indexed and surfaced as authoritative architecture documentation (medium)
+
+`scripts/qa.sh` chunk 6/7 appears as a top-ranked retrieval result for nearly every query across all three QA loop 0005 sessions — architecture queries, status queries, metacommentary queries. The chunk contains a CODEBASE LAYOUT section and QA prompt templates that the retrieval engine treats as architecture documentation. The CODEBASE LAYOUT in qa.sh is stale (wrong crate names, missing crates) and injects misleading context. The `.caw/` skip filter handles session logs but leaves shell scripts in the index. No skip rule currently targets `scripts/` or shell scripts generally.
+
 ## B4. Search-candidates mode fails silently when model cannot request file loads (low)
 
 The search-candidates presentation instructs the model: "Mention the specific files you need if you want them loaded." In the QA session harness, there is no mechanism to honor this request — the model's mention of a file name does not trigger a follow-up retrieval call. The model is told it can request content but the infrastructure to fulfill that request doesn't exist in the QA loop, leading to the model either hallucinating or answering from stub metadata alone.
