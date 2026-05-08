@@ -44,7 +44,8 @@ build_or_fix() {
         fi
 
         echo "Build failed — launching Claude to fix compilation errors..."
-        claude --dangerously-skip-permissions -p "The opencaw Rust codebase at $(pwd) does not compile.
+        claude --dangerously-skip-permissions <<BUGFIX_PROMPT || true
+The opencaw Rust codebase at $(pwd) does not compile.
 
 opencaw is a workspace-aware LLM context augmentation system. Crate layout:
 - caw-orchestrator: core retrieval, session, consolidation
@@ -55,7 +56,8 @@ opencaw is a workspace-aware LLM context augmentation system. Crate layout:
 
 Run: cargo build --release --bin caw-cli --features llama
 Fix ONLY the compilation errors it reports. Do not refactor, add features, or touch unrelated code.
-Do not stop until the build succeeds." || true
+Do not stop until the build succeeds.
+BUGFIX_PROMPT
 
         attempt=$((attempt + 1))
     done
@@ -104,7 +106,8 @@ for n in $(seq 1 "$NLOOPS"); do
     # behavioral observations to qa/recommendations/NNNN.md
     # ----------------------------------------------------------------
     echo "--- Review pass (Claude) ---"
-    claude --dangerously-skip-permissions -p "You are reviewing the opencaw Rust codebase to identify specific improvements after QA generation loop $LOOP_NUMBER.
+    claude --dangerously-skip-permissions <<REVIEW_PROMPT || true
+You are reviewing the opencaw Rust codebase to identify specific improvements after QA generation loop $LOOP_NUMBER.
 
 WHAT OPENCAW DOES:
 opencaw is a workspace-aware context augmentation system for LLMs, written in Rust. It:
@@ -144,8 +147,8 @@ Evaluate and report on these dimensions:
 - Retrieval behavior: based on what you see in the stubs, would similarity search surface the right context for a typical query?
 
 Write behavioral observations and diagnoses — what is going wrong and why it matters.
-Each recommendation should describe a problem clearly enough that an implementer can find and fix it independently." \
-        2>&1 | tee "qa/claude_review_${LOOP_NUMBER}.txt" || true
+Each recommendation should describe a problem clearly enough that an implementer can find and fix it independently.
+REVIEW_PROMPT
 
     if [ ! -f "qa/recommendations/${LOOP_NUMBER}.md" ]; then
         echo "WARNING: Claude did not write qa/recommendations/${LOOP_NUMBER}.md — skipping implementation pass."
@@ -156,7 +159,8 @@ Each recommendation should describe a problem clearly enough that an implementer
     # IMPLEMENTATION PASS: Claude implements the reviewed recommendations.
     # ----------------------------------------------------------------
     echo "--- Implementation pass (Claude) ---"
-    claude --dangerously-skip-permissions -p "You are implementing improvements to the opencaw Rust codebase at $(pwd).
+    claude --dangerously-skip-permissions <<IMPL_PROMPT || true
+You are implementing improvements to the opencaw Rust codebase at $(pwd).
 
 WHAT OPENCAW DOES:
 opencaw is a workspace-aware context augmentation system for LLMs, written in Rust. It indexes a codebase,
@@ -182,8 +186,8 @@ YOUR TASK:
 1. Read qa/recommendations/${LOOP_NUMBER}.md
 2. Implement the highest-priority feasible recommendations
 3. Run: cargo build --release --bin caw-cli --features llama
-4. Fix any compilation errors before finishing — do not stop until it compiles cleanly" \
-        2>&1 | tee "qa/claude_impl_${LOOP_NUMBER}.txt" || true
+4. Fix any compilation errors before finishing — do not stop until it compiles cleanly
+IMPL_PROMPT
 
     # Rebuild after implementation. If Claude left the code broken, the bugfix loop recovers it.
     build_or_fix "post-impl-${LOOP_NUMBER}"
