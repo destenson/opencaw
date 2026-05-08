@@ -799,8 +799,16 @@ fn run_interactive(
             }
         }
 
-        let response =
-            orchestrator.run_turn(&effective_system, query, &guidance, signals.as_ref())?;
+        let response = match orchestrator.run_turn(&effective_system, query, &guidance, signals.as_ref()) {
+            Ok(r) => r,
+            Err(caw_core::CawError::DegenerateOutput { sample, .. }) => {
+                // The session log already captured the turn (B15 fix). Skip to the
+                // next query rather than aborting the entire session.
+                eprintln!("[error] degenerate response — continuing to next query (sample: {}...)", &sample[..sample.len().min(60)]);
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+        };
 
         println!("\n{}\n", response.answer);
 

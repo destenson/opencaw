@@ -463,8 +463,15 @@ where
             .map(|h| h.stub.path.as_str())
             .collect::<std::collections::HashSet<_>>()
             .len();
-        let show_listing = above_threshold > self.config.max_initial_fragments
-            || distinct_above_unload > self.config.max_initial_fragments;
+        // For explanation queries, always load stubs directly rather than presenting a
+        // candidate list. The search-candidates path tells the model to request specific
+        // files, but there is no infrastructure to fulfill those requests — it's a dead
+        // end. README.md and SCOPE.md reliably appear as top candidates for explanation
+        // queries and must be loaded, not listed.
+        let explanation_query = signals.map_or(false, |s| s.wants_explanation);
+        let show_listing = !explanation_query
+            && (above_threshold > self.config.max_initial_fragments
+                || distinct_above_unload > self.config.max_initial_fragments);
         // Build the candidate list before consuming initial_hits. Returns Some
         // only when the gate fires; the borrow ends before the move below.
         let candidate_fragment: Option<RecallFragment> = show_listing.then(|| {
@@ -501,6 +508,14 @@ where
         // mentioned-files pass. When it doesn't, consume them into load_fragments.
         let candidate_initial_hits: Option<Vec<ScoredStub>>;
         if candidate_fragment.is_none() {
+            if explanation_query && (above_threshold > self.config.max_initial_fragments
+                || distinct_above_unload > self.config.max_initial_fragments)
+            {
+                debug!(
+                    above_threshold,
+                    "explanation query — bypassing candidate-list gate, loading stubs directly"
+                );
+            }
             self.load_fragments(
                 initial_hits
                     .into_iter()
