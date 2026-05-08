@@ -389,6 +389,15 @@ fn detect_content_kind(path: &Path) -> ContentKind {
 /// before this is called; this handles build artifacts and binary extensions
 /// that may not appear in every project's .gitignore.
 fn should_skip(path: &Path) -> bool {
+    // Files that match by exact name
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        // Branding/mascot file: contains only marketing copy and design criteria,
+        // which scores high for "what is opencaw" queries while contributing nothing.
+        if name == "MASCOT.md" {
+            return true;
+        }
+    }
+
     // Build artifact directories that may not be in .gitignore
     for component in path.components() {
         if let std::path::Component::Normal(c) = component {

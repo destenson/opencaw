@@ -242,6 +242,17 @@ where
     /// itself is a convention; the orchestrator's `extract_probes` parses
     /// whatever tag the system prompt asks the model to emit.
     fn build_system_prompt(&self, base: &str) -> String {
+        // Unconditional: models must always emit a visible response. When retrieved
+        // context is insufficient, an explicit statement of what's missing is
+        // required — a blank answer is never correct and leaves the user with no
+        // way to know whether the system failed or the query has no answer.
+        let response_requirement = concat!(
+            "\n\nIMPORTANT: Always produce a visible response, even when the retrieved context",
+            " does not fully cover the question. If retrieved evidence is insufficient, say so",
+            " explicitly: describe what information is missing and offer to load more context.",
+            " A blank or empty response is never acceptable.",
+        );
+
         let inject = match self.config.cooperation_mode {
             CooperationMode::Cooperative => true,
             CooperationMode::Transparent => false,
@@ -255,10 +266,10 @@ where
             }
         };
         if !inject {
-            return base.to_string();
+            return format!("{base}{response_requirement}");
         }
 
-        let mut prompt = base.to_string();
+        let mut prompt = format!("{base}{response_requirement}");
         prompt.push_str(concat!(
             "\n\nYou have access to recalled workspace content tagged with source locators. ",
             "When you learn something important from a recalled fragment — a key fact, decision, ",
@@ -1001,10 +1012,16 @@ where
 
             let existing_annotations = self.provenance.consolidation_notes_for(&fragment.stub_id);
 
+            // Strip the [Prior session notes ...] header that load_fragments
+            // prepends so the synthesizer sees only the original stub text.
+            // Without this, each eviction note's "topic" field recursively
+            // embeds the previous eviction note, growing unboundedly.
+            let raw_content = strip_prior_notes_header(&fragment.content);
+
             let content = self
                 .consolidation_synthesizer
                 .synthesize_eviction_note(
-                    &fragment.content,
+                    raw_content,
                     query,
                     decayed_score,
                     &fragment.locator.source,
@@ -1229,6 +1246,21 @@ fn truncate_str(s: &str, max: usize) -> String {
         let truncated: String = s.chars().take(max.saturating_sub(3)).collect();
         format!("{}...", truncated)
     }
+}
+
+/// Strip the `[Prior session notes for this source:\n...\n]\n\n` header that
+/// `load_fragments` prepends when injecting persisted consolidation notes.
+/// Returns the original stub text without the header, or the full string if
+/// no header is present.
+fn strip_prior_notes_header(content: &str) -> &str {
+    const PREFIX: &str = "[Prior session notes for this source:\n";
+    if let Some(rest) = content.strip_prefix(PREFIX) {
+        // Find the closing `]\n\n` that separates the notes block from the stub
+        if let Some(end) = rest.find("]\n\n") {
+            return &rest[end + 3..];
+        }
+    }
+    content
 }
 
 fn current_timestamp() -> u64 {
