@@ -72,9 +72,10 @@ mkdir -p qa/recommendations
 
 build_or_fix "initial"
 
-END_LOOP=$((NLOOPS + $(LOOP_START)))
+LOOP_OFFSET=$(LOOP_START)
+END_LOOP=$((LOOP_OFFSET + NLOOPS))
 for n in $(seq 1 "$NLOOPS"); do
-    i=$((n + $(LOOP_START)))
+    i=$((LOOP_OFFSET + n))
     LOOP_NUMBER=$(LOOP_NUMBER_STRING "$i")
     echo ""
     echo "========================================================"
