@@ -24,8 +24,8 @@ LOOP_START() {
     for dir in .caw*/; do
         if [[ "$dir" =~ \.caw([0-9]{4})/ ]]; then
             num="${BASH_REMATCH[1]}"
-            if (( num > last_loop )); then
-                last_loop="$num"
+            if (( 10#$num > last_loop )); then
+                last_loop=$(( 10#$num ))
             fi
         fi
     done
