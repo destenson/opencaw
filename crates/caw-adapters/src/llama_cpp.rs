@@ -171,10 +171,12 @@ impl ModelAdapter for LlamaCppAdapter {
         let raw = run_generation(&mut state, &self.config, &prompt, usize::MAX, 0, None)?;
         let truncated = truncate_at_chat_boundary(&raw);
         let (thinking, answer) = split_thinking(truncated);
+        // A blank answer after split_thinking means the model emitted only a
+        // <think> block with no visible response — functionally degenerate.
         // Check for degenerate output on the extracted answer, not the raw
         // text. Running is_looping before split_thinking would flag valid
         // responses whose <think> tags contain repeated XML tokens.
-        if is_looping(&answer) {
+        if answer.trim().is_empty() || is_looping(&answer) {
             return Err(CawError::DegenerateOutput {
                 model: self.model_name.clone(),
                 sample: answer.chars().take(120).collect(),
@@ -210,7 +212,7 @@ impl ModelAdapter for LlamaCppAdapter {
         )?;
         let truncated = truncate_at_chat_boundary(&raw);
         let (thinking, answer) = split_thinking(truncated);
-        if is_looping(&answer) {
+        if answer.trim().is_empty() || is_looping(&answer) {
             return Err(CawError::DegenerateOutput {
                 model: self.model_name.clone(),
                 sample: answer.chars().take(120).collect(),

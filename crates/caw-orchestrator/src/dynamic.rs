@@ -3,7 +3,7 @@ use crate::degradation::DegradationMonitor;
 use crate::session::{self, SessionFile};
 use caw_core::{
     AugmentationSignals, CawError, CawResult, CompletionRequest, CompletionResponse,
-    ConsolidationNote, ConsolidationSource, EmbeddingProvider, LineReference, Locator, ModelAdapter,
+    ConsolidationNote, ConsolidationSource, ContentKind, EmbeddingProvider, LineReference, Locator, ModelAdapter,
     ProvenanceStore, Range, RecallFragment, RecallThresholds, Retriever, ScoredStub, StubId,
     StubStore, VectorIndex, candidate_list_fragment, count_tokens_cl100k, tokenize_terms,
 };
@@ -400,6 +400,28 @@ where
             }
             initial_hits.sort_by(|a, b| b.score.total_cmp(&a.score));
             debug!("applied .md documentation boost for explanation query");
+
+            // Cap the number of Code stubs admitted for explanation queries.
+            // After the MD boost, remaining slots tend to fill with implementation
+            // internals that have no explanatory value. Admit at most MAX_CODE_STUBS
+            // Code fragments, reserving the rest for documentation.
+            const MAX_CODE_STUBS: usize = 5;
+            let mut code_count = 0usize;
+            for hit in &mut initial_hits {
+                if matches!(hit.stub.kind, ContentKind::Code) {
+                    code_count += 1;
+                    if code_count > MAX_CODE_STUBS {
+                        hit.score = 0.0;
+                    }
+                }
+            }
+            if code_count > MAX_CODE_STUBS {
+                debug!(
+                    admitted = MAX_CODE_STUBS,
+                    suppressed = code_count - MAX_CODE_STUBS,
+                    "capped Code stubs for explanation query"
+                );
+            }
         }
 
         // Penalize benchmark implementation stubs for non-benchmark queries.
@@ -522,10 +544,13 @@ where
         let mut last_response = match initial_result {
             Ok(r) => r,
             Err(e) => {
-                if matches!(e, CawError::DegenerateOutput { .. }) {
+                if let CawError::DegenerateOutput { ref sample, .. } = e {
                     warn!(turn = self.session_turn + 1, "degenerate output on initial completion — turn will be recorded before propagating");
+                    // Preserve the valid prefix rather than discarding it: the sample
+                    // is the first ~120 chars of the response before the loop started.
+                    let answer = sample.clone();
                     degenerate_err = Some(e);
-                    CompletionResponse { answer: String::new(), thinking: None, usage: None }
+                    CompletionResponse { answer, thinking: None, usage: None }
                 } else {
                     return Err(e);
                 }

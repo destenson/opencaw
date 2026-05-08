@@ -278,7 +278,7 @@ impl ModelAdapter for OllamaAdapter {
             Ok(parsed) => {
                 let raw = truncate_at_chat_boundary(&parsed.message.content);
                 let (thinking, answer) = split_thinking(raw);
-                if is_looping(&answer) {
+                if answer.trim().is_empty() || is_looping(&answer) {
                     return Err(CawError::DegenerateOutput {
                         model: self.model.clone(),
                         sample: answer.chars().take(120).collect(),
