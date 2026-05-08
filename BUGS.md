@@ -1,6 +1,6 @@
 # A place to record bugs as they're found
 
-## B00. REGRESSION: caw-cli fails on first run with degenerate Rust code output.
+## B00. REGRESSION: caw-cli fails on first run with degenerate Rust code output. — RUST-CODE SYMPTOM RESOLVED
 
 Between .caw00013 and .caw00014, a regression was introduced that causes
 `caw-cli` to fail on the first run of a session. Still active in QA 0018: the
@@ -19,6 +19,8 @@ by `ANNOTATION_PATTERN`. The model is code-completing opencaw source instead of
 answering in prose. Whether this is training-data leakage or context
 contamination from indexed recall.rs stubs is unconfirmed, but recall.rs is in
 the indexed workspace.
+
+QA 0020 update: the Rust-code-generation symptom no longer appears. First-run degenerate samples in 0020 are valid prose ("Based on the provided context, OpenCAW (Context as Workspace) is a framework..."). The session still fails on degenerate detection, but the cause is B19 (detection too sensitive), not B00 (model generating Rust code). B00's specific root cause (code contamination from recall.rs stubs) appears resolved, possibly by the stub quality filters or score penalties added in later loops.
 
 ## B18. QA harness aborts the entire session on a single degenerate response (high) — FIXED
 
@@ -360,3 +362,17 @@ Fixed in `llama_cpp.rs` and `ollama.rs`: both adapters now check
 `answer.trim().is_empty()` alongside `is_looping(&answer)` after
 `split_thinking`, and return `DegenerateOutput` for a blank answer. This applies
 to both `complete` and `generate_passive` in the llama.cpp adapter
+
+## B20. Multi-pass refinement can overwrite a good initial answer with a worse one (high)
+
+Observed in QA loop 0020 session 095219, question 3 ("what can we do to improve on the caw-curation crate?"). The initial completion (turn 6, 8 fragments) produced a coherent, evidence-grounded answer synthesizing caw-core and caw-orchestrator context. The refinement iteration (turn 7, 11 fragments, now including caw-curation stubs) produced an incorrect answer claiming no information was available for caw-curation. The session log recorded the turn-7 answer, discarding the better turn-6 answer.
+
+The refinement loop replaces `last_response` with each successful (non-degenerate) completion, regardless of whether the new completion is better than the prior one. There is no quality signal distinguishing the two passes — both complete without degenerate error, so the last one wins.
+
+Fix: track a "best answer" across refinement iterations, using a heuristic such as answer length, presence of specific source citations, or absence of hedged "I don't know" phrases, and return the best rather than the last.
+
+## B21. Session history injects truncated mid-sentence degenerate prefixes as prior assistant answers (high)
+
+Observed in QA loop 0020. The B16 fix stores the first ~120 chars of a degenerate response as the turn answer in the session log. When a subsequent session loads that session log as history, the truncated mid-sentence prefix is injected verbatim as the model's prior answer. In 0020, sessions 2 and 3 both received `"As an AI assistant operating within the OpenCAW framework, I can evaluate the context window you are currently seeing (w"` as the prior response to "you're using it right now…" — a mid-sentence truncation that adds no signal and implies the model was interrupted.
+
+The B16 fix conflates two distinct purposes: storing a debugging sample in the session log (for human inspection) and storing the canonical answer text (for history injection). These should be separate: the log entry can include the degenerate sample for debugging, but the history-injection path should recognize degenerate turns and replace them with a one-line `[turn skipped — model failed to produce a valid response]` placeholder rather than injecting the truncated prose.
