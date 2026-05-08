@@ -1,4 +1,4 @@
-use caw_core::{CawResult, ContentKind, Retriever, Stub};
+use caw_core::{CawResult, ContentKind, Retriever, Stub, StubId};
 use caw_ingest::{DocumentIdSet, IngestionPipeline, SourceDocument};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -90,15 +90,26 @@ impl SessionFile {
     }
 }
 
+/// Maximum characters to retain from a prior-session assistant response when
+/// compressing for in-memory HNSW indexing. This targets ≤50 tokens per turn,
+/// keeping the embedding signal (topic + key conclusions) while preventing full
+/// model responses (~400 tokens each) from outcompeting workspace stubs.
+const MAX_PRIOR_ASSISTANT_CHARS: usize = 300;
+
 /// Collect (stub, embed_text) pairs from all previous session `.md` files in
 /// `session_dir` without inserting them into any retriever or store. Callers
 /// embed and index these in-memory only, so prior session content never leaks
 /// into the persistent SQLite store and cannot propagate hallucinations across
 /// sessions via the authoritative index path.
+///
+/// Prior session content is indexed at the turn level with assistant responses
+/// compressed to ≤50 tokens. Full model output (~400 tokens/turn) would
+/// outcompete workspace stubs on any architecture query because it contains the
+/// same vocabulary in polished prose — the compressed version retains the topic
+/// signal needed for session continuity without flooding the retrieval pool.
 pub fn collect_previous_stubs(
     session_dir: &Path,
     current_path: &Path,
-    pipeline: &IngestionPipeline,
 ) -> Vec<(Stub, String)> {
     let entries = match std::fs::read_dir(session_dir) {
         Ok(e) => e,
@@ -130,17 +141,94 @@ pub fn collect_previous_stubs(
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let doc = SourceDocument {
-            path: p.to_string_lossy().into_owned(),
-            content,
-            kind: ContentKind::Markdown,
-            mtime_unix_secs: mtime,
-        };
-        let stubs = pipeline.ingest(doc);
-        debug!(file = %p.display(), chunks = stubs.len(), "collected prior session stubs");
-        result.extend(stubs);
+
+        let stem = p
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("session")
+            .to_string();
+        let path_str = p.to_string_lossy().into_owned();
+
+        let turns = parse_session_turns(&content);
+        debug!(file = %p.display(), turns = turns.len(), "collected prior session turns");
+
+        for (turn_idx, (user, assistant)) in turns.into_iter().enumerate() {
+            let compressed = compress_assistant(&assistant);
+            let embed_text = if compressed.is_empty() {
+                format!("User: {user}")
+            } else {
+                format!("User: {user}\nAssistant: {compressed}")
+            };
+            let token_estimate = embed_text.len() / 4;
+            let stub = Stub {
+                id: StubId(format!("prior-{stem}:turn-{}", turn_idx + 1)),
+                path: path_str.clone(),
+                token_estimate,
+                kind: ContentKind::Markdown,
+                summary: format!(
+                    "Prior session turn {}: {}",
+                    turn_idx + 1,
+                    user.chars().take(80).collect::<String>()
+                ),
+                outline: Vec::new(),
+                content_hash: String::new(),
+                mtime_unix_secs: mtime,
+                byte_offset: 0,
+                byte_length: 0,
+                consolidation_notes: Vec::new(),
+            };
+            result.push((stub, embed_text));
+        }
     }
     result
+}
+
+/// Parse a session markdown file into (user_query, assistant_response) pairs.
+/// Session format written by `SessionFile::write_turn`:
+///   `## Turn N\n\n[User]: ...\n\n[Assistant]: ...\n\n---\n\n`
+fn parse_session_turns(content: &str) -> Vec<(String, String)> {
+    let mut turns = Vec::new();
+    // Each "## Turn N" header starts a new turn section
+    for section in content.split("\n## Turn ") {
+        // Skip preamble before the first ## Turn marker
+        if !section.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            continue;
+        }
+        let user = extract_field(section, "[User]: ");
+        let assistant = extract_field(section, "[Assistant]: ");
+        if !user.is_empty() {
+            turns.push((user, assistant));
+        }
+    }
+    turns
+}
+
+/// Extract the content after `marker` up to the next blank-line-delimited
+/// section (`\n\n---` or end of string).
+fn extract_field(section: &str, marker: &str) -> String {
+    let start = match section.find(marker) {
+        Some(i) => i + marker.len(),
+        None => return String::new(),
+    };
+    let rest = &section[start..];
+    // Content ends at "\n\n---" (turn separator) or end of string
+    let end = rest.find("\n\n---").unwrap_or(rest.len());
+    rest[..end].trim().to_string()
+}
+
+/// Compress an assistant response to ≤MAX_PRIOR_ASSISTANT_CHARS characters by
+/// keeping complete sentences from the start. Appends "…" when truncated.
+fn compress_assistant(text: &str) -> String {
+    if text.len() <= MAX_PRIOR_ASSISTANT_CHARS {
+        return text.to_string();
+    }
+    // Try to cut at a sentence boundary within the character budget
+    let budget = MAX_PRIOR_ASSISTANT_CHARS.saturating_sub(1); // reserve space for ellipsis
+    let truncation_point = text[..budget.min(text.len())]
+        .rfind(". ")
+        .map(|i| i + 1) // include the period, exclude the space
+        .unwrap_or(budget.min(text.len()));
+    format!("{}…", text[..truncation_point].trim_end())
 }
 
 fn load_session_file<R: Retriever>(

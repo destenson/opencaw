@@ -8,7 +8,6 @@ use caw_core::{
     StubStore, VectorIndex, candidate_list_fragment, count_tokens_cl100k, tokenize_terms,
 };
 use caw_eval::SessionEvaluator;
-use caw_ingest::IngestionPipeline;
 use caw_transform::{count_fake_recall_markers, extract_annotations, extract_line_references, extract_probes, extract_thinking_steps, strip_markers};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -99,6 +98,12 @@ pub struct DynamicRecallConfig {
     /// system prompt. Defaults to `Auto` (capability-based). Override with
     /// calibration data from `caw-bench-coop`.
     pub cooperation_mode: CooperationMode,
+    /// Minimum token growth (net new tokens admitted) required per refinement
+    /// iteration to continue. When an iteration adds fewer than this many tokens
+    /// the loop is considered converged even if fragment count increased slightly.
+    /// Complements the fragment-count check: a few tiny stubs shouldn't keep
+    /// the loop running if the information gain is negligible.
+    pub convergence_min_new_tokens: usize,
     /// How many tokens to generate between passive injection checks. Only used
     /// when the adapter reports `supports_passive_injection = true`.
     pub passive_injection_interval: usize,
@@ -122,6 +127,7 @@ impl Default for DynamicRecallConfig {
             max_loaded_fragments: 50,
             max_initial_fragments: 4,
             cooperation_mode: CooperationMode::Auto,
+            convergence_min_new_tokens: 200,
             passive_injection_interval: 32,
             passive_injection_window_size: 192,
         }
@@ -202,11 +208,10 @@ where
     /// retrieved as authoritative documentation in subsequent sessions.
     pub fn with_session(mut self, session_dir: &Path) -> CawResult<Self> {
         std::fs::create_dir_all(session_dir).map_err(|e| caw_core::CawError::Io(e.to_string()))?;
-        let pipeline = IngestionPipeline::new();
         let file_name = format!("session-{}.md", session::timestamp_str());
         let file_path = session_dir.join(file_name);
 
-        let prior_stubs = session::collect_previous_stubs(session_dir, &file_path, &pipeline);
+        let prior_stubs = session::collect_previous_stubs(session_dir, &file_path);
         let mut loaded_count = 0;
         for (stub, embed_text) in prior_stubs {
             match self.embedder.embed_document(vec![embed_text.as_str()]) {
@@ -374,6 +379,30 @@ where
             initial_hits.sort_by(|a, b| b.score.total_cmp(&a.score));
             debug!("applied .md documentation boost for explanation query");
         }
+
+        // Penalize benchmark implementation stubs for non-benchmark queries.
+        // caw-bench files reference every system concept so they score near the
+        // top for any "what is opencaw?" query, crowding out architecture docs.
+        const BENCH_TERMS: &[&str] = &[
+            "benchmark", "bench", "score", "niah", "workload", "precision", "recall@k",
+        ];
+        let lower_query = user.to_lowercase();
+        let is_bench_query = BENCH_TERMS.iter().any(|t| lower_query.contains(t));
+        if !is_bench_query {
+            const BENCH_PENALTY: f32 = 0.5;
+            let mut penalized = false;
+            for hit in &mut initial_hits {
+                if hit.stub.path.contains("caw-bench") {
+                    hit.score *= BENCH_PENALTY;
+                    penalized = true;
+                }
+            }
+            if penalized {
+                initial_hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+                debug!("applied score penalty to caw-bench stubs for non-benchmark query");
+            }
+        }
+
         let above_threshold = initial_hits
             .iter()
             .filter(|h| h.score >= self.config.thresholds.load)
@@ -502,9 +531,11 @@ where
         // Phase 2: Iterative recall refinement
         for i in 0..self.config.max_recall_iterations {
             let loaded_before = self.loaded.len();
+            let tokens_before: usize = self.loaded.iter().map(|f| f.tokens).sum();
             debug!(
                 iteration = i + 1,
                 loaded = loaded_before,
+                tokens = tokens_before,
                 "refinement iteration start"
             );
 
@@ -533,10 +564,18 @@ where
             self.process_annotations(&last_response.answer);
             self.evict_stale_fragments(user, signals);
 
-            if self.loaded.len() == loaded_before {
+            let tokens_now: usize = self.loaded.iter().map(|f| f.tokens).sum();
+            let net_new_tokens = tokens_now.saturating_sub(tokens_before);
+            let net_new_frags = self.loaded.len().saturating_sub(loaded_before);
+            if self.loaded.len() == loaded_before
+                || net_new_tokens < self.config.convergence_min_new_tokens
+            {
                 debug!(
-                    iterations = i + 1,
-                    "refinement converged — no new admissions"
+                    iteration = i + 1,
+                    net_new_frags,
+                    net_new_tokens,
+                    threshold = self.config.convergence_min_new_tokens,
+                    "refinement converged",
                 );
                 break;
             }
