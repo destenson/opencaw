@@ -111,6 +111,13 @@ pub struct DynamicRecallConfig {
     /// embedding query at each check. Must be >= `passive_injection_interval`
     /// to avoid missing sequences that span an interval boundary.
     pub passive_injection_window_size: usize,
+    /// Maximum fraction of `max_workspace_tokens` that session history
+    /// fragments may consume. History fragments compete with workspace stubs
+    /// for the same budget pool; without a cap they can flood the workspace
+    /// (B7: prior session responses outrank workspace stubs by vocabulary
+    /// density). 0.25 allows up to 3 000 tokens of history in the default
+    /// 12 000-token budget while reserving 9 000 for workspace stubs.
+    pub session_history_budget_fraction: f32,
 }
 
 impl Default for DynamicRecallConfig {
@@ -130,6 +137,7 @@ impl Default for DynamicRecallConfig {
             convergence_min_new_tokens: 200,
             passive_injection_interval: 32,
             passive_injection_window_size: 192,
+            session_history_budget_fraction: 0.25,
         }
     }
 }
@@ -1057,6 +1065,15 @@ where
     }
 
     fn load_fragments(&mut self, hits: Vec<(StubId, f32)>) -> CawResult<()> {
+        let history_budget = (self.config.max_workspace_tokens as f32
+            * self.config.session_history_budget_fraction) as usize;
+        let mut current_history_tokens: usize = self
+            .loaded
+            .iter()
+            .filter(|f| f.locator.source == "session history")
+            .map(|f| f.tokens)
+            .sum();
+
         for (stub_id, score) in hits {
             if self.loaded_ids.contains(&stub_id) {
                 // Fragment already in workspace — update relevance score if the
@@ -1102,6 +1119,14 @@ where
             let fragment = match self.session_content.get(&stub_id) {
                 Some(content) => {
                     let tokens = count_tokens_cl100k(content);
+                    if current_history_tokens + tokens > history_budget {
+                        debug!(
+                            current_history_tokens,
+                            history_budget,
+                            "session history budget cap reached — skipping history fragment"
+                        );
+                        continue;
+                    }
                     RecallFragment {
                         stub_id: stub_id.clone(),
                         content: content.clone(),
@@ -1167,6 +1192,7 @@ where
 
             if current_tokens + fragment.tokens <= self.config.max_workspace_tokens {
                 let fragment_tokens = fragment.tokens;
+                let is_history = source == "session history";
                 debug!(
                     path = %fragment.locator.source,
                     score,
@@ -1175,11 +1201,14 @@ where
                 );
                 self.relevance_scores.insert(stub_id.clone(), score);
                 self.loaded_ids.insert(stub_id.clone());
-                if source != "session history" {
+                if !is_history {
                     self.loaded_sources.insert(source.clone());
                 }
                 self.provenance.record_with_context(fragment.clone(), "", 0);
                 self.loaded.push(fragment);
+                if is_history {
+                    current_history_tokens += fragment_tokens;
+                }
                 if let Some(eval) = &mut self.evaluator {
                     eval.record_recall(&stub_id, score, fragment_tokens);
                 }

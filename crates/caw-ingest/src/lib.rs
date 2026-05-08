@@ -150,7 +150,7 @@ impl IngestionPipeline {
                                     .unwrap_or_default()
                             });
 
-                        let summary = if position_summary.is_empty() {
+                        let raw_summary = if position_summary.is_empty() {
                             base_summary
                         } else if base_summary.is_empty() || !chunk.outline_entries.is_empty() {
                             // position_summary already lists the symbols ("contains fn_x, fn_y")
@@ -161,6 +161,7 @@ impl IngestionPipeline {
                             // base_summary adds a snippet of actual code for a retrieval hint.
                             format!("{} — {}", position_summary, base_summary)
                         };
+                        let summary = add_crate_prefix(&doc.path, raw_summary);
 
                         let stub = Stub {
                             id: StubId(format!("{}#chunk{}", doc.path, chunk.index)),
@@ -185,14 +186,16 @@ impl IngestionPipeline {
         }
 
         // Single-stub path: file is small or chunking is disabled
-        let summary = self
-            .summarizer
-            .summarize(&doc.path, &doc.content, doc.kind, &outline)
-            .unwrap_or_else(|_| {
-                DeterministicSummarizer
-                    .summarize(&doc.path, &doc.content, doc.kind, &outline)
-                    .unwrap_or_default()
-            });
+        let summary = add_crate_prefix(
+            &doc.path,
+            self.summarizer
+                .summarize(&doc.path, &doc.content, doc.kind, &outline)
+                .unwrap_or_else(|_| {
+                    DeterministicSummarizer
+                        .summarize(&doc.path, &doc.content, doc.kind, &outline)
+                        .unwrap_or_default()
+                }),
+        );
         let token_estimate =
             single_token_estimate.unwrap_or_else(|| self.tokenizer.count_tokens(&doc.content));
 
@@ -359,6 +362,28 @@ fn extract_outline_naive(content: &str) -> Vec<String> {
         }
     }
     outline
+}
+
+/// Extract the crate name from a path that contains `crates/<name>/` as a
+/// component sequence, e.g. `…/crates/caw-curation/src/pipeline.rs` → `caw-curation`.
+/// Returns `None` when the path does not contain a `crates/` component.
+fn crate_name_from_path(path: &str) -> Option<&str> {
+    // Walk the path components looking for "crates", then return the next one.
+    let parts: Vec<&str> = path.split('/').collect();
+    parts
+        .windows(2)
+        .find(|w| w[0] == "crates" && !w[1].is_empty())
+        .map(|w| w[1])
+}
+
+/// Prepend `[crate-name] ` to the summary for files that live under `crates/`.
+/// This ensures the crate name appears in the BM25-indexed summary text so that
+/// queries naming the crate (e.g. "improve caw-curation") can match its stubs.
+fn add_crate_prefix(path: &str, summary: String) -> String {
+    match crate_name_from_path(path) {
+        Some(name) => format!("[{name}] {summary}"),
+        None => summary,
+    }
 }
 
 fn sha256_hash(input: &str) -> String {
