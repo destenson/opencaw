@@ -15,33 +15,33 @@ A **Rust library** for context-as-workspace management in LLM applications. Embe
 - [ ] Serious thought into user interface: ergonomics of user interface, ergonomics of the API, documentation, actionable error handling.
 
 ### Should have (significant quality improvement)
-- [ ] Richer consolidation notes: `MechanicalConsolidation` is the default; `LlmConsolidation` exists but the default still emits mechanical strings. Open question whether the LLM variant should be on by default under `--llm-consolidation`.
+- [ ] Richer consolidation notes: `LlmConsolidation` is the correct default when an LLM adapter is available. `MechanicalConsolidation` is a fallback only. The `--llm-consolidation` CLI flag is obsolete and should be removed — this is not optional behavior. See `docs/DECISIONS.md`.
 - [x] Adaptive chunking for large files: `caw-ingest/src/chunking.rs`. Token-threshold splitting with structural boundaries for code and markdown.
-- [x] Degradation monitoring and tiered fallback: `caw-orchestrator/src/degradation.rs`. Opt-in via `with_degradation_monitor()`.
+- [x] Degradation monitoring and tiered fallback: `caw-orchestrator/src/degradation.rs`. Always active — not opt-in. `with_degradation_monitor()` is called unconditionally.
 - [ ] Provenance conflict detection beyond topic overlap: still only Jaccard. Contradicting assertions and inconsistent numbers are undetected.
-- [ ] Serious thought into how to use as middleware/proxy that can support any compatible 3rd-party client. This is a separate engineering problem from the core library, but it should influence design decisions in v1 to avoid painting ourselves into a corner.
+- [ ] Serious thought into how to use as middleware/proxy that can support any compatible 3rd-party client. This is a separate engineering problem from the core library, but it should influence design decisions in v0.1 to avoid painting ourselves into a corner.
 
 ### Nice to have (polish)
 - [x] Probe rate limiting for models that thrash: `ProbeRateLimiter` in the degradation module.
 - [ ] Insertion-order experiments (relevance-ranked vs. reverse-relevance vs. stub-order): no harness wired up.
 - [ ] Few-shot token cost surfacing (no automatic policy — just measurement): callers can use the `Tokenizer` trait directly, but no framework-level utility.
 
-## v2 and beyond (no active work in v1)
+## v2 and beyond (no active work in v0.1)
 
-These are future goals documented in the design doc. Some have placeholder stubs in the codebase to preserve structural intent; these stubs compile but return errors immediately. Don't delete them, but don't invest v1 effort in making them functional.
+These are future goals documented in the design doc. Some have placeholder stubs in the codebase to preserve structural intent; these stubs compile but return errors immediately. Don't delete them, but don't invest v0.1 effort in making them functional.
 
 ### Deployment targets beyond library
 - **Middleware / proxy**: Transparent LLM API interception. Requires async refactoring, session state over HTTP, concurrent requests. Separate engineering problem from the core framework.
 - **Engine plugins** (vLLM, Ollama native, etc.): Deep integration for mid-token recall. Requires the framework to stabilize first.
-- **Server** (caw-server): HTTP/gRPC service. Currently an empty scaffold.
+- **Server** (caw-server): Functional OpenAI-compatible retrieval-augmentation proxy. Retrieves context, augments the last user message, forwards to an upstream model server with streaming passthrough. Uses Candle + CUDA for embeddings. Current limitations: synchronous, Candle-only embedder, no multi-pass orchestration. This is a working v0 implementation, not scaffold.
 
 ### Async and streaming
 - **Async trait refactoring**: Only needed for middleware/server. Sync traits are simpler for library consumers.
-- **Streaming mid-token recall**: Multi-pass orchestration is the v1 approach. True streaming requires async adapter traits and engine cooperation.
+- **Streaming mid-token recall**: Multi-pass orchestration is the v0.1 approach. True streaming requires async adapter traits and engine cooperation.
 
 ### Additional backends (implemented but feature-gated)
 All three compile and function when their Cargo feature is enabled. None are on
-by default. They are not v1 focus and the CLI doesn't wire them up, but they
+by default. They are not v0.1 focus and the CLI doesn't wire them up, but they
 are no longer stubs.
 - **Candle embedding provider** (`candle` feature): Loads BERT-family models from HuggingFace Hub (e.g., BGE). Mutually exclusive with `fastembed` because both link `onnxruntime` native lib via different versions of `ort`.
 - **ONNX embedding provider** (`onnx` feature): Loads arbitrary ONNX models from a local path with an adjacent `tokenizer.json`. Mutually exclusive with `fastembed`, same native-lib reason.
@@ -50,11 +50,11 @@ are no longer stubs.
 ### Additional adapters
 - OpenAI (via the generic `OpenAiCompatibleAdapter`), `ClaudeCodeAdapter` for local CLI integration. Four working remote/local adapters plus MockAdapter cover cloud, fast inference, local, and test. vLLM and llama.cpp speak the OpenAI protocol — no new adapter needed.
 
-### Already implemented, included in v1 as-is
-- **API embedding provider** (OpenAI functional, Cohere/Voyage stubbed): Works today, useful for v1. No gating needed.
-- **BM25 + hybrid retrieval**: Fully implemented and integrated. Part of the v1 retrieval story.
-- **HNSW vector index**: Production-ready via instant-distance. Core v1 infrastructure.
-- **Multi-pass dynamic orchestration**: Working recall loop with eviction and consolidation. The v1 execution model.
+### Already implemented, included in v0.1 as-is
+- **API embedding provider** (OpenAI functional, Cohere/Voyage stubbed): Works today, useful for v0.1. No gating needed.
+- **BM25 + hybrid retrieval**: Fully implemented and integrated. Part of the v0.1 retrieval story.
+- **HNSW vector index**: Production-ready via instant-distance. Core v0.1 infrastructure.
+- **Multi-pass dynamic orchestration**: Working recall loop with eviction and consolidation. The v0.1 execution model.
 
 ## Scope change protocol
 

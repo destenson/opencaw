@@ -361,9 +361,18 @@ The following questions were raised during design and resolved:
 Still open:
 
 - Whether models, given this substrate, develop reasoning patterns that exploit it — deliberately thinking *around* a topic to surface related material, the way a person mutters to jog memory. If so, prompting strategy itself shifts. This is an empirical question that can only be answered after the system is running.
-- The right heuristic for detecting model capability level (to choose cooperative vs. transparent mode). Proxy candidates: model family, benchmark scores, observed probe quality in a calibration phase.
-- Whether the adaptive chunking threshold should be token-based, structural (e.g., chunk at function/section boundaries), or both.
+- The right heuristic for detecting model capability level (to choose cooperative vs. transparent mode). Default to cooperative (system prompt explains the mechanism). Proxy candidates for automatic selection: model family, benchmark scores, observed probe quality in a calibration phase.
+- Whether the adaptive chunking threshold should be token-based, structural (e.g., chunk at function/section boundaries), or both. Token-based is the current approach and is acceptable for v0.1.
 - Cache invalidation strategy for live filesystems where mtime is unreliable and content changes frequently. The `(path, mtime, hash)` key handles correctness but not cost — frequent changes mean frequent re-summarization.
+
+Resolved during QA (see `docs/DECISIONS.md` for full detail):
+
+- Session history is budget-capped at 20% of workspace tokens and does not compete with workspace stubs for retrieval slots.
+- Prior session model responses are compressed to ≤50 tokens before embedding — verbatim model output is never re-indexed as retrieval content.
+- Multi-pass retrieval convergence: stop when an iteration adds fewer than 200 tokens or zero new unique stubs.
+- Consolidation notes are capped at 2 per stub; `LlmConsolidation` is the default synthesizer.
+- `AugmentationSignals` from the intent classifier change retrieval behavior — they are not advisory.
+- Hysteresis thresholds (load=0.7, unload=0.4) are starting points pending calibration data from `HysteresisAnalysis` runs.
 
 ## References and related work:
 

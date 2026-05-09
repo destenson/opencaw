@@ -4,8 +4,11 @@ bench-results/
 opencaw_report.json
 data/
 opencaw-corpora/
-.claude/*.lock
+.claude/
 **/*.local.*
 .caw*/
 **/trace.jsonl
 qa/
+scripts/
+CLAUDE.md
+MASCOT.md
