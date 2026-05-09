@@ -14,10 +14,10 @@ OpenCAW treats LLM context as a managed workspace rather than a simple container
 | **caw-llama-sys** | FFI bindings to libllama.so (feature-gated; built via pkg-config or `$LLAMA_PATH`) |
 | **caw-orchestrator** | `DynamicRecallOrchestrator`, degradation monitor, consolidation |
 | **caw-curation** | History summarization, tool output compression, system prompt budgeting |
-| **caw-eval** | `SessionEvaluator` and metrics (recall@k, false-recall, hysteresis, cooperation) |
+| **caw-eval** | Recall and cooperation metrics; `SessionEvaluator` records events during turns and is consumed by caw-orchestrator and caw-bench |
 | **caw-cli** | Command-line interface |
 | **caw-bench** | Benchmark harness (NIAH, opencaw, sysdoc Q&A workloads) and `caw-bench-build-index` |
-| **caw-server** | OpenAI-compatible retrieval-augmentation proxy |
+| **caw-server** | OpenAI-compatible retrieval-augmentation proxy (in progress) |
 
 ## Design Principles
 
@@ -29,45 +29,58 @@ OpenCAW treats LLM context as a managed workspace rather than a simple container
 
 ## Data Flow
 
+### Indexing (background / offline)
+
 ```
-                      ┌─────────────────────┐
-                      │   Background Indexer │
-                      │  (summaries, outlines│
-                      │   embeddings, chunks)│
-                      └──────────┬──────────┘
-                                 │ populates
-                                 ▼
-┌──────────┐   ┌──────────────┐   ┌──────────────┐
-│  User    │──▶│   Prompt     │──▶│  Stub Index   │
-│  Prompt  │   │  Transformer │   │  (cache store) │
-└──────────┘   └──────┬───────┘   └───────┬───────┘
-                      │ stubbed prompt      │ embedding lookup
-                      ▼                     │
-               ┌──────────────┐             │
-               │  Orchestrator │◀────────────┘
-               │  (multi-turn) │
-               └──────┬───────┘
-                      │
-          ┌───────────┼───────────┐
-          ▼           ▼           ▼
-   ┌───────────┐ ┌─────────┐ ┌──────────┐
-   │  LLM      │ │ Probe   │ │ Tool     │
-   │  Generate  │ │ Matcher │ │ Handler  │
-   └─────┬─────┘ └────┬────┘ └────┬─────┘
-         │            │           │
-         │    matched stubs  file content
-         │            │           │
-         └────────────┴───────────┘
-                      │
-               ┌──────▼───────┐
-               │  Provenance  │
-               │  Tagger      │
-               └──────┬───────┘
-                      │
-               ┌──────▼───────┐
-               │  Eviction /  │
-               │  Consolidation│
-               └──────────────┘
+Source documents
+      │ IngestionPipeline (caw-ingest)
+      ▼
+ Chunks + outlines + summaries
+      │ EmbeddingProvider (caw-index)
+      ▼
+ SqliteStubStore  ←──────────────────────── corpus on disk
+ (stubs + embeddings)
+```
+
+### Per-turn: DynamicRecallOrchestrator
+
+```
+ User query
+      │
+      ├─ cross-turn eviction ──────────────────────────────────────────────┐
+      │  (decay relevance scores; evict below-threshold fragments)          │
+      │                                                                     │
+      ├─ Phase 1: initial retrieval                                         │
+      │   query → embed → vector search → score vs. load threshold         │
+      │   ├─ ≤ max_initial_fragments above threshold: load directly        │
+      │   └─ > max_initial_fragments:  surface candidate list              │
+      │                                                                     │
+      ├─ session history recall (separate in-memory vector index)          │
+      │                                                                     │
+      ▼                                                                     │
+ CompletionRequest                                                          │
+ (system prompt + workspace fragments)                                      │
+      │                                                                     │
+      ▼                                                                     │
+ ModelAdapter.complete()  [or generate_passive() if adapter supports it]   │
+      │                                                                     │
+      ▼                                                                     │
+ CompletionResponse  (answer + optional thinking trace)                    │
+      │                                                                     │
+      ├─ Phase 2: iterative refinement (repeats up to max_recall_iterations)│
+      │   ├─ extract thinking-trace steps → embed each → vector search → load
+      │   ├─ extract <probe> tags → search → load                          │
+      │   ├─ extract path:line-range references → read range → load        │
+      │   ├─ extract <note> annotations → persist as consolidation notes   │
+      │   ├─ decay + refresh relevance scores                              │
+      │   ├─ evict stale / over-budget fragments  ────────────────────────►┘
+      │   │   (on eviction: synthesize consolidation note, persist to store)
+      │   └─ if new context admitted: re-complete; keep best answer        │
+      │      converged when net new tokens < convergence_min_new_tokens    │
+      │                                                                     │
+      ├─ write turn to session file; embed for cross-turn recall           │
+      ├─ record metrics to SessionEvaluator (if attached)                  │
+      └─ return best CompletionResponse
 ```
 
 ## Further Reading
