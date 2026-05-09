@@ -1,172 +1,127 @@
-# OpenCAW — Design Decisions and Defaults
+# OpenCAW — Principles and Decisions
 
-**Status:** authoritative reference for implementation decisions. When an implementation choice conflicts with this document, fix the implementation. When this document is silent on a choice, see the Decision Protocol at the bottom — the right answer is almost never "pick something and code it up."
-
----
-
-## How to read this document
-
-Rules without reasoning produce brittle implementations. When you encounter a situation this document doesn't explicitly cover, you should be able to reason from the principles here to a correct answer. The specific values (20% budget cap, 200-token convergence threshold, 2-note cap) are conclusions that follow from reasoning — understanding the reasoning lets you judge whether an edge case falls inside or outside the same logic.
+**Status:** authoritative reference for implementation decisions. Read `docs/design.md` for the full thesis; read this document before making any significant implementation choice.
 
 ---
 
-## Features must be active by default
+## What opencaw is
 
-The 20 QA loops that produced `qa/recommendations/` almost always found features that existed in the codebase but were never exercised — not because they were broken, but because they were opt-in. `LlmConsolidation`, `SessionEvaluator`, curation, degradation monitoring, `AugmentationSignals`: all built, none running. Every feature gated behind a flag will be disabled in practice, which means it will never be tested, never be measured, and never improve.
+opencaw treats LLM context as a managed workspace, not a container. The core idea is that working-set quality — what is in context and what isn't — is a primary lever on output quality, not just context window size. The system replaces file content with lightweight stubs, recalls full content on demand as the model reasons, and evicts stale material while preserving what was learned.
 
-If a feature improves recall quality or context curation, it should run on every session. Opt-out flags are acceptable for A/B testing (you need to be able to run without a feature to measure its value). Opt-in flags are not — they mean the feature doesn't exist for any user who didn't read the changelog.
+The differentiating mechanism is using the model's own reasoning trace as the retrieval signal. This sidesteps the need for a separate retrieval query and produces retrieval that tracks what the model is actually thinking about rather than what the user literally typed.
 
-Features that must always be active (may not be exhaustive, this list shouldn't really even exist, but here we are):
-
-| Feature | Notes |
-|---|---|
-| LLM-generated consolidation notes | `LlmConsolidation` when an LLM is present; `MechanicalConsolidation` only as a fallback when no LLM is available |
-| LLM summarization at index time | For prose; deterministic only for code chunks where tree-sitter outline is sufficient |
-| Curation pipeline | History summarization, tool output compression — always active, no flag required |
-| `SessionEvaluator` | Wired into `DynamicRecallOrchestrator`; fires at every recall, eviction, probe, annotation |
-| Degradation monitor | `with_degradation_monitor()` called unconditionally, not via an opt-in builder method |
-| `AugmentationSignals` → retrieval | Intent classification results must change retrieval behavior — see below |
-| Session history | Always injected, but with a budget cap — see below |
-| Consolidation notes persisted | Orchestrator always constructed `with_store()` |
-| Multi-pass convergence detection | Always enforced — see below |
-| Per-turn session log flush | `write_turn` called before any error propagates |
-| Chat-template token stripping | All adapters strip model-specific tokens before storing any response |
+opencaw is a **library** that provides the primitives for context management; applications and deployment targets are built on top of it. Design choices that serve a specific deployment at the expense of generality are wrong.
 
 ---
 
-## Session history must not crowd out workspace stubs
+## Invariants
 
-Prior session model responses discuss the same topics as current queries — they use all the same words ("context", "recall", "orchestrator", "opencaw") in fluent prose. They score higher in semantic similarity than raw code stubs because prose is closer to the query format than source code is. Without any constraint, session history floods the workspace before a single stub from the actual project is loaded. The model reads its own prior output rather than the project's current state. Any error or stale claim in a prior response gets recycled as authoritative context in the next session. This compounds: session 3 inherits sessions 1 and 2's errors, and they arrive looking like retrieved evidence.
+These are properties the system must maintain to function correctly. Any implementation choice that violates an invariant is wrong regardless of how pragmatic it seems in the moment.
 
-History fragments are therefore injected as a fixed budget-capped block, not as competitors in the retrieval pool. They may consume at most 20% of the workspace token budget. Retrieval slots are reserved for workspace stubs.
+**The workspace must reflect the current query.** At any moment, the workspace should contain the content most relevant to what the model is currently reasoning about. Anything that displaces relevant content — session history, noise stubs, runaway retrieval — degrades output quality proportionally. Every subsystem that touches the workspace is responsible for not crowding out content that actually helps.
 
-**Prior session responses are compressed before embedding.** The full text of a model response is never re-embedded as retrieval content. Before indexing a prior session turn, replace the model response with a synthesis of ≤50 tokens: what was asked, the main conclusion, any specific facts cited. A 400-token response that outranks every workspace stub is the failure mode this prevents.
+**Features must run to exist.** A feature behind an opt-in flag doesn't exist in practice. It will never be tested in real workloads, never be measured, and never improve. The only way to know whether something works is to run it. Opt-out flags are fine for measurement (A/B comparisons require a control); opt-in flags mean the feature is effectively unimplemented.
 
-**History content includes both sides of each turn.** User query and assistant answer (or compressed synthesis). Injecting only the user side breaks meta-queries ("is the context helpful?") because the model can't evaluate a prior response it can't see.
+**Retrieval signal must come from meaning, not structure.** Embedding metadata — paths, symbol names, outlines — measures structural similarity. Behavior, purpose, and semantics are in the content. A query about what code does cannot be answered by what it's named.
 
-**Degenerate turns are labeled.** If a turn's answer is a degenerate-response prefix, inject it with a `[partial response — generation failed]` label. Don't inject it as if it were a complete and reliable response.
+**Consolidation preserves insight, not events.** The purpose of eviction-time consolidation is to carry forward what was learned from a fragment after it leaves the workspace, so future recalls start with more context than cold. Recording that a fragment was evicted at score 0.52 is not insight. What was relevant about it, what was concluded from it — that is.
 
----
-
-## Multi-pass retrieval must converge
-
-Every file in an active codebase contains terms that match broad queries. "Is opencaw development completed?" matches every Rust file that uses the words "config", "default", or any variable with "mode" in its name. Each retrieval pass finds new files containing some query term and loads them. Without a stopping condition the loop runs until budget exhaustion, loading progressively less relevant material and diluting the workspace with noise. A query about project status ended up with 50 fragments from adapter implementations because they contained the word "development" as a variable name.
-
-Stop the multi-pass loop when either:
-1. The iteration admitted zero new unique stubs (by stub-id), or
-2. The iteration added fewer than 200 tokens to the workspace.
-
-Log the iteration count at which convergence was detected. If the loop consistently takes 5+ iterations before converging, that is a signal about retrieval precision — not a reason to keep iterating.
+**The library does not know your project.** Project-specific configuration — what to skip, what to boost, what counts as noise — belongs in deployment configuration (`.cawignore`, retrieval weights, etc.), not in library code. Hard-coding project paths or heuristics in `should_skip` or retrieval logic is always wrong.
 
 ---
 
-## Intent classification must change retrieval behavior
+## Architectural decisions
 
-The intent classifier runs on every query and correctly identifies query type. If that classification doesn't change what gets loaded or how it's loaded, the classifier is burning compute on a judgment that's immediately discarded. In every QA loop that tested it, `is_inventory_request=true` was computed correctly and then ignored — retrieval loaded the single most similarity-matched chunk of TODO.md (always a single item, never a count), and the model correctly reported that it couldn't answer.
+These are the significant design choices that define what opencaw is. They are settled. Relitigating them without new evidence wastes time.
 
-Classification results must change retrieval strategy:
+### Thinking-trace as retrieval query
 
-- **`is_inventory_request` or `is_status_request`**: When top-k results are fragments from TODO.md, BUGS.md, or SCOPE.md, load all remaining chunks of that file up to the token budget. Similarity threshold is bypassed for same-file chunks. A count query requires document-level coverage; a similarity-ranked single chunk will never answer it.
-- **`is_next_step_request`**: Proactively include TODO.md chunk 1 regardless of similarity score.
-- **`is_results_request`**: Bias retrieval toward paths matching `bench-results/`.
-- **`wants_explanation`**: Load `.md` stubs in full-content mode, not outline-only. Load the top-ranked documentation stubs directly rather than presenting them as search-candidates for the model to "request." The search-candidates protocol requires a request-fulfillment loop that doesn't exist in most deployments — defaulting to it for explanation queries silently serves the model a file list with no content.
-- **All flags false, query under ~15 tokens**: Skip retrieval. The model is acknowledging an input, not asking a question. Running a full retrieval cycle on "nice to know" surfaces semantically adjacent but contextually irrelevant content and the model answers a question nobody asked.
+The model's own reasoning is the retrieval signal, not a reformulation of the user's query. This works because reasoning traces are more topical and denoised than mixed conversation turns, and step boundaries provide natural trigger points. It also means retrieval tracks the model's actual line of thought rather than the surface form of the question.
 
----
+The practical consequence: retrieval is triggered at step boundaries, not once per user turn. The orchestrator embeds reasoning steps and matches them against the stub index incrementally.
 
-## Embed chunk content, not metadata
+### Multi-turn orchestration as the baseline
 
-If you embed a stub's metadata (path, symbol names, outline), similarity measures "does this file's name/structure match the query?" rather than "does this file's content answer the query?". Every chunk from the same large file shares the same symbols and path, so retrieval returns all 42 chunks of `caw-core/src/lib.rs` for any query about core types, flooding top-k with fragments from one file. Queries about what code *does* get no signal because behavior isn't in the symbol names.
+Single-pass retrieval produces a fixed context for the entire response. Multi-turn orchestration — where retrieval can inject new content between generation steps — allows the context to evolve as the model's reasoning evolves. This is the only approach that works for queries that require synthesizing information the model discovers mid-reasoning.
 
-The embedding text is the chunk content — actual code or prose — optionally prefixed with path and summary for asymmetric models. For code chunks with no outline entries (tail chunks, closing braces, test boilerplate), embed the actual content rather than the positional header. For config files (`.toml`, `.yaml`, `.json`), embed key names and values from the full file, not just the first line. The `_content: String` parameter in `SemanticRetriever::insert` is used, not silently ignored.
+The mid-stream engine-integration path (interrupting generation in-place) is a future optimization, not the current approach. Multi-turn orchestration works with any standard request/response API.
 
----
+### Stubs replace content; recall materializes it on demand
 
-## Consolidation must capture insights, not eviction events
+Files in the workspace are represented as structured stubs until the model's reasoning triggers recall. This keeps the context compact during broad exploration and focuses token budget on content the model is actually reasoning about. The stub carries enough metadata for the model to decide whether to request full content without reading it.
 
-`MechanicalConsolidation` writes notes of the form "Evicted (relevance decayed to 0.52) during query about '...'". This tells the model that the stub was dropped and what score it had. The model cannot use this to decide anything — it doesn't know what was relevant, what was concluded, or why the stub mattered. Worse, each eviction appends the prior note as a "prior session notes" field, so after three eviction cycles the note is larger than the original content and consists entirely of nested metadata referencing itself.
+### Hysteresis for eviction
 
-`LlmConsolidation` is the default when an LLM is available. Notes record what was learned: what was relevant about the fragment, what was concluded from it, how it relates to the query context. The eviction score is logged separately and not injected into the model's context.
+A single threshold produces thrashing: content loaded because it was marginally relevant gets evicted one step later, then re-loaded, then evicted. Two thresholds — load at 0.7, unload at 0.4 — create a band in which content stays once admitted, preventing the oscillation. The gap between them is the stability zone.
 
-Per-stub notes are capped at 2 entries. When a third eviction would add a note, collapse: "Evicted N times previously; most recent: [one-line summary]". A note must never contain another note as nested content — strip any prior-note text from the topic field before storing.
+### Consolidation as episodic-to-semantic transfer
 
----
+When a fragment is evicted, the stub absorbs a synthesized note of what was learned during the loaded period. This is analogous to how episodic memory consolidates into semantic memory: the raw experience (the fragment content) is gone, but the derived understanding (what mattered about it) persists and informs future recalls. Without this, every session starts cold regardless of prior work.
 
-## Model adapter capabilities must reflect reality
+The consolidation synthesizer must use an LLM when one is available. A mechanical fallback (recording the eviction score) is not consolidation — it is bookkeeping that gives the appearance of consolidation without the function.
 
-Hardcoding `supports_hidden_reasoning: true` for all Ollama models means every Ollama model receives instructions to emit `<probe>` and `<note>` markers. Models that can't follow those instructions produce the markers as literal output prose, contaminating answers with noise that looks like system-injected content. Hardcoding `supports_visible_reasoning: false` for all Anthropic models disables thinking-trace recall for every Claude model regardless of version. Capabilities frozen in library code can never improve without a code change.
+### Session history serves continuity, not retrieval
 
-- **`OllamaAdapter`**: query `/api/show` at construction time for actual model metadata. Log a warning and default to `false` if the endpoint doesn't respond.
-- **`AnthropicAdapter`**: determine `supports_visible_reasoning` from the model ID. Claude models with extended thinking (claude-3-5-sonnet-20241022 and later) support it.
-- **All adapters**: strip model-specific chat template tokens before returning `CompletionResponse`. For Qwen3 this includes `<|im_end|>`, `<|im_start|>...`, and `<think>...</think>`. The terminal `<|im_end|>` is a stop token, not content — strip it unconditionally, not only when content follows it.
+Prior conversation turns are not workspace stubs. They serve a different purpose — helping the model maintain coherence across a session — and must be handled differently. Model responses use the same vocabulary as current queries and will outrank workspace stubs in similarity search if allowed to compete. Session history is injected as a budget-capped fixed block, not as a retrieval candidate.
 
----
+Prior session responses (from earlier sessions, not the current one) are compressed before embedding. A 400-token response that outranks workspace stubs is not continuity — it is the current session reading from its own prior output rather than from the actual project.
 
-## Degenerate responses are partial results, not failures
+### Intent classification changes retrieval strategy
 
-When `is_looping()` fires, the response before the loop starts is often a correct and complete answer — the model started correctly and then repeated itself under quantization pressure or token budget constraints. Discarding the entire response loses the answer. Treating degenerate output as a hard session error stops the session immediately, so turns 2 and 3 of a 3-turn session never run even though the model might answer them correctly.
-
-1. Log which check fired (trigram collapse, line repetition, word dominance) and approximately where in the text it triggered.
-2. Save the valid prefix — the text before the loop — with a `[response truncated — generation looped]` suffix.
-3. Retry at most twice with temperature adjustment or context reduction.
-4. Always call `write_turn` before propagating any error.
+The intent classifier exists to adapt retrieval to query type. An inventory query ("how many todos are left?") requires document-level coverage of TODO.md; similarity search will return the single most-matching chunk, which is never sufficient to answer a count. A status query needs the overview documents. An explanation query needs documentation in full-content mode, not outline-only. Classification that doesn't change behavior is waste.
 
 ---
 
-## What belongs in .cawignore vs. should_skip
+## Implementation principles
 
-The library doesn't know what's noise in your project. `should_skip` in library code is for things that are universally harmful regardless of the project using opencaw — specifically, opencaw's own session artifacts (`.caw*/`), which create a retrieval feedback loop in any project. Everything project-specific belongs in `.cawignore`. Hard-coding project paths in `should_skip` is always wrong.
+When making a choice this document doesn't explicitly cover, apply these in order.
 
-**Library-level skips (in `should_skip`)**: `.caw/` and `.caw[0-9]*/` only.
+**Prefer measurement over guessing.** When a threshold or configuration value is uncertain, instrument it and measure. The specific values that exist (load=0.7, 20% history cap, 200-token convergence threshold) are starting points based on observed failure modes, not empirically validated optima. Don't change them without data; don't treat them as immutable.
 
-**This project's `.cawignore`** excludes operational output and files that mislead retrieval without contributing useful information: build output, model cache, benchmark output, QA loop output (`qa/`), build/harness scripts (`scripts/` — these contain stale crate descriptions that outrank real docs), AI assistant instructions (`CLAUDE.md`, `.claude/`), branding copy that incidentally matches every architectural query (`MASCOT.md`).
+**Default to on.** If a feature improves recall quality or context curation, it runs by default. The cost of a bad default is proportional to how long it runs before anyone notices. The cost of a missing default is that nobody ever notices.
 
-`docs/bugs.md` and `docs/codebase-review.md` are **not** excluded. They are primary documentation about project status and known issues — exactly the content the model needs to answer status and debugging questions.
+**Library vs. deployment.** Ask whether a choice belongs in the library or in deployment configuration. If it depends on the project, it belongs in configuration. If it applies to every project using opencaw, it belongs in the library.
 
-**Configuration files** (`.toml`, `.yaml`, `.json`): index whole, do not chunk, summarize with key names and values — not just the first line. A `Cargo.toml` stub must name the package and convey its purpose.
+**Serve the library target.** The library is the primary deployment target. Middleware and engine plugins are future work. A choice that makes the library harder to embed in order to make a future deployment target easier is premature.
 
-**Minimum content filter**: Stubs with `summary.trim().len() < 15` are excluded from retrieval. `token_estimate` reflects file size, not injected content length — don't use it as a proxy for useful content.
+**When in doubt, ask.** The first implementation choice is often wrong because no single pass has a complete picture of how all the subsystems interact. Write out the options and their trade-offs and ask rather than picking one. This is not a sign of weakness — it is the correct response to genuine ambiguity.
 
 ---
 
-## Retrieval thresholds
+## Settled configuration details
 
-These are starting points, not settled values. Don't change them without `HysteresisAnalysis` data from real sessions.
+These are specific values and constraints that follow from the architectural decisions above. They are not arbitrary — each has a failure mode it prevents — but they are also not sacred. Change them when measurement supports a different value.
 
-| Parameter | Default | Why this value |
-|---|---|---|
-| Load threshold | 0.7 | High enough to prefer relevance over broad coverage |
-| Unload threshold | 0.4 | The gap between 0.7 and 0.4 is the hysteresis band — prevents thrashing near threshold |
-| Hysteresis minimum | 0.35 | Fragments admitted twice in a session show persistent relevance; don't evict until truly irrelevant |
-| Decay rate | 0.8 per step | Fast enough to evict stale content; slow enough to retain recently-referenced material |
+**Session history budget cap: 20%.** Enough for continuity signal; not enough to crowd out workspace stubs for any realistic query.
 
-**Score modifiers**: retrieval scores are adjusted before admission to reflect query context.
+**Prior session response compression: ≤50 tokens.** A synthesis of what was asked and what was concluded. Not the full response text, which reads like authoritative documentation to the similarity search.
 
-| Condition | Modifier | Why |
-|---|---|---|
-| `.md` stub and `wants_explanation=true` | 1.5× | Documentation answers explanation queries better than implementation code |
-| `caw-bench/src/bin/` stub, non-benchmark query | 0.25× | Harness binaries reference every project concept but describe the benchmarking infrastructure, not the system |
-| `caw-bench/src/` stub, non-benchmark query | 0.5× | Same issue, broader scope |
-| Stub evicted N≥3 times with no probe match or annotation | 0.5× | This stub keeps getting loaded and immediately evicted — reduce its score so it stops consuming admission slots |
+**Multi-pass convergence: stop when an iteration adds <200 tokens or zero new unique stubs.** Either condition means the loop is no longer finding useful content.
+
+**Consolidation note cap: 2 per stub, no nesting.** Notes that grow without bound defeat the purpose. A stub that has been evicted many times gets "Evicted N times; most recent: [summary]" — not an accumulation of all prior notes.
+
+**Retrieval thresholds: load=0.7, unload=0.4, hysteresis floor=0.35.** Starting points pending `HysteresisAnalysis` sweeps. The floor applies to stubs that have been admitted at least twice in a session (indicating persistent relevance).
+
+**Score modifiers:** `.md` stubs get 1.5× for explanation queries (documentation answers those better than implementation); `caw-bench/src/` stubs get 0.5× for non-benchmark queries (0.25× for harness binaries specifically); stubs evicted 3+ times with no engagement get 0.5× (noise attractors that keep consuming admission slots).
+
+**Minimum content filter:** stubs with `summary.trim().len() < 15` are excluded from retrieval. `token_estimate` reflects file size, not how much content the stub actually contributes — don't use it as a content-quality proxy.
 
 ---
 
 ## Open questions
 
-These are genuinely unresolved. Present options with trade-offs and ask rather than choosing unilaterally.
+Genuinely unresolved. Present options with trade-offs; don't choose unilaterally.
 
-- **Hysteresis threshold calibration**: The defaults above are starting points. `HysteresisAnalysis` sweeps have not been run against enough session data to support different values.
-- **Insertion order of recalled content**: Relevance-ranked, reverse-relevance, and stub-order are all viable. Requires controlled comparison to decide.
-- **Model capability auto-detection**: The heuristic for choosing cooperative vs. transparent mode (whether to explain the recall substrate to the model) is unresolved. Default to cooperative until there is data.
-- **Adaptive chunking strategy**: Token-based chunking is the current approach. Structural boundaries (function/section) may produce better retrieval for code. Don't change without a benchmark comparison.
+- **Hysteresis threshold calibration.** The values above are starting points. `HysteresisAnalysis` sweeps against real session data haven't been run. The right values are workload-dependent.
+- **Insertion order of recalled content.** Relevance-ranked, reverse-relevance, and stub-order are all viable. Requires controlled comparison.
+- **Cooperative vs. transparent mode selection.** Whether to explain the recall mechanism to the model (cooperative) or keep it invisible (transparent) depends on model capability. The heuristic for choosing automatically is unresolved. Default to cooperative.
+- **Adaptive chunking strategy.** Token-based is the current approach. Structural boundaries (function/section) may be better for code. Requires a benchmark comparison before changing.
 
 ---
 
 ## Decision protocol
 
-When this document is silent on a choice:
-
-1. Check `docs/design.md` section 11. If there is a settled answer, use it.
-2. Check `docs/scope.md`. If the choice affects a "must have" or "should have" item, favor the option that most directly improves recall quality or context curation for the library use case.
-3. If still ambiguous: stop. Write out the options and their trade-offs. Ask. The first choice is often wrong because no single implementation pass has a complete picture of how the system works together.
-4. Never implement a feature behind an opt-in flag as a compromise. A feature is either the correct behavior (on by default) or it isn't ready to ship.
+1. Check `docs/design.md` §11 for settled answers to architectural questions.
+2. Check the invariants and architectural decisions above. If a choice violates an invariant, it's wrong. If it contradicts a settled architectural decision, it needs a strong justification.
+3. Apply the implementation principles.
+4. If still ambiguous: stop, write out the options and trade-offs, and ask. Don't implement a compromise behind a flag.
