@@ -45,7 +45,7 @@
     "id": "qa_008_fastembed_exclusives",
     "question": "Which Cargo features in caw-index are mutually exclusive with `fastembed`?",
     "reference_answer": "The `onnx` and `candle` features are mutually exclusive with `fastembed` because all three link the onnxruntime native library via different versions of `ort`.",
-    "expected_paths": ["crates/caw-index/Cargo.toml", "SCOPE.md"]
+    "expected_paths": ["crates/caw-index/Cargo.toml", "docs/scope.md"]
   },
   {
     "id": "qa_009_default_index_features",
@@ -75,7 +75,7 @@
     "id": "qa_013_degradation_tiers",
     "question": "Name the three operating tiers of the degradation monitor.",
     "reference_answer": "FullRecall, StubsAndToolsOnly, PassThrough",
-    "expected_paths": ["crates/caw-orchestrator/src/degradation.rs", "context-as-workspace.md"]
+    "expected_paths": ["crates/caw-orchestrator/src/degradation.rs", "docs/design.md"]
   },
   {
     "id": "qa_014_probe_marker_format",
@@ -111,25 +111,25 @@
     "id": "qa_019_default_history_budget",
     "question": "At what fraction of the context budget does `HistorySummarizerConfig` trigger history summarization by default?",
     "reference_answer": "30% (0.3)",
-    "expected_paths": ["crates/caw-curation/src/lib.rs", "context-as-workspace.md"]
+    "expected_paths": ["crates/caw-curation/src/lib.rs", "docs/design.md"]
   },
   {
     "id": "qa_020_default_retain_recent",
     "question": "How many recent turns are retained verbatim by default during history summarization?",
     "reference_answer": "3",
-    "expected_paths": ["crates/caw-curation/src/lib.rs", "context-as-workspace.md"]
+    "expected_paths": ["crates/caw-curation/src/lib.rs", "docs/design.md"]
   },
   {
     "id": "qa_021_server_state",
     "question": "What is the current state of the caw-server crate?",
     "reference_answer": "An empty scaffold — its main.rs prints a placeholder message and exits. Deferred to v2.",
-    "expected_paths": ["crates/caw-server/src/main.rs", "SCOPE.md", "README.md"]
+    "expected_paths": ["crates/caw-server/src/main.rs", "docs/scope.md", "README.md"]
   },
   {
     "id": "qa_022_sync_adapter_limit",
     "question": "Why do the adapters use sync-wrapped async via `block_on`, and when will that break?",
     "reference_answer": "Simplicity for library consumers; it will panic if called from inside an async context (e.g., the future HTTP server). Async refactoring is deferred to v2 per SCOPE.md.",
-    "expected_paths": ["SCOPE.md", "TODO.md", "crates/caw-adapters/src/anthropic.rs"]
+    "expected_paths": ["docs/scope.md", "TODO.md", "crates/caw-adapters/src/anthropic.rs"]
   },
   {
     "id": "qa_023_tokenizer_default",
@@ -159,7 +159,7 @@
     "id": "qa_027_central_thesis",
     "question": "What effective-context expansion does the design doc claim is plausible for retrieval-shaped tasks?",
     "reference_answer": "1 to 2 orders of magnitude, at roughly flat inference compute.",
-    "expected_paths": ["context-as-workspace.md"]
+    "expected_paths": ["docs/design.md"]
   },
   {
     "id": "qa_028_eviction_trigger",
@@ -171,7 +171,7 @@
     "id": "qa_029_consolidation_default",
     "question": "What consolidation synthesizer does `DynamicRecallOrchestrator::new` install by default?",
     "reference_answer": "`MechanicalConsolidation` — produces deterministic strings. `LlmConsolidation` is opt-in via `with_consolidation_synthesizer`.",
-    "expected_paths": ["crates/caw-orchestrator/src/dynamic.rs", "crates/caw-orchestrator/src/consolidation.rs", "SCOPE.md"]
+    "expected_paths": ["crates/caw-orchestrator/src/dynamic.rs", "crates/caw-orchestrator/src/consolidation.rs", "docs/scope.md"]
   },
   {
     "id": "qa_030_jaccard_overlap",

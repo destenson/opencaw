@@ -439,7 +439,7 @@ fn should_skip(path: &Path) -> bool {
                 || s == "vendor"
                 // QA/automation scripts and generated analysis artifacts — indexing
                 // them injects stale architecture text and review artifacts that
-                // outrank primary sources like README.md and SCOPE.md.
+                // outrank primary sources like README.md and docs/scope.md.
                 || s == "scripts"
                 || s == "qa"
                 // Runtime index/session directories produced by opencaw itself

@@ -1,6 +1,6 @@
 # Context as Workspace: On-Demand Recall and Curated Working Sets for LLMs
 
-**Status:** design notes, pre-implementation
+**Status:** design reference; implementation complete as of 2026-05
 **Scope:** prompt transformation, embedding-driven recall, context curation policy
 
 ---

@@ -1,8 +1,8 @@
 //! opencaw-on-opencaw workload.
 //!
 //! Hand-authored Q&A against the opencaw repository itself. Questions
-//! target specific facts drawn from the code, README, SCOPE.md, TODO.md,
-//! and the design doc. Reference answers are short and concrete so the
+//! target specific facts drawn from the code, README, docs/scope.md, TODO.md,
+//! and docs/design.md. Reference answers are short and concrete so the
 //! model-as-judge scoring is stable across runs.
 
 use anyhow::{Context, Result};

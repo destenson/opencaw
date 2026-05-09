@@ -260,7 +260,7 @@ where
             " explicitly and describe what is missing.",
             " A blank or empty response is never acceptable.",
             " Context loading is handled automatically by the system — do not offer to load",
-            " additional files or documents (e.g. 'Would you like me to load ./SCOPE.md?').",
+            " additional files or documents (e.g. 'Would you like me to load ./docs/scope.md?').",
             " Such offers cannot be fulfilled here.",
         );
 
@@ -466,7 +466,7 @@ where
         // For explanation queries, always load stubs directly rather than presenting a
         // candidate list. The search-candidates path tells the model to request specific
         // files, but there is no infrastructure to fulfill those requests — it's a dead
-        // end. README.md and SCOPE.md reliably appear as top candidates for explanation
+        // end. README.md and docs/scope.md reliably appear as top candidates for explanation
         // queries and must be loaded, not listed.
         let explanation_query = signals.map_or(false, |s| s.wants_explanation);
         let show_listing = !explanation_query

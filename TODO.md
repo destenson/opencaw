@@ -1,6 +1,6 @@
 # TODO
 
-Cross-reference: design doc is `context-as-workspace.md`, scope boundaries are in `SCOPE.md`.
+Cross-reference: design doc is [docs/design.md](docs/design.md), scope boundaries are in [docs/scope.md](docs/scope.md).
 
 ## Retrieval
 

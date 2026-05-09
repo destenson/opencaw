@@ -141,7 +141,7 @@ YOUR TASK:
    - whether it is a bug/regression, critical deficiency, or follow-up improvement
    - the concrete evidence from the session output or index contents
    - the specific next action an implementer should take
-5. Update BUGS.md with newly confirmed bugs/regressions and update TODO.md with non-bug follow-up work that remains after the top-priority fixes.
+5. Update docs/bugs.md with newly confirmed bugs/regressions and update TODO.md with non-bug follow-up work that remains after the top-priority fixes.
 6. Make the ordering implementable: the first item in qa/recommendations/${LOOP_NUMBER}.md must be the single most important bug, regression, or critical deficiency for the implementer to fix next.
 7. Implement the fix for the single highest-priority item you identified in step 6.
 
@@ -206,12 +206,12 @@ YOUR TASK:
     - critical deficiencies that break or materially weaken QA sessions
     - other follow-up improvements
 5. After implementing the top-priority item, update the tracking docs before stopping:
-    - BUGS.md: mark fixed bugs/regressions clearly, and add any newly discovered remaining bugs
+    - docs/bugs.md: mark fixed bugs/regressions clearly, and add any newly discovered remaining bugs
     - TODO.md: record remaining follow-up work and the next most important item still open
 6. Then pick the next most important remaining bug and/or TODO item only if the first fix is complete and the build is still clean.
 7. Run: cargo build --release --bin caw-cli --features llama
 8. Fix any compilation errors before finishing — do not stop until it compiles cleanly.
-9. Do not stop after code changes without leaving BUGS.md and TODO.md in a state that tells the next implementer what remains.
+9. Do not stop after code changes without leaving docs/bugs.md and TODO.md in a state that tells the next implementer what remains.
 IMPL_PROMPT
     )
     claude --dangerously-skip-permissions -p "$CLAUDE_IMPLEMENTATION_PROMPT" \
