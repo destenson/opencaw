@@ -364,3 +364,8 @@ Still open:
 - The right heuristic for detecting model capability level (to choose cooperative vs. transparent mode). Proxy candidates: model family, benchmark scores, observed probe quality in a calibration phase.
 - Whether the adaptive chunking threshold should be token-based, structural (e.g., chunk at function/section boundaries), or both.
 - Cache invalidation strategy for live filesystems where mtime is unreliable and content changes frequently. The `(path, mtime, hash)` key handles correctness but not cost — frequent changes mean frequent re-summarization.
+
+## References and related work:
+
+- `~/src/fados` contains "Filesystem-as-a-database overlay system" which is "a simple proof-of-concept script that builds a lightweight queryable overlay on top of a filesystem, enabling full-text, metadata, and semantic (vector) search over files — without moving, modifying, or duplicating them. The index holds only pointers (path + byte offset + length) back into the source tree; snippets are re-read from disk at query time. The index is always rebuildable from the source tree." -- This could be a useful tool for implementing the retrieval component of the RAG system, as it allows for efficient querying of files without needing to duplicate or modify them. It supports full-text, metadata, and semantic search, which could be beneficial for retrieving relevant context for the model. Additionally, since the index is always rebuildable from the source tree, it can easily adapt to changes in the underlying data without requiring complex synchronization or data management strategies.
+
