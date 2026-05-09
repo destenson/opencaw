@@ -1,225 +1,172 @@
 # OpenCAW — Design Decisions and Defaults
 
-**Status:** authoritative reference for agent implementation decisions. When implementation choices conflict with this document, fix the implementation. When this document is silent on a choice, see the Decision Protocol at the bottom.
+**Status:** authoritative reference for implementation decisions. When an implementation choice conflicts with this document, fix the implementation. When this document is silent on a choice, see the Decision Protocol at the bottom — the right answer is almost never "pick something and code it up."
 
 ---
 
-## Feature Defaults
+## How to read this document
 
-Every feature listed here must be **on by default**, with no opt-in flag required. Opt-out flags are acceptable for A/B testing and measurement purposes (e.g., `--no-consolidation` to measure the impact of consolidation). Opt-in flags are not acceptable — if a feature is valuable, it should not require the user to discover and enable it.
+Rules without reasoning produce brittle implementations. When you encounter a situation this document doesn't explicitly cover, you should be able to reason from the principles here to a correct answer. The specific values (20% budget cap, 200-token convergence threshold, 2-note cap) are conclusions that follow from reasoning — understanding the reasoning lets you judge whether an edge case falls inside or outside the same logic.
 
-| Feature | Default state | Notes |
+---
+
+## Features must be active by default
+
+The 20 QA loops that produced `qa/recommendations/` almost always found features that existed in the codebase but were never exercised — not because they were broken, but because they were opt-in. `LlmConsolidation`, `SessionEvaluator`, curation, degradation monitoring, `AugmentationSignals`: all built, none running. Every feature gated behind a flag will be disabled in practice, which means it will never be tested, never be measured, and never improve.
+
+If a feature improves recall quality or context curation, it should run on every session. Opt-out flags are acceptable for A/B testing (you need to be able to run without a feature to measure its value). Opt-in flags are not — they mean the feature doesn't exist for any user who didn't read the changelog.
+
+Features that must always be active (may not be exhaustive, this list shouldn't really even exist, but here we are):
+
+| Feature | Notes |
+|---|---|
+| LLM-generated consolidation notes | `LlmConsolidation` when an LLM is present; `MechanicalConsolidation` only as a fallback when no LLM is available |
+| LLM summarization at index time | For prose; deterministic only for code chunks where tree-sitter outline is sufficient |
+| Curation pipeline | History summarization, tool output compression — always active, no flag required |
+| `SessionEvaluator` | Wired into `DynamicRecallOrchestrator`; fires at every recall, eviction, probe, annotation |
+| Degradation monitor | `with_degradation_monitor()` called unconditionally, not via an opt-in builder method |
+| `AugmentationSignals` → retrieval | Intent classification results must change retrieval behavior — see below |
+| Session history | Always injected, but with a budget cap — see below |
+| Consolidation notes persisted | Orchestrator always constructed `with_store()` |
+| Multi-pass convergence detection | Always enforced — see below |
+| Per-turn session log flush | `write_turn` called before any error propagates |
+| Chat-template token stripping | All adapters strip model-specific tokens before storing any response |
+
+---
+
+## Session history must not crowd out workspace stubs
+
+Prior session model responses discuss the same topics as current queries — they use all the same words ("context", "recall", "orchestrator", "opencaw") in fluent prose. They score higher in semantic similarity than raw code stubs because prose is closer to the query format than source code is. Without any constraint, session history floods the workspace before a single stub from the actual project is loaded. The model reads its own prior output rather than the project's current state. Any error or stale claim in a prior response gets recycled as authoritative context in the next session. This compounds: session 3 inherits sessions 1 and 2's errors, and they arrive looking like retrieved evidence.
+
+History fragments are therefore injected as a fixed budget-capped block, not as competitors in the retrieval pool. They may consume at most 20% of the workspace token budget. Retrieval slots are reserved for workspace stubs.
+
+**Prior session responses are compressed before embedding.** The full text of a model response is never re-embedded as retrieval content. Before indexing a prior session turn, replace the model response with a synthesis of ≤50 tokens: what was asked, the main conclusion, any specific facts cited. A 400-token response that outranks every workspace stub is the failure mode this prevents.
+
+**History content includes both sides of each turn.** User query and assistant answer (or compressed synthesis). Injecting only the user side breaks meta-queries ("is the context helpful?") because the model can't evaluate a prior response it can't see.
+
+**Degenerate turns are labeled.** If a turn's answer is a degenerate-response prefix, inject it with a `[partial response — generation failed]` label. Don't inject it as if it were a complete and reliable response.
+
+---
+
+## Multi-pass retrieval must converge
+
+Every file in an active codebase contains terms that match broad queries. "Is opencaw development completed?" matches every Rust file that uses the words "config", "default", or any variable with "mode" in its name. Each retrieval pass finds new files containing some query term and loads them. Without a stopping condition the loop runs until budget exhaustion, loading progressively less relevant material and diluting the workspace with noise. A query about project status ended up with 50 fragments from adapter implementations because they contained the word "development" as a variable name.
+
+Stop the multi-pass loop when either:
+1. The iteration admitted zero new unique stubs (by stub-id), or
+2. The iteration added fewer than 200 tokens to the workspace.
+
+Log the iteration count at which convergence was detected. If the loop consistently takes 5+ iterations before converging, that is a signal about retrieval precision — not a reason to keep iterating.
+
+---
+
+## Intent classification must change retrieval behavior
+
+The intent classifier runs on every query and correctly identifies query type. If that classification doesn't change what gets loaded or how it's loaded, the classifier is burning compute on a judgment that's immediately discarded. In every QA loop that tested it, `is_inventory_request=true` was computed correctly and then ignored — retrieval loaded the single most similarity-matched chunk of TODO.md (always a single item, never a count), and the model correctly reported that it couldn't answer.
+
+Classification results must change retrieval strategy:
+
+- **`is_inventory_request` or `is_status_request`**: When top-k results are fragments from TODO.md, BUGS.md, or SCOPE.md, load all remaining chunks of that file up to the token budget. Similarity threshold is bypassed for same-file chunks. A count query requires document-level coverage; a similarity-ranked single chunk will never answer it.
+- **`is_next_step_request`**: Proactively include TODO.md chunk 1 regardless of similarity score.
+- **`is_results_request`**: Bias retrieval toward paths matching `bench-results/`.
+- **`wants_explanation`**: Load `.md` stubs in full-content mode, not outline-only. Load the top-ranked documentation stubs directly rather than presenting them as search-candidates for the model to "request." The search-candidates protocol requires a request-fulfillment loop that doesn't exist in most deployments — defaulting to it for explanation queries silently serves the model a file list with no content.
+- **All flags false, query under ~15 tokens**: Skip retrieval. The model is acknowledging an input, not asking a question. Running a full retrieval cycle on "nice to know" surfaces semantically adjacent but contextually irrelevant content and the model answers a question nobody asked.
+
+---
+
+## Embed chunk content, not metadata
+
+If you embed a stub's metadata (path, symbol names, outline), similarity measures "does this file's name/structure match the query?" rather than "does this file's content answer the query?". Every chunk from the same large file shares the same symbols and path, so retrieval returns all 42 chunks of `caw-core/src/lib.rs` for any query about core types, flooding top-k with fragments from one file. Queries about what code *does* get no signal because behavior isn't in the symbol names.
+
+The embedding text is the chunk content — actual code or prose — optionally prefixed with path and summary for asymmetric models. For code chunks with no outline entries (tail chunks, closing braces, test boilerplate), embed the actual content rather than the positional header. For config files (`.toml`, `.yaml`, `.json`), embed key names and values from the full file, not just the first line. The `_content: String` parameter in `SemanticRetriever::insert` is used, not silently ignored.
+
+---
+
+## Consolidation must capture insights, not eviction events
+
+`MechanicalConsolidation` writes notes of the form "Evicted (relevance decayed to 0.52) during query about '...'". This tells the model that the stub was dropped and what score it had. The model cannot use this to decide anything — it doesn't know what was relevant, what was concluded, or why the stub mattered. Worse, each eviction appends the prior note as a "prior session notes" field, so after three eviction cycles the note is larger than the original content and consists entirely of nested metadata referencing itself.
+
+`LlmConsolidation` is the default when an LLM is available. Notes record what was learned: what was relevant about the fragment, what was concluded from it, how it relates to the query context. The eviction score is logged separately and not injected into the model's context.
+
+Per-stub notes are capped at 2 entries. When a third eviction would add a note, collapse: "Evicted N times previously; most recent: [one-line summary]". A note must never contain another note as nested content — strip any prior-note text from the topic field before storing.
+
+---
+
+## Model adapter capabilities must reflect reality
+
+Hardcoding `supports_hidden_reasoning: true` for all Ollama models means every Ollama model receives instructions to emit `<probe>` and `<note>` markers. Models that can't follow those instructions produce the markers as literal output prose, contaminating answers with noise that looks like system-injected content. Hardcoding `supports_visible_reasoning: false` for all Anthropic models disables thinking-trace recall for every Claude model regardless of version. Capabilities frozen in library code can never improve without a code change.
+
+- **`OllamaAdapter`**: query `/api/show` at construction time for actual model metadata. Log a warning and default to `false` if the endpoint doesn't respond.
+- **`AnthropicAdapter`**: determine `supports_visible_reasoning` from the model ID. Claude models with extended thinking (claude-3-5-sonnet-20241022 and later) support it.
+- **All adapters**: strip model-specific chat template tokens before returning `CompletionResponse`. For Qwen3 this includes `<|im_end|>`, `<|im_start|>...`, and `<think>...</think>`. The terminal `<|im_end|>` is a stop token, not content — strip it unconditionally, not only when content follows it.
+
+---
+
+## Degenerate responses are partial results, not failures
+
+When `is_looping()` fires, the response before the loop starts is often a correct and complete answer — the model started correctly and then repeated itself under quantization pressure or token budget constraints. Discarding the entire response loses the answer. Treating degenerate output as a hard session error stops the session immediately, so turns 2 and 3 of a 3-turn session never run even though the model might answer them correctly.
+
+1. Log which check fired (trigram collapse, line repetition, word dominance) and approximately where in the text it triggered.
+2. Save the valid prefix — the text before the loop — with a `[response truncated — generation looped]` suffix.
+3. Retry at most twice with temperature adjustment or context reduction.
+4. Always call `write_turn` before propagating any error.
+
+---
+
+## What belongs in .cawignore vs. should_skip
+
+The library doesn't know what's noise in your project. `should_skip` in library code is for things that are universally harmful regardless of the project using opencaw — specifically, opencaw's own session artifacts (`.caw*/`), which create a retrieval feedback loop in any project. Everything project-specific belongs in `.cawignore`. Hard-coding project paths in `should_skip` is always wrong.
+
+**Library-level skips (in `should_skip`)**: `.caw/` and `.caw[0-9]*/` only.
+
+**This project's `.cawignore`** excludes operational output and files that mislead retrieval without contributing useful information: build output, model cache, benchmark output, QA loop output (`qa/`), build/harness scripts (`scripts/` — these contain stale crate descriptions that outrank real docs), AI assistant instructions (`CLAUDE.md`, `.claude/`), branding copy that incidentally matches every architectural query (`MASCOT.md`).
+
+`docs/bugs.md` and `docs/codebase-review.md` are **not** excluded. They are primary documentation about project status and known issues — exactly the content the model needs to answer status and debugging questions.
+
+**Configuration files** (`.toml`, `.yaml`, `.json`): index whole, do not chunk, summarize with key names and values — not just the first line. A `Cargo.toml` stub must name the package and convey its purpose.
+
+**Minimum content filter**: Stubs with `summary.trim().len() < 15` are excluded from retrieval. `token_estimate` reflects file size, not injected content length — don't use it as a proxy for useful content.
+
+---
+
+## Retrieval thresholds
+
+These are starting points, not settled values. Don't change them without `HysteresisAnalysis` data from real sessions.
+
+| Parameter | Default | Why this value |
 |---|---|---|
-| LLM-generated consolidation notes | **ON** | `LlmConsolidation` is the default synthesizer when an LLM adapter is present. `MechanicalConsolidation` is only a fallback when no LLM is available. The `--llm-consolidation` CLI flag is obsolete — remove it. |
-| LLM summarization at index build time | **ON** | `LlmSummarizer` for prose; `DeterministicSummarizer` only for code chunks where tree-sitter outline is available and sufficient. |
-| Curation pipeline (history summarization, tool output compression) | **ON** | The `--curate` CLI flag is obsolete — remove it. Curation is always active. |
-| `SessionEvaluator` wired into `DynamicRecallOrchestrator` | **ON** | Events fired at every recall, eviction, probe, annotation. No separate enable required. |
-| Degradation monitor | **ON** | Always constructed via `with_degradation_monitor()`. No opt-in. |
-| `AugmentationSignals` wired to retrieval | **ON** | Intent classification results **must** affect retrieval strategy. See Intent Classifier Behavior. |
-| Session history injection | **ON with budget cap** | See Session History. |
-| Consolidation notes written to store | **ON** | The orchestrator must be constructed `with_store()`. Notes always persist. |
-| Convergence detection for multi-pass retrieval | **ON** | See Retrieval Convergence. |
-| Per-turn session log flush | **ON** | `write_turn` is called after every turn, before any error propagates. A degenerate response is still written as a turn (with whatever valid prefix exists). |
-| Chat-template token stripping | **ON** | Strip `<|im_end|>`, `<|im_start|>...`, and `<think>...</think>` from all model output before storing. |
-| Thinking trace extraction | **ON** | `split_thinking` runs on every model response. The extracted answer, not the raw response, is stored. An empty `<think></think>` block is a no-op — the text after `</think>` is the answer. |
+| Load threshold | 0.7 | High enough to prefer relevance over broad coverage |
+| Unload threshold | 0.4 | The gap between 0.7 and 0.4 is the hysteresis band — prevents thrashing near threshold |
+| Hysteresis minimum | 0.35 | Fragments admitted twice in a session show persistent relevance; don't evict until truly irrelevant |
+| Decay rate | 0.8 per step | Fast enough to evict stale content; slow enough to retain recently-referenced material |
 
----
+**Score modifiers**: retrieval scores are adjusted before admission to reflect query context.
 
-## Indexing: Skip List
-
-**Do not hard-code project-specific paths in the library.** `.cawignore` exists precisely so each project can declare what it doesn't want indexed. The library's `should_skip` must contain only patterns that are universally correct regardless of the project using opencaw.
-
-### Library-level skips (hard-coded in `should_skip`)
-
-| Pattern | Reason |
-|---|---|
-| `.caw/` and `.caw[0-9]*/` | Session artifacts written by opencaw itself — indexing them creates a retrieval feedback loop in every project using opencaw |
-
-That is the complete list. Everything else is project-specific and goes in `.cawignore`.
-
-### `.cawignore` for this project
-
-The current `.cawignore` excludes build output, operational artifacts, and files that mislead retrieval without carrying useful information:
-
-```
-target/          # build output
-.fastembed*/     # model cache
-bench-results/   # benchmark output
-qa/              # QA loop output directory (session transcripts, raw logs)
-scripts/         # build/QA harness scripts (contain stale crate descriptions)
-CLAUDE.md        # AI assistant instructions, not project documentation
-MASCOT.md        # branding copy, matches every query incidentally
-.claude/         # AI assistant configuration
-.caw*/           # opencaw's own session artifacts
-```
-
-`docs/bugs.md` and `docs/codebase-review.md` are NOT excluded — these are exactly the documentation the model should be able to retrieve to answer questions about project status and known issues.
-
-When adding a new path to this list, put it in `.cawignore` — never in `should_skip`.
-
-### Configuration file handling
-
-`.toml`, `.yaml`, `.json` files: do not skip, do not chunk. Keep whole. Summarize with key names and values, not just the first line. A `Cargo.toml` stub summary must include the package name and purpose derived from the file content, not just `[package]`.
-
-### Minimum content filter
-
-Stubs whose `summary.trim().len() < 15` are excluded from retrieval regardless of `token_estimate`. The `token_estimate` field reflects file size, not injected summary length — do not use it as the minimum-content proxy.
-
----
-
-## Retrieval Configuration
-
-### Similarity thresholds (defaults, tunable by measurement)
-
-| Parameter | Default | Notes |
+| Condition | Modifier | Why |
 |---|---|---|
-| Load threshold | 0.7 | Cosine similarity above which a stub is admitted to workspace |
-| Unload threshold | 0.4 | Below this, a fragment is evicted |
-| Hysteresis minimum | 0.35 | Fragments admitted twice or more in a session are not evicted until they fall below 0.35 |
-| Decay rate | 0.8 per step | Relevance multiplied by this each reasoning step with no re-engagement |
-| Top-k initial | configurable | Load all stubs above threshold up to max_initial_fragments |
-
-These are starting points. `SessionEvaluator::hysteresis_analysis()` is the tool for tuning them from real session data.
-
-### Per-stub deduplication
-
-Within a single workspace, a stub-id is admitted at most once. Subsequent retrieval of the same stub-id refreshes its relevance score but does not re-inject content. Fragment boundaries must never split a `[recalled from ...]` tag — the formatter validates this before injecting.
-
-### Score modifiers by stub kind
-
-| Condition | Modifier |
-|---|---|
-| Stub is from a `.md` file and `wants_explanation=true` | 1.5× |
-| Stub is from `caw-bench/src/bin/` and query has no benchmark terms | 0.25× |
-| Stub is from `caw-bench/src/` generally, non-benchmark query | 0.5× |
-| Stub has been evicted N≥3 times with no positive engagement | 0.5× (chronic no-engagement penalty) |
-
-### Documentation loading strategy
-
-For stubs from `.md` files when `wants_explanation=true`:
-- Load in **full-content mode**, not outline-only.
-- README.md, SCOPE.md, and `context-as-workspace.md` are the canonical explanation sources. When these are the top-ranked candidates for an explanation query, they are loaded directly — not presented as candidates for the model to "request."
+| `.md` stub and `wants_explanation=true` | 1.5× | Documentation answers explanation queries better than implementation code |
+| `caw-bench/src/bin/` stub, non-benchmark query | 0.25× | Harness binaries reference every project concept but describe the benchmarking infrastructure, not the system |
+| `caw-bench/src/` stub, non-benchmark query | 0.5× | Same issue, broader scope |
+| Stub evicted N≥3 times with no probe match or annotation | 0.5× | This stub keeps getting loaded and immediately evicted — reduce its score so it stops consuming admission slots |
 
 ---
 
-## Retrieval Convergence
+## Open questions
 
-The multi-pass recall loop must stop when either condition is met:
+These are genuinely unresolved. Present options with trade-offs and ask rather than choosing unilaterally.
 
-1. The last iteration admitted zero new unique stubs (by stub-id).
-2. The last iteration added fewer than 200 tokens to the workspace.
-
-Without convergence, the loop runs until budget exhaustion — retrieving progressively less relevant content and degrading answer quality. Log the iteration at which convergence was detected.
-
----
-
-## Session History Management
-
-Session history is injected as context but must not crowd out workspace stubs.
-
-**Budget cap**: Session history fragments may consume at most 20% of the total workspace token budget. History fragments are not added to the retrieval pool competing with workspace stubs; they are injected as a fixed header block within their capped budget.
-
-**Compression before indexing**: Prior-session model responses are not indexed verbatim. Before adding a prior session turn to the in-memory embedding index, replace the model response with a compact synthesis of ≤50 tokens: what was asked, the main conclusion, any specific facts cited. The full response text is never re-embedded as retrieval content.
-
-**Content of history fragments**: Each injected turn contains both sides — user query and assistant answer (or the compact synthesis if it's a prior session). Injecting only the user side breaks meta-queries like "is the context helpful?".
-
-**Degenerate turn handling**: If a turn's answer came from a degenerate-response prefix, inject it with a `[partial response — generation failed]` label rather than verbatim, so the model knows the prior answer was unreliable.
+- **Hysteresis threshold calibration**: The defaults above are starting points. `HysteresisAnalysis` sweeps have not been run against enough session data to support different values.
+- **Insertion order of recalled content**: Relevance-ranked, reverse-relevance, and stub-order are all viable. Requires controlled comparison to decide.
+- **Model capability auto-detection**: The heuristic for choosing cooperative vs. transparent mode (whether to explain the recall substrate to the model) is unresolved. Default to cooperative until there is data.
+- **Adaptive chunking strategy**: Token-based chunking is the current approach. Structural boundaries (function/section) may produce better retrieval for code. Don't change without a benchmark comparison.
 
 ---
 
-## Consolidation
+## Decision protocol
 
-`LlmConsolidation` is the default synthesizer when an LLM is available. `MechanicalConsolidation` is only used as a fallback.
+When this document is silent on a choice:
 
-**Note cap**: Each stub stores at most 2 consolidation notes. When adding a third, collapse the two oldest into a single line: `"Evicted N times previously; most recent: [query context]"`. A note must never contain another note as nested content — strip any embedded prior-note text from the topic field before storing.
-
-**Note content**: Consolidation notes should record what was learned or concluded from the fragment, not just that it was evicted. The eviction score is logged separately. A useful note: "This stub covers eviction policy and hysteresis thresholds. Retrieved during queries about recall quality and threshold tuning." An useless note: "Evicted (relevance decayed to 0.52)."
-
-**Chronic no-engagement tracking**: After N=3 consecutive evictions from sessions that did not produce a probe match or annotation on this stub, synthesize a note flagging it as low-engagement and apply the 0.5× chronic penalty modifier.
-
----
-
-## Intent Classifier Behavior
-
-The intent classifier runs on every query and produces `AugmentationSignals`. These signals **must** change retrieval behavior — they are not advisory.
-
-| Signal | Required retrieval action |
-|---|---|
-| `is_inventory_request=true` or `is_status_request=true` | If top-k results are fragments from TODO.md, BUGS.md, or SCOPE.md, load **all** remaining chunks of that file up to the token budget before running the answer model. Similarity threshold is bypassed for the same-document chunks. |
-| `is_next_step_request=true` | Proactively load TODO.md chunk 1 regardless of similarity score. |
-| `is_results_request=true` | Bias retrieval toward paths matching `bench-results/`. |
-| `wants_explanation=true` | Use full-content mode for `.md` stubs. Apply 1.5× modifier. Load top-ranked documentation stubs directly instead of presenting search-candidates. |
-| All flags false + query < 15 tokens | Skip retrieval. Prompt model to ask for clarification. Do not run a full retrieval cycle on an acknowledgment. |
-
-The `search-candidates` presentation mode is only appropriate when: (a) the downstream system can fulfill file-load requests from the model, and (b) the intent does not clearly point to specific files. In the QA harness, `search-candidates` cannot be fulfilled — load top-k stubs directly.
-
----
-
-## Model Adapter Capabilities
-
-### AnthropicAdapter
-
-`supports_visible_reasoning` must not be hardcoded `false`. Claude models with extended thinking enabled (claude-3-5-sonnet-20241022 and later) support visible reasoning. Detect from model ID or constructor parameter. When `supports_visible_reasoning=true`, the full thinking-trace recall path is active.
-
-### OllamaAdapter
-
-`supports_hidden_reasoning` must not be hardcoded `true`. Query `/api/show` at construction time to get actual model metadata. Log a warning and default to `false` if the endpoint doesn't respond. A model that can't follow marker instructions will produce `<probe>` and `<note>` tags as output prose rather than signaling recall — which contaminates answers.
-
-### Chat template tokens
-
-All adapters must strip model-specific chat template tokens before returning `CompletionResponse`. For Qwen3 this includes `<|im_end|>`, `<|im_start|>...`, `<think>...</think>`. The stop token `<|im_end|>` at the end of a response is a normal termination signal — strip it unconditionally, not only when content follows it.
-
----
-
-## Degenerate Response Handling
-
-When a model response is flagged as degenerate:
-
-1. **Log the failure** with the triggering check (trigram collapse, line repetition, word dominance) and the approximate position in the text where it fires.
-2. **Save the valid prefix** — the text before the loop starts is usually correct. Store it as the turn answer with a `[response truncated — generation looped]` suffix.
-3. **Do not hard-exit.** Retry the turn with a temperature adjustment or context reduction. At most 2 retries before recording the best available answer and continuing.
-4. **Write the turn** before propagating any error. `write_turn` is always called, even for degenerate turns.
-
----
-
-## Embedding Text Construction
-
-The embedding text for a stub is the **chunk content** (the actual code or prose), optionally prefixed with path and summary for asymmetric models. It is never constructed from metadata alone.
-
-For code chunks with outline entries: embed the chunk content. Use the summary as a query-side prefix only.
-
-For code chunks with no outline entries (tail chunks): embed the chunk content directly. Do not use the positional header (`"Chunk 20/20 of path — first code line"`) as the embed text.
-
-For `.toml`/`.yaml`/`.json`: embed key names and values from the full file, not just the first line.
-
-The `_content: String` parameter in `SemanticRetriever::insert` is used, not silently ignored.
-
----
-
-## caw-server Status
-
-`caw-server` is a **functional OpenAI-compatible retrieval-augmentation proxy**. It retrieves context, augments the last user message, and forwards to an upstream model server with streaming passthrough. It uses Candle + CUDA for embeddings. It is not scaffold. It is not stubbed.
-
-Current limitations: synchronous, Candle-only embedder, no multi-pass orchestration. These are v2 items. Do not describe caw-server as incomplete or placeholder.
-
----
-
-## Open Questions
-
-These are genuinely unresolved and should not be decided unilaterally by an agent. Flag them and ask.
-
-- **Hysteresis threshold tuning**: The 0.7/0.4 defaults are starting points. Actual calibration from `HysteresisAnalysis` runs has not been completed. Do not change the defaults without measurement data.
-- **Insertion order of recalled content**: Relevance-ranked, reverse-relevance, or stub-order are all viable. This is an empirical question. Do not pick one arbitrarily.
-- **Adaptive chunking boundary strategy**: Whether chunking should be token-based, structural (function/section boundaries), or both is open. The current token-based approach is fine for v0.1.
-- **Model capability detection**: The heuristic for choosing cooperative vs. transparent mode (when to tell the model about the recall substrate) is unresolved. Default to cooperative (system prompt explains the mechanism) for now.
-
----
-
-## Decision Protocol
-
-When this document is silent on a choice, apply in order:
-
-1. Check `docs/design.md` — if it has a settled answer in section 11, that answer applies.
-2. Check `docs/scope.md` — if the choice affects a "must have" or "should have" item, choose the option that serves the library target, improves recall quality, or improves context curation.
-3. If still ambiguous: **do not invent a solution**. Record the question, the options you see, and the trade-offs of each. Stop and ask. The first choice is often wrong because no single pass has a complete picture of how the system works.
-4. Never add a feature behind a flag as a compromise. Either it's the right behavior and it should be the default, or it's wrong and shouldn't be added at all.
+1. Check `docs/design.md` section 11. If there is a settled answer, use it.
+2. Check `docs/scope.md`. If the choice affects a "must have" or "should have" item, favor the option that most directly improves recall quality or context curation for the library use case.
+3. If still ambiguous: stop. Write out the options and their trade-offs. Ask. The first choice is often wrong because no single implementation pass has a complete picture of how the system works together.
+4. Never implement a feature behind an opt-in flag as a compromise. A feature is either the correct behavior (on by default) or it isn't ready to ship.
