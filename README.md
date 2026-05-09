@@ -25,7 +25,7 @@ See [docs/getting-started.md](docs/getting-started.md) for adapter setup, enviro
 | [Storage](docs/storage.md) | SQLite, Qdrant, HNSW, hybrid retrieval |
 | [Benchmarking](docs/benchmarking.md) | NIAH, opencaw, sysdoc workloads; sweep harness; intent bench |
 | [Design](docs/design.md) | Thesis, stub-and-recall architecture, eviction policy, curation |
-| [Scope](docs/scope.md) | v1 deliverables, what's in and out, scope change protocol |
+| [Scope](docs/scope.md) | v0.1 deliverables, what's in and out, scope change protocol |
 | [Bugs](docs/bugs.md) | Known bugs and regression log |
 | [Codebase Review](docs/codebase-review.md) | Implementation status, structural gaps, debt inventory |
 

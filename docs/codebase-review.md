@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-OpenCAW is a substantially complete v1 Rust library implementing thinking-trace-driven recall with eviction, consolidation, and context curation. The core loop — ingest → embed → retrieve → orchestrate → evict/consolidate — works end-to-end and is covered by a real integration test. The primary gap is that `caw-eval`'s `SessionEvaluator` is never wired into the orchestrator or CLI at runtime, meaning the measurement infrastructure that should drive threshold tuning is built but idle. The next action is wiring the evaluator into the orchestrator's `run_turn` loop so calibration numbers can be collected from actual runs.
+OpenCAW is a substantially complete v0.1 Rust library implementing thinking-trace-driven recall with eviction, consolidation, and context curation. The core loop — ingest → embed → retrieve → orchestrate → evict/consolidate — works end-to-end and is covered by a real integration test. The primary gap is that `caw-eval`'s `SessionEvaluator` is never wired into the orchestrator or CLI at runtime, meaning the measurement infrastructure that should drive threshold tuning is built but idle. The next action is wiring the evaluator into the orchestrator's `run_turn` loop so calibration numbers can be collected from actual runs.
 
 ---
 
@@ -110,7 +110,7 @@ This is a completed v0 middleware deployment target. The documentation describin
 
 ### caw-cli — Working
 
-The CLI is feature-complete for v1: ingestion, indexing, intent classification with ensemble support, recall loop, curation, session history, and all adapter types. The `--augmentation-prompt` mode and `--intent-model` ensemble are recent additions.
+The CLI is feature-complete for v0.1: ingestion, indexing, intent classification with ensemble support, recall loop, curation, session history, and all adapter types. The `--augmentation-prompt` mode and `--intent-model` ensemble are recent additions.
 
 The CLI implements its own recall loop rather than delegating to `DynamicRecallOrchestrator::run_turn`. This duplication is the primary maintenance liability (see above under caw-orchestrator).
 
@@ -223,4 +223,4 @@ Weeks 7-8: Wire `AugmentationSignals` to the retrieval path in the orchestrator.
 
 Weeks 9-10: Fix `OllamaAdapter::capabilities()` with a `/api/show` call at construction time. Add appropriate error handling for models that don't respond to the endpoint.
 
-Weeks 11-12: Fix `Range::Tokens`, deduplicate `truncate_str`, migrate `timestamp_str` to chrono, update caw-server documentation. These are cleanup items that should be done before any v1 release.
+Weeks 11-12: Fix `Range::Tokens`, deduplicate `truncate_str`, migrate `timestamp_str` to chrono, update caw-server documentation. These are cleanup items that should be done before any v0.1 release.

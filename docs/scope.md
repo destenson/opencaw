@@ -1,10 +1,10 @@
-# Scope — OpenCAW v1
+# Scope — OpenCAW v0.1
 
-## What v1 is
+## What v0.1 is
 
 A **Rust library** for context-as-workspace management in LLM applications. Embeddable in any application that constructs LLM prompts. The core value proposition: thinking-trace-driven recall with eviction, consolidation, and context curation — not another RAG wrapper.
 
-## v1 deliverables
+## v0.1 deliverables
 
 ### Must have (blocks usefulness)
 - [x] Measurement primitives (recall quality, false-recall heuristic, hysteresis analysis, context efficiency, cooperation metrics) — see `caw-eval`. Wired into a benchmark harness in `caw-bench` (NIAH + opencaw Q&A workloads, recall-on vs recall-off at matched budget). Still open: sweep runs against enough seeds to produce tuning recommendations.

@@ -86,5 +86,5 @@ Source documents
 ## Further Reading
 
 - [Design doc](design.md) — thesis, stub-and-recall architecture, eviction policy, curation
-- [Scope](scope.md) — v1 deliverables and boundaries
+- [Scope](scope.md) — v0.1 deliverables and boundaries
 - [Codebase review](codebase-review.md) — implementation status, structural gaps, debt inventory
