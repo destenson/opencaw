@@ -200,6 +200,7 @@ struct Cli {
     save_prompt: bool,
 }
 
+// TODO: refactor this function
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -487,6 +488,7 @@ fn main() -> Result<()> {
 }
 
 fn build_aux_adapter(model: &str) -> Box<dyn ModelAdapter + Send + Sync> {
+    // TODO: add adapter options for summarization and consolidation, rather than hardcoding claude-code for both tasks.
     match model {
         "sonnet" => Box::new(caw_adapters::ClaudeCodeAdapter::sonnet()),
         _ => Box::new(caw_adapters::ClaudeCodeAdapter::haiku()),
