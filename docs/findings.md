@@ -213,8 +213,6 @@ low-level implementation. This should be a permanent fixture in the QA file set.
 
 ## Script / Harness Issues
 
-- **`/codebase-review-report` in the implementation prompt** is a VS Code slash
-  command; does nothing in `claude -p` non-interactive mode.
 - **Review prompt asks Claude to implement at step 7** — then the implementation
   pass runs the identical goal. They interfere with each other and produce lower
   quality in both.
