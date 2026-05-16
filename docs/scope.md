@@ -15,7 +15,7 @@ A **Rust library** for context-as-workspace management in LLM applications. Embe
 - [ ] Serious thought into user interface: ergonomics of user interface, ergonomics of the API, documentation, actionable error handling.
 
 ### Should have (significant quality improvement)
-- [ ] Richer consolidation notes: `LlmConsolidation` is the correct default when an LLM adapter is available. `MechanicalConsolidation` is a fallback only. The `--llm-consolidation` CLI flag is obsolete and should be removed — this is not optional behavior. See `docs/DECISIONS.md`.
+- [x] Richer consolidation notes: `LlmConsolidation` runs by default when an LLM adapter is available; `MechanicalConsolidation` is the fallback. Pass `--no-llm-consolidation` to opt out.
 - [x] Adaptive chunking for large files: `caw-ingest/src/chunking.rs`. Token-threshold splitting with structural boundaries for code and markdown.
 - [x] Degradation monitoring and tiered fallback: `caw-orchestrator/src/degradation.rs`. Always active — not opt-in. `with_degradation_monitor()` is called unconditionally.
 - [ ] Provenance conflict detection beyond topic overlap: still only Jaccard. Contradicting assertions and inconsistent numbers are undetected.

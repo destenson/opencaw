@@ -132,11 +132,11 @@ struct Cli {
     #[arg(long, default_value = "cl100k")]
     tokenizer: String,
 
-    /// Use LLM to generate stub summaries during ingestion (uses aux-model)
+    /// Disable LLM-generated stub summaries during ingestion (fall back to mechanical extraction)
     #[arg(long)]
     no_llm_summarize: bool,
 
-    /// Use LLM to synthesize consolidation notes on eviction (uses aux-model)
+    /// Disable LLM consolidation notes on eviction (fall back to mechanical synthesis)
     #[arg(long)]
     no_llm_consolidation: bool,
 
