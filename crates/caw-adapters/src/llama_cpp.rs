@@ -88,13 +88,13 @@ impl LlamaCppAdapter {
     /// directory so the dynamic linker can find libllama.so at runtime.
     pub fn new_with(config: LlamaCppConfig) -> CawResult<Self> {
         if config.model_path.is_empty() {
-            return Err(CawError::Adapter("model_path is required".into()));
+            return Err(CawError::External("model_path is required".into()));
         }
 
         unsafe { llama_backend_init() };
 
         let model_path_c = CString::new(config.model_path.as_str())
-            .map_err(|e| CawError::Adapter(e.to_string().into()))?;
+            .map_err(|e| CawError::External(e.to_string().into()))?;
 
         let mut model_params = unsafe { llama_model_default_params() };
         model_params.n_gpu_layers = config.n_gpu_layers;
@@ -102,7 +102,7 @@ impl LlamaCppAdapter {
         let model =
             unsafe { llama_model_load_from_file(model_path_c.as_ptr(), model_params) };
         if model.is_null() {
-            return Err(CawError::Adapter(
+            return Err(CawError::External(
                 format!("failed to load model: {}", config.model_path).into(),
             ));
         }
@@ -115,7 +115,7 @@ impl LlamaCppAdapter {
         let ctx = unsafe { llama_init_from_model(model, ctx_params) };
         if ctx.is_null() {
             unsafe { llama_model_free(model) };
-            return Err(CawError::Adapter("failed to create llama context".into()));
+            return Err(CawError::External("failed to create llama context".into()));
         }
 
         let vocab = unsafe { llama_model_get_vocab(model) };
@@ -166,7 +166,7 @@ impl ModelAdapter for LlamaCppAdapter {
         let mut state = self
             .state
             .lock()
-            .map_err(|_| CawError::Adapter("llama state mutex poisoned".into()))?;
+            .map_err(|_| CawError::External("llama state mutex poisoned".into()))?;
 
         let prompt = format_prompt(&state, &req)?;
         let raw = run_generation(&mut state, &self.config, &prompt, usize::MAX, 0, None)?;
@@ -214,7 +214,7 @@ impl ModelAdapter for LlamaCppAdapter {
         let mut state = self
             .state
             .lock()
-            .map_err(|_| CawError::Adapter("llama state mutex poisoned".into()))?;
+            .map_err(|_| CawError::External("llama state mutex poisoned".into()))?;
 
         let prompt = format_prompt(&state, &req)?;
         let raw = run_generation(
@@ -268,7 +268,7 @@ impl ModelAdapter for LlamaCppAdapter {
         let mut state = self
             .state
             .lock()
-            .map_err(|_| CawError::Adapter("llama state mutex poisoned".into()))?;
+            .map_err(|_| CawError::External("llama state mutex poisoned".into()))?;
         let prompt = format_prompt(&state, &req)?;
         run_thinking_steps(&mut state, &self.config, &prompt, on_step)
     }
@@ -292,7 +292,7 @@ fn prefill(ctx: *mut llama_context, tokens: &[i32], n_batch: usize) -> CawResult
             )
         };
         if ret != 0 {
-            return Err(CawError::Adapter(
+            return Err(CawError::External(
                 format!(
                     "prefill failed at token {offset}/{total} (ret={ret}); prompt may exceed n_ctx"
                 )
@@ -324,9 +324,9 @@ fn format_prompt(state: &LlamaState, req: &CompletionRequest) -> CawResult<Strin
 
     // Build system and user message C strings — must outlive the chat array.
     let system_c =
-        CString::new(full_system.as_str()).map_err(|e| CawError::Adapter(e.to_string().into()))?;
+        CString::new(full_system.as_str()).map_err(|e| CawError::External(e.to_string().into()))?;
     let user_c =
-        CString::new(req.user.as_str()).map_err(|e| CawError::Adapter(e.to_string().into()))?;
+        CString::new(req.user.as_str()).map_err(|e| CawError::External(e.to_string().into()))?;
     let role_system = c"system";
     let role_user = c"user";
 
@@ -357,7 +357,7 @@ fn format_prompt(state: &LlamaState, req: &CompletionRequest) -> CawResult<Strin
         )
     };
     if needed < 0 {
-        return Err(CawError::Adapter("chat template failed".into()));
+        return Err(CawError::External("chat template failed".into()));
     }
 
     let mut buf = vec![0u8; needed as usize + 1];
@@ -372,17 +372,17 @@ fn format_prompt(state: &LlamaState, req: &CompletionRequest) -> CawResult<Strin
         )
     };
     if written < 0 {
-        return Err(CawError::Adapter("chat template write failed".into()));
+        return Err(CawError::External("chat template write failed".into()));
     }
 
     buf.truncate(written as usize);
-    String::from_utf8(buf).map_err(|e| CawError::Adapter(e.to_string().into()))
+    String::from_utf8(buf).map_err(|e| CawError::External(e.to_string().into()))
 }
 
 /// Tokenize a UTF-8 string into llama token IDs.
 fn tokenize(vocab: *const llama_vocab, text: &str, add_special: bool) -> CawResult<Vec<i32>> {
     let text_c =
-        CString::new(text).map_err(|e| CawError::Adapter(e.to_string().into()))?;
+        CString::new(text).map_err(|e| CawError::External(e.to_string().into()))?;
     let text_len = text.len() as i32;
 
     // Upper-bound: one token per byte is impossible but gives a safe allocation.
@@ -402,7 +402,7 @@ fn tokenize(vocab: *const llama_vocab, text: &str, add_special: bool) -> CawResu
     };
 
     if n == i32::MIN {
-        return Err(CawError::Adapter("tokenize: input too large".into()));
+        return Err(CawError::External("tokenize: input too large".into()));
     }
     if n < 0 {
         // Buffer was too small — rare, but allocate exactly what's needed.
@@ -420,7 +420,7 @@ fn tokenize(vocab: *const llama_vocab, text: &str, add_special: bool) -> CawResu
             )
         };
         if n2 < 0 {
-            return Err(CawError::Adapter("tokenize failed after resize".into()));
+            return Err(CawError::External("tokenize failed after resize".into()));
         }
         tokens.truncate(n2 as usize);
     } else {
@@ -478,7 +478,7 @@ fn run_generation(
     // Tokenize and prefill the prompt in n_batch-sized chunks.
     let prompt_tokens = tokenize(vocab, prompt, true)?;
     if prompt_tokens.is_empty() {
-        return Err(CawError::Adapter("empty prompt after tokenization".into()));
+        return Err(CawError::External("empty prompt after tokenization".into()));
     }
     debug!(prompt_tokens = prompt_tokens.len(), "prefilling");
     prefill(ctx, &prompt_tokens, state.n_batch)?;
@@ -600,7 +600,7 @@ fn run_thinking_steps(
 
     let prompt_tokens = tokenize(vocab, prompt, true)?;
     if prompt_tokens.is_empty() {
-        return Err(CawError::Adapter("empty prompt after tokenization".into()));
+        return Err(CawError::External("empty prompt after tokenization".into()));
     }
     debug!(prompt_tokens = prompt_tokens.len(), "prefilling (thinking)");
     prefill(ctx, &prompt_tokens, state.n_batch)?;

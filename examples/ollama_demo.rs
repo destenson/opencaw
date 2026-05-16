@@ -33,7 +33,7 @@ fn ingest_file(
         mtime_unix_secs: mtime,
     });
     for (stub, embed_text) in stubs {
-        retriever.insert(stub, embed_text)?;
+        retriever.insert(stub, &embed_text)?;
     }
     Ok(())
 }

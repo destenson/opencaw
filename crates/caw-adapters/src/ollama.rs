@@ -255,14 +255,14 @@ impl ModelAdapter for OllamaAdapter {
                 .json(&ollama_req)
                 .send()
                 .await
-                .map_err(|e| CawError::Adapter(format!("Request failed: {}", e)))?;
+                .map_err(|e| CawError::External(format!("Request failed: {}", e)))?;
             let status = resp.status();
             let text = resp
                 .text()
                 .await
-                .map_err(|e| CawError::Adapter(format!("read response body: {}", e)))?;
+                .map_err(|e| CawError::External(format!("read response body: {}", e)))?;
             if !status.is_success() {
-                return Err(CawError::Adapter(format!(
+                return Err(CawError::External(format!(
                     "Ollama returned HTTP {}: {}",
                     status,
                     text.chars().take(500).collect::<String>()
@@ -307,9 +307,9 @@ impl ModelAdapter for OllamaAdapter {
                     error: String,
                 }
                 if let Ok(err) = serde_json::from_str::<OllamaError>(&body) {
-                    return Err(CawError::Adapter(format!("Ollama error: {}", err.error)));
+                    return Err(CawError::External(format!("Ollama error: {}", err.error)));
                 }
-                Err(CawError::Adapter(format!(
+                Err(CawError::External(format!(
                     "Ollama response did not match chat or error schema ({}): {}",
                     parse_err,
                     body.chars().take(500).collect::<String>()
@@ -367,11 +367,11 @@ impl ModelAdapter for OllamaAdapter {
                 .json(&ollama_req)
                 .send()
                 .await
-                .map_err(|e| CawError::Adapter(format!("Request failed: {e}")))?;
+                .map_err(|e| CawError::External(format!("Request failed: {e}")))?;
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
-                return Err(CawError::Adapter(format!("Ollama HTTP {status}: {body}")));
+                return Err(CawError::External(format!("Ollama HTTP {status}: {body}")));
             }
 
             let mut stream = resp.bytes_stream();
@@ -381,7 +381,7 @@ impl ModelAdapter for OllamaAdapter {
             let mut in_think = false;
 
             'outer: while let Some(chunk) = stream.next().await {
-                let bytes = chunk.map_err(|e| CawError::Adapter(format!("Stream error: {e}")))?;
+                let bytes = chunk.map_err(|e| CawError::External(format!("Stream error: {e}")))?;
                 for ch in String::from_utf8_lossy(&bytes).chars() {
                     if ch == '\n' {
                         if let Ok(token) = serde_json::from_str::<OllamaStreamToken>(&line_buf) {

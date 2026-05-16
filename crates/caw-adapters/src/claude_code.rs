@@ -252,7 +252,7 @@ impl ModelAdapter for ClaudeCodeAdapter {
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| CawError::Adapter(format!("Failed to spawn claude CLI: {}", e)))?;
+            .map_err(|e| CawError::External(format!("Failed to spawn claude CLI: {}", e)))?;
 
         // Write the full prompt, then drop stdin so the CLI sees EOF and
         // starts generating. If we held the handle open the CLI would wait
@@ -261,10 +261,10 @@ impl ModelAdapter for ClaudeCodeAdapter {
             let mut stdin = child
                 .stdin
                 .take()
-                .ok_or_else(|| CawError::Adapter("claude CLI stdin unavailable".to_string()))?;
+                .ok_or_else(|| CawError::External("claude CLI stdin unavailable".to_string()))?;
             stdin
                 .write_all(req.user.as_bytes())
-                .map_err(|e| CawError::Adapter(format!("write prompt to claude stdin: {}", e)))?;
+                .map_err(|e| CawError::External(format!("write prompt to claude stdin: {}", e)))?;
             // dropped here
         }
 
@@ -275,7 +275,7 @@ impl ModelAdapter for ClaudeCodeAdapter {
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| CawError::Adapter("claude CLI stdout unavailable".to_string()))?;
+            .ok_or_else(|| CawError::External("claude CLI stdout unavailable".to_string()))?;
         let (line_tx, line_rx) = mpsc::channel::<std::io::Result<String>>();
         let reader_thread = std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
@@ -317,7 +317,7 @@ impl ModelAdapter for ClaudeCodeAdapter {
                             }
                             Err(e) => {
                                 let _ = child.kill();
-                                return Err(CawError::Adapter(format!(
+                                return Err(CawError::External(format!(
                                     "parse stream-json result event: {} (line: {})",
                                     e, trimmed
                                 )));
@@ -332,7 +332,7 @@ impl ModelAdapter for ClaudeCodeAdapter {
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     let _ = child.kill();
                     let _ = reader_thread.join();
-                    return Err(CawError::Adapter(format!(
+                    return Err(CawError::External(format!(
                         "claude CLI stalled: no stream-json event for {}s — child killed",
                         STREAM_EVENT_TIMEOUT.as_secs()
                     )));
@@ -353,7 +353,7 @@ impl ModelAdapter for ClaudeCodeAdapter {
 
         let parsed = final_result.expect("loop exits with final_result set on success path");
         if parsed.is_error {
-            return Err(CawError::Adapter(format!(
+            return Err(CawError::External(format!(
                 "claude CLI returned error: {}",
                 parsed.result
             )));
@@ -398,7 +398,7 @@ fn finalize_error(
         let _ = stderr.read_to_string(&mut stderr_buf);
     }
     let status = child.wait().ok();
-    Err(CawError::Adapter(format!(
+    Err(CawError::External(format!(
         "claude CLI {} (status: {:?}, stderr: {})",
         context,
         status,

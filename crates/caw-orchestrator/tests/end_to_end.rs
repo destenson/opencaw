@@ -159,8 +159,8 @@ fn recall_loop_admits_fragment_and_tags_provenance() {
     // estimates reflect a real BPE — exercising the wired-up default.
     let pipeline = IngestionPipeline::new();
     for doc in docs {
-        for (stub, _embed_text) in pipeline.ingest(doc) {
-            retriever.insert(stub).expect("insert into retriever");
+        for (stub, embed_text) in pipeline.ingest(doc) {
+            retriever.insert(stub, &embed_text).expect("insert into retriever");
         }
     }
 

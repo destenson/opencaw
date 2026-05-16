@@ -1,6 +1,5 @@
 use caw_core::{
-    CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities,
-    ProvenanceFormat,
+    CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities, ProvenanceFormat
 };
 use std::fmt::Write as FmtWrite;
 use std::path::PathBuf;
@@ -31,7 +30,7 @@ pub use tracing::{TraceSink, TracingAdapter};
 pub fn create_runtime() -> CawResult<std::sync::Arc<tokio::runtime::Runtime>> {
     tokio::runtime::Runtime::new()
         .map(std::sync::Arc::new)
-        .map_err(|e| caw_core::CawError::Adapter(format!("Failed to create runtime: {}", e)))
+        .map_err(|e| CawError::Io(format!("Failed to create runtime: {}", e)))
 }
 
 #[derive(Debug, Clone)]

@@ -39,7 +39,7 @@ impl GroqAdapter {
 
     pub fn groq_model(model: impl Into<String>, runtime: Arc<Runtime>) -> CawResult<Self> {
         let api_key = std::env::var("GROQ_API_KEY")
-            .map_err(|_| CawError::Adapter("GROQ_API_KEY not set".into()))?;
+            .map_err(|_| CawError::External("GROQ_API_KEY not set".into()))?;
         Ok(Self::new_with(api_key, model, runtime))
     }
 
@@ -128,18 +128,18 @@ impl ModelAdapter for GroqAdapter {
                 .json(&groq_req)
                 .send()
                 .await
-                .map_err(|e| CawError::Adapter(format!("Request failed: {}", e)))?;
+                .map_err(|e| CawError::External(format!("Request failed: {}", e)))?;
 
             if !http_resp.status().is_success() {
                 let status = http_resp.status();
                 let body = http_resp.text().await.unwrap_or_default();
-                return Err(CawError::Adapter(format!("Groq API error {status}: {body}")));
+                return Err(CawError::External(format!("Groq API error {status}: {body}")));
             }
 
             http_resp
                 .json::<GroqResponse>()
                 .await
-                .map_err(|e| CawError::Adapter(format!("Failed to parse response: {}", e)))
+                .map_err(|e| CawError::External(format!("Failed to parse response: {}", e)))
         })?;
 
         let answer = response

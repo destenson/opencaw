@@ -20,8 +20,6 @@ pub enum CawError {
     NotFound(String),
     #[error("invalid input: {0}")]
     InvalidInput(String),
-    #[error("adapter error: {0}")]
-    Adapter(String),
     #[error("embedding error: {0}")]
     Embedding(String),
     #[error("vector store error: {0}")]
@@ -38,6 +36,11 @@ pub enum CawError {
     /// contains the first 120 chars of the response for diagnostics.
     #[error("degenerate output from {model}: {sample}...")]
     DegenerateOutput { model: String, sample: String },
+    /// An error originating outside the core library (e.g. from an adapter,
+    /// HTTP client, or external service). Use this only when no more specific
+    /// variant applies.
+    #[error("{0}")]
+    External(String),
 }
 
 impl From<std::io::Error> for CawError {

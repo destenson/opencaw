@@ -133,7 +133,7 @@ impl OpenAiCompatibleAdapter {
 
     pub fn perplexity_model(model: impl Into<String>, runtime: Arc<Runtime>) -> CawResult<Self> {
         let api_key = std::env::var("PERPLEXITY_API_KEY")
-            .map_err(|_| CawError::Adapter("PERPLEXITY_API_KEY not set".into()))?;
+            .map_err(|_| CawError::External("PERPLEXITY_API_KEY not set".into()))?;
         Ok(Self::new_with(
             "https://api.perplexity.ai",
             model,
@@ -156,7 +156,7 @@ impl OpenAiCompatibleAdapter {
         runtime: Arc<Runtime>,
     ) -> CawResult<Self> {
         let api_key =
-            std::env::var("HF_TOKEN").map_err(|_| CawError::Adapter("HF_TOKEN not set".into()))?;
+            std::env::var("HF_TOKEN").map_err(|_| CawError::External("HF_TOKEN not set".into()))?;
         Ok(Self::new_with(
             endpoint_url,
             model,
@@ -175,7 +175,7 @@ impl OpenAiCompatibleAdapter {
 
     pub fn ollama_cloud(model: impl Into<String>, runtime: Arc<Runtime>) -> CawResult<Self> {
         let api_key = std::env::var("OLLAMA_API_KEY")
-            .map_err(|_| CawError::Adapter("OLLAMA_API_KEY not set".into()))?;
+            .map_err(|_| CawError::External("OLLAMA_API_KEY not set".into()))?;
         Ok(Self::new_with(
             "https://api.ollama.com",
             model,
@@ -281,7 +281,7 @@ impl ModelAdapter for OpenAiCompatibleAdapter {
                 .json(&chat_req)
                 .send()
                 .await
-                .map_err(|e| CawError::Adapter(format!("Request failed: {}", e)))?;
+                .map_err(|e| CawError::External(format!("Request failed: {}", e)))?;
 
             let status = http_response.status();
             if !status.is_success() {
@@ -292,7 +292,7 @@ impl ModelAdapter for OpenAiCompatibleAdapter {
                     .and_then(|r| r.error)
                     .and_then(|e| e.message)
                     .unwrap_or(body);
-                return Err(CawError::Adapter(format!(
+                return Err(CawError::External(format!(
                     "{} {} — {}",
                     status.as_u16(),
                     status.canonical_reason().unwrap_or(""),
@@ -303,7 +303,7 @@ impl ModelAdapter for OpenAiCompatibleAdapter {
             http_response
                 .json::<ChatCompletionResponse>()
                 .await
-                .map_err(|e| CawError::Adapter(format!("Failed to parse response: {}", e)))
+                .map_err(|e| CawError::External(format!("Failed to parse response: {}", e)))
         })?;
 
         let raw = response

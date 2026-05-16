@@ -39,13 +39,13 @@ impl AnthropicAdapter {
 
     pub fn claude_sonnet(runtime: Arc<Runtime>) -> CawResult<Self> {
         let api_key = std::env::var("ANTHROPIC_API_KEY")
-            .map_err(|_| CawError::Adapter("ANTHROPIC_API_KEY not set".into()))?;
+            .map_err(|_| CawError::External("ANTHROPIC_API_KEY not set".into()))?;
         Ok(Self::new_with(api_key, "claude-sonnet-4-20250514", runtime))
     }
 
     pub fn claude_opus(runtime: Arc<Runtime>) -> CawResult<Self> {
         let api_key = std::env::var("ANTHROPIC_API_KEY")
-            .map_err(|_| CawError::Adapter("ANTHROPIC_API_KEY not set".into()))?;
+            .map_err(|_| CawError::External("ANTHROPIC_API_KEY not set".into()))?;
         Ok(Self::new_with(api_key, "claude-opus-4-20250514", runtime))
     }
 }
@@ -120,18 +120,18 @@ impl ModelAdapter for AnthropicAdapter {
                 .json(&anthropic_req)
                 .send()
                 .await
-                .map_err(|e| CawError::Adapter(format!("Request failed: {}", e)))?;
+                .map_err(|e| CawError::External(format!("Request failed: {}", e)))?;
 
             if !http_resp.status().is_success() {
                 let status = http_resp.status();
                 let body = http_resp.text().await.unwrap_or_default();
-                return Err(CawError::Adapter(format!("Anthropic API error {status}: {body}")));
+                return Err(CawError::External(format!("Anthropic API error {status}: {body}")));
             }
 
             http_resp
                 .json::<AnthropicResponse>()
                 .await
-                .map_err(|e| CawError::Adapter(format!("Failed to parse response: {}", e)))
+                .map_err(|e| CawError::External(format!("Failed to parse response: {}", e)))
         })?;
 
         let answer = response
