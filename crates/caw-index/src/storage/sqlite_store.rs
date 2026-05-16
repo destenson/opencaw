@@ -1,8 +1,7 @@
 use caw_core::{
-    CawError, CawResult, ConsolidationNote, ConsolidationSource, ReindexQueue, Stub, StubId,
-    StubStore,
+    CawError, CawResult, ConsolidationNote, ConsolidationSource, DocumentId, ReindexQueue, Stub,
+    StubId, StubStore,
 };
-use caw_ingest::DocumentId;
 use rusqlite::{Connection, params};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;

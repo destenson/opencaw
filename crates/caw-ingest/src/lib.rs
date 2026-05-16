@@ -2,12 +2,7 @@ pub mod chunking;
 pub mod summarizer;
 mod tree_sitter_outline;
 
-/// `(path, mtime_unix_secs)` pair identifying files by their name and modification time.
-pub type DocumentId = (String, u64);
-
-/// Set of `(path, mtime_unix_secs)` pairs identifying files already present
-/// in the index. Used to skip reading and re-embedding unchanged files at startup.
-pub type DocumentIdSet = std::collections::HashSet<DocumentId>;
+pub use caw_core::{DocumentId, DocumentIdSet};
 
 use caw_core::tokenizer::TiktokenTokenizer;
 use caw_core::{CawError, CawResult, ContentKind, Stub, StubId, Tokenizer, WhitespaceTokenizer};

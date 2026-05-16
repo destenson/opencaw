@@ -642,7 +642,6 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "caw-core",
- "caw-ingest",
  "fastembed",
  "hf-hub 0.5.0",
  "ignore",

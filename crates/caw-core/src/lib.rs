@@ -189,6 +189,13 @@ pub fn is_looping(text: &str) -> bool {
     detect_loop(text).is_some()
 }
 
+/// `(path, mtime_unix_secs)` pair identifying a source file by name and
+/// modification time. Used to skip re-embedding unchanged files at startup.
+pub type DocumentId = (String, u64);
+
+/// Set of `DocumentId` pairs representing files already present in the index.
+pub type DocumentIdSet = std::collections::HashSet<DocumentId>;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct StubId(pub String);
 
