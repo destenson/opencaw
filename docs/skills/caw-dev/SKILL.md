@@ -20,15 +20,15 @@ All scripts live in `scripts/` and are self-locating (they find the repo root vi
 1. **Build an index** over a corpus (pick `crates/` for code or `docs/` for prose — never the repo root; see Gotchas):
 
    ```bash
-   docs/skills/caw-dev/scripts/build-index.sh crates bench-results/opencaw-code-index.sqlite
+   docs/skills/caw-dev/scripts/build-index.sh crates target/caw-dev/code-index.sqlite
    ```
 
-   Output is an SQLite index. Re-run after editing files (there is no watcher). The script forces small batches and the freest GPU.
+   Output is an SQLite index under `target/caw-dev/` (gitignored scratch). Re-run after editing files (there is no watcher). The script forces small batches and the freest GPU.
 
 2. **Serve** the proxy. The `corpus-root` MUST equal the corpus passed to `build-index.sh`:
 
    ```bash
-   docs/skills/caw-dev/scripts/serve.sh bench-results/opencaw-code-index.sqlite crates
+   docs/skills/caw-dev/scripts/serve.sh target/caw-dev/code-index.sqlite crates
    #                                     <index>                                <corpus-root> [upstream] [port] [max-tokens]
    ```
 
@@ -104,7 +104,6 @@ docs/skills/caw-dev/scripts/run-cli.sh --dir crates --adapter ollama --model lla
 - **Batch size matters for indexing.** BGE attention is `batch x seq^2`; the bench default sub-batch of 256 OOMs on long chunks. `build-index.sh` uses small batches deliberately.
 - **Corpus root must match.** Stub paths are stored relative to `--corpus`; `serve.sh`'s `corpus-root` must be the same directory or every content fetch fails silently and the proxy forwards unaugmented.
 - **Never index the repo root.** The skip rules drop `target/`/hidden/`scripts/` but not `data/` or `opencaw-corpora/` (multi-GB system docs). Index `crates/` or `docs/`.
-- **Ignore `bench-results/server-smoke-index.sqlite`** — stale garbage that indexed build artifacts. Build fresh.
 - **The proxy is single-shot RAG, not the recall engine**, and it injects unconditionally with no intent gating. The differentiating engine is in the CLI only.
 
 For the full reasoning behind each gotcha, file/line references, the host's GPU layout, and the proxy-vs-engine boundary, read `references/internals.md`.

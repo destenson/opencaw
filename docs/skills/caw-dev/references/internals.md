@@ -15,7 +15,6 @@ Non-obvious facts about running and testing OpenCAW locally. Each item below cos
 - Stub paths are stored **relative to `--corpus`** at build time. `caw-server` materializes content via `corpus_root.join(stub.path)`, so `serve.sh`'s `corpus-root` MUST equal the `build-index.sh` `corpus-dir`. Mismatch = every `get_content` fails and the proxy silently forwards unaugmented.
 - A single index has a single corpus root. To cover both code and docs with correct resolution, either index a common ancestor (but see the skip-rule caveat) or run two servers.
 - `should_skip` in `build_index.rs` skips hidden dirs, `scripts/`, `target/`, `node_modules/`, and binary/archive extensions. It does **not** skip `data/` (~1.6 GB) or `opencaw-corpora/` (~0.5 GB) of system docs. Never point the corpus at the repo root — index `crates/` (code) or `docs/` (prose) instead.
-- Ignore `bench-results/server-smoke-index.sqlite`. It was built before the skip rules existed and indexed `target/` build artifacts and `.fastembed_cache/` — 13k stubs of garbage. Build a fresh index.
 - The build is incremental and resumable (`INSERT OR REPLACE` keyed on path+mtime). Re-running without `--rebuild` only ingests changed/new files. The scripts pass `--rebuild` for a clean snapshot; drop it for incremental updates. There is no file-watcher — the index is stale until rebuilt.
 
 ## What the proxy is and isn't
