@@ -80,14 +80,15 @@ Note: `caw-cli`'s default index/session dir is a per-corpus location under `~/.c
 
 ### Exercise the differentiating engine (eviction + consolidation)
 
-`test-cli.sh` disables the LLM consolidation/summarization path (`--no-llm-consolidation`) so it can run without an Anthropic key. To actually test the core novelty — workspace fills past budget, fragments are **evicted**, and each eviction synthesizes an LLM **consolidation note** persisted to the stub store for later recall — use `consolidation-cli.sh`:
+`test-cli.sh` disables the LLM consolidation/summarization path (`--no-llm-consolidation`). To actually test the core novelty — workspace fills past budget, fragments are **evicted**, and each eviction synthesizes an LLM **consolidation note** persisted to the stub store for later recall — use `consolidation-cli.sh`:
 
 ```bash
 docs/skills/caw-dev/scripts/consolidation-cli.sh
 docs/skills/caw-dev/scripts/consolidation-cli.sh --max-tokens 800 -q "how does recall work?" -q "what gets evicted?"
+docs/skills/caw-dev/scripts/consolidation-cli.sh --aux-adapter claude-code-haiku   # aux via the claude CLI instead
 ```
 
-It forces eviction with a small `--max-tokens` budget and routes the aux model through the local `claude` CLI (`ClaudeCodeAdapter`, no API key needed — but each eviction spawns one `claude` call costing real tokens, ~$0.01 each with haiku). After the run it prints a proof summary computed from the verbose log: eviction count, consolidation notes persisted, aux LLM calls, and total aux cost. Only `haiku`|`sonnet` are meaningful for `--aux-model` — `build_aux_adapter` (caw-cli `main.rs`) ignores everything else and cannot currently route aux tasks to Ollama.
+It forces eviction with a small `--max-tokens` budget. The aux model (consolidation/summarization/curation) defaults to local Ollama (`--aux-adapter ollama --aux-model qwen3.5:9b`), so the whole engine runs locally with no API key. `--aux-adapter` takes the same selectors as `--adapter`: pass `--aux-adapter claude-code-haiku` to route aux through the installed `claude` CLI instead (still no API key, ~$0.01 per eviction). After the run it prints a proof summary computed from the verbose log: eviction count, consolidation notes persisted, and — only for claude-code aux — the claude-code call count and cost.
 
 ## Gotchas (read before improvising)
 

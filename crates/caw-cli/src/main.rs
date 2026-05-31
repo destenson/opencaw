@@ -189,8 +189,17 @@ struct Cli {
     #[arg(long)]
     no_llm_consolidation: bool,
 
-    /// Model for auxiliary LLM tasks (summarization, consolidation). Default: haiku
-    #[arg(long, default_value = "haiku")]
+    /// Adapter for auxiliary LLM tasks (summarization, consolidation, curation).
+    /// Same selectors as --adapter (ollama, claude-code, claude-code-haiku,
+    /// anthropic, groq, vllm://…, …). Defaults to ollama so aux tasks run on the
+    /// same local stack as completions; the claude CLI remains available via
+    /// --aux-adapter claude-code-haiku without an API key.
+    #[arg(long, default_value = "ollama")]
+    aux_adapter: String,
+
+    /// Model for auxiliary LLM tasks (summarization, consolidation, curation),
+    /// interpreted by --aux-adapter.
+    #[arg(long, default_value = "qwen3.5:9b")]
     aux_model: String,
 
     /// Disable curation pipeline (history summarization + tool output compression)
@@ -318,10 +327,10 @@ fn main() -> Result<()> {
     };
 
     let pipeline = if !cli.no_llm_summarize {
-        let aux_adapter = build_aux_adapter(&cli.aux_model);
+        let aux_adapter = build_aux_adapter(&cli.aux_adapter, &cli.aux_model)?;
         eprintln!(
-            "Using LLM summarizer ({}) for stub generation",
-            cli.aux_model
+            "Using LLM summarizer ({}/{}) for stub generation",
+            cli.aux_adapter, cli.aux_model
         );
         IngestionPipeline::with_summarizer(Box::new(LlmSummarizer::with_adapter(aux_adapter)))
             .with_tokenizer(tokenizer)
@@ -508,11 +517,11 @@ fn main() -> Result<()> {
 
     if !cli.no_llm_consolidation {
         eprintln!(
-            "Using LLM consolidation ({}) for eviction notes",
-            cli.aux_model
+            "Using LLM consolidation ({}/{}) for eviction notes",
+            cli.aux_adapter, cli.aux_model
         );
         orchestrator = orchestrator.with_consolidation_synthesizer(Box::new(
-            LlmConsolidation::with_adapter(build_aux_adapter(&cli.aux_model)),
+            LlmConsolidation::with_adapter(build_aux_adapter(&cli.aux_adapter, &cli.aux_model)?),
         ));
     }
 
@@ -538,17 +547,19 @@ fn main() -> Result<()> {
         show_intent,
         &cli.system,
         !cli.no_curate,
+        &cli.aux_adapter,
         &cli.aux_model,
         cli.max_tokens,
     )
 }
 
-fn build_aux_adapter(model: &str) -> Box<dyn ModelAdapter + Send + Sync> {
-    // TODO: add adapter options for summarization and consolidation, rather than hardcoding claude-code for both tasks.
-    match model {
-        "sonnet" => Box::new(caw_adapters::ClaudeCodeAdapter::sonnet()),
-        _ => Box::new(caw_adapters::ClaudeCodeAdapter::haiku()),
-    }
+/// Build the adapter for auxiliary LLM tasks (summarization, consolidation,
+/// curation). Delegates to the same factory as completions and intent, so any
+/// adapter is selectable — including a local Ollama model, which is the
+/// default. `Send + Sync` is required because ingestion summarizes in parallel
+/// (rayon); `build_completion_adapter` already guarantees it.
+fn build_aux_adapter(adapter: &str, model: &str) -> Result<Box<dyn ModelAdapter + Send + Sync>> {
+    build_completion_adapter(adapter, Some(model), None, None, None, None)
 }
 
 fn build_completion_adapter(
@@ -558,8 +569,8 @@ fn build_completion_adapter(
     temperature: Option<f32>,
     n_gpu_layers: Option<i32>,
     max_new_tokens: Option<usize>,
-) -> Result<Box<dyn ModelAdapter>> {
-    let adapter: Box<dyn ModelAdapter> = match adapter_name {
+) -> Result<Box<dyn ModelAdapter + Send + Sync>> {
+    let adapter: Box<dyn ModelAdapter + Send + Sync> = match adapter_name {
         "mock" => Box::new(MockAdapter::new("mock-local", true)),
         "anthropic" | "claude" => {
             let rt = caw_adapters::create_runtime()?;
@@ -684,7 +695,10 @@ fn build_completion_adapter(
     Ok(adapter)
 }
 
-fn build_intent_adapter(adapter_name: &str, model: &str) -> Result<Box<dyn ModelAdapter>> {
+fn build_intent_adapter(
+    adapter_name: &str,
+    model: &str,
+) -> Result<Box<dyn ModelAdapter + Send + Sync>> {
     // Temperature 0 for deterministic JSON output — stochastic sampling at the
     // classifier's default (~0.8) produces formatting variations that cause
     // parse failures and degenerate detection false positives.
@@ -711,6 +725,7 @@ fn run_interactive(
     show_intent: bool,
     system: &str,
     curate: bool,
+    aux_adapter: &str,
     aux_model: &str,
     context_budget: usize,
 ) -> Result<()> {
@@ -722,7 +737,7 @@ fn run_interactive(
     let aux_adapter_for_curation;
 
     let history_summarizer: &dyn caw_curation::HistorySummarizer = if curate {
-        aux_adapter_for_curation = build_aux_adapter(aux_model);
+        aux_adapter_for_curation = build_aux_adapter(aux_adapter, aux_model)?;
         llm_hist_summarizer =
             LlmHistorySummarizer::new_with(aux_adapter_for_curation.as_ref(), hist_config.clone());
         &llm_hist_summarizer
@@ -736,7 +751,7 @@ fn run_interactive(
     let aux_adapter_for_compressor;
 
     let tool_compressor: &dyn caw_curation::ToolOutputCompressor = if curate {
-        aux_adapter_for_compressor = build_aux_adapter(aux_model);
+        aux_adapter_for_compressor = build_aux_adapter(aux_adapter, aux_model)?;
         llm_compressor = LlmToolOutputCompressor::new_with(
             aux_adapter_for_compressor.as_ref(),
             ToolOutputCompressorConfig::default(),
