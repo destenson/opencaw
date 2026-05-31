@@ -30,7 +30,7 @@ struct Cli {
     upstream: String,
 
     /// Port the proxy listens on.
-    #[arg(long, default_value = "8080")]
+    #[arg(long, default_value = "8090")]
     port: u16,
 
     /// Candidate pool size for ANN search; the load threshold controls actual admissions.

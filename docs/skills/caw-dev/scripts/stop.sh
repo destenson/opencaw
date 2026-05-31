@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Stop a caw-server started by serve.sh.
 #
-# Usage: stop.sh [port]   (default port 8080)
+# Usage: stop.sh [port]   (default port 8090)
 set -euo pipefail
 
 ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
-PORT="${1:-8080}"
+PORT="${1:-8090}"
 PIDFILE="$ROOT/target/caw-dev/server-$PORT.pid"
 
 if [ -f "$PIDFILE" ]; then

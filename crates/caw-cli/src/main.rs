@@ -581,6 +581,8 @@ fn build_completion_adapter(
     max_new_tokens: Option<usize>,
     fold_system: bool,
 ) -> Result<Box<dyn ModelAdapter + Send + Sync>> {
+    // TODO: use the `num_ctx`, `n_gpu_layers`, and `max_new_tokens` parameters somwhere.
+
     let adapter: Box<dyn ModelAdapter + Send + Sync> = match adapter_name {
         "mock" => Box::new(MockAdapter::new("mock-local", true)),
         "anthropic" | "claude" => {

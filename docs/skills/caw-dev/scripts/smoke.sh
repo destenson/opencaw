@@ -3,7 +3,7 @@
 # was actually injected (not just that the model answered plausibly).
 #
 # Usage: smoke.sh [port] [model] [question]
-#   port      proxy port (default 8080)
+#   port      proxy port (default 8090)
 #   model     any Ollama model name (default llama3.2:3b — small + fast)
 #   question  the user message (default: a codebase-specific question whose
 #             answer requires the injected source)
@@ -16,7 +16,7 @@ set -euo pipefail
 
 ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 
-PORT="${1:-8080}"
+PORT="${1:-8090}"
 MODEL="${2:-llama3.2:3b}"
 QUESTION="${3:-In this Rust project, what does the DynamicRecallOrchestrator do and which source file defines it? Be specific.}"
 LOG="$ROOT/target/caw-dev/server-$PORT.log"
