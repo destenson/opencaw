@@ -17,12 +17,14 @@ use caw_orchestrator::dynamic::{DynamicRecallConfig, DynamicRecallOrchestrator};
 use clap::Parser;
 use rustyline::{error::ReadlineError, DefaultEditor};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tracing::debug;
 
-/// Concrete orchestrator type used by the CLI.
+/// Concrete orchestrator type used by the CLI. The retriever and the
+/// trace embedder are the same `LazyFastEmbedProvider` type so they can
+/// share a single underlying model (see `LazyFastEmbedProvider`).
 type CliOrchestrator = DynamicRecallOrchestrator<
-    SemanticRetriever<FastEmbedProvider, SqliteStubStore, HnswVectorIndex>,
+    SemanticRetriever<LazyFastEmbedProvider, SqliteStubStore, HnswVectorIndex>,
     LazyFastEmbedProvider,
     HnswVectorIndex,
     InMemoryProvenanceStore,
@@ -30,36 +32,53 @@ type CliOrchestrator = DynamicRecallOrchestrator<
     SqliteStubStore,
 >;
 
-/// Wraps FastEmbedProvider to defer model loading until the first embed call.
-/// Startup only loads the ONNX model when there are actually new files to embed
-/// or the first query arrives — making warm starts (everything cached) near-instant.
+/// Shared, lazily-loaded BGE-small embedder. Two properties matter here:
+///
+/// - **Lazy**: the ONNX model is loaded only on the first embed call, so a
+///   warm start (everything already cached, no new files to embed and no
+///   query yet) never pays the load cost.
+/// - **Shared**: `Clone` hands out additional handles to the *same*
+///   `FastEmbedProvider` behind an `Arc<Mutex<…>>`. The CLI needs the
+///   embedder in two places — the retriever (document/query embedding) and
+///   the orchestrator's trace embedder — and both are the same model, so
+///   cloning a shared handle loads BGE-small once instead of twice.
+#[derive(Clone)]
 struct LazyFastEmbedProvider {
-    inner: Option<FastEmbedProvider>,
+    inner: Arc<Mutex<Option<FastEmbedProvider>>>,
 }
 
 impl LazyFastEmbedProvider {
     fn new() -> Self {
-        Self { inner: None }
+        Self {
+            inner: Arc::new(Mutex::new(None)),
+        }
     }
 
-    fn ensure_loaded(&mut self) -> caw_core::CawResult<&mut FastEmbedProvider> {
-        if self.inner.is_none() {
+    /// Run `f` against the loaded model, loading it on first use. Takes
+    /// `&self`: the `Mutex` provides the interior mutability, so every
+    /// clone drives the same model and the load happens at most once.
+    fn with_loaded<T>(
+        &self,
+        f: impl FnOnce(&mut FastEmbedProvider) -> caw_core::CawResult<T>,
+    ) -> caw_core::CawResult<T> {
+        let mut guard = self.inner.lock().expect("embedder mutex poisoned");
+        if guard.is_none() {
             eprintln!("Loading embedding model...");
-            self.inner = Some(FastEmbedProvider::bge_small()?);
+            *guard = Some(FastEmbedProvider::bge_small()?);
         }
-        Ok(self.inner.as_mut().unwrap())
+        f(guard.as_mut().unwrap())
     }
 }
 
 impl EmbeddingProvider for LazyFastEmbedProvider {
     fn embed(&mut self, texts: Vec<&str>) -> caw_core::CawResult<Vec<Vec<f32>>> {
-        self.ensure_loaded()?.embed(texts)
+        self.with_loaded(|e| e.embed(texts))
     }
     fn embed_query(&mut self, texts: Vec<&str>) -> caw_core::CawResult<Vec<Vec<f32>>> {
-        self.ensure_loaded()?.embed_query(texts)
+        self.with_loaded(|e| e.embed_query(texts))
     }
     fn embed_document(&mut self, texts: Vec<&str>) -> caw_core::CawResult<Vec<Vec<f32>>> {
-        self.ensure_loaded()?.embed_document(texts)
+        self.with_loaded(|e| e.embed_document(texts))
     }
     fn dimension(&self) -> usize {
         384 // BGE-small-en-v1.5 is always 384-dimensional
@@ -224,8 +243,9 @@ fn main() -> Result<()> {
         .with_line_number(true)
         .init();
 
-    eprintln!("Loading embedding model...");
-    let mut embedder = FastEmbedProvider::bge_small().map_err(|e| anyhow::anyhow!("{}", e))?;
+    // Shared, lazy embedder: loads BGE-small at most once and is cloned into
+    // both the retriever and the orchestrator's trace embedder below.
+    let mut embedder = LazyFastEmbedProvider::new();
     let dimension = embedder.dimension();
 
     let db_path = cli
@@ -359,8 +379,10 @@ fn main() -> Result<()> {
     let consolidation_store = SqliteStubStore::new(&db_path, dimension)
         .context("Failed to open consolidation store")?;
 
-    let retriever = SemanticRetriever::new(embedder, store, vector_index);
-    let trace_embedder = LazyFastEmbedProvider::new();
+    // The retriever and the trace embedder share one model: clone hands the
+    // retriever a handle and the original moves into the trace embedder.
+    let retriever = SemanticRetriever::new(embedder.clone(), store, vector_index);
+    let trace_embedder = embedder;
 
     // When using the llama adapter, the total prompt (system + user +
     // workspace fragments) must fit within n_ctx. Reserve 3072 tokens for
