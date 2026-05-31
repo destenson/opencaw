@@ -32,6 +32,33 @@ type CliOrchestrator = DynamicRecallOrchestrator<
     SqliteStubStore,
 >;
 
+/// Default per-corpus location for the index and session history, under the
+/// user's cache directory (`XDG_CACHE_HOME` or `~/.cache`), keyed by a hash of
+/// the canonical corpus path. Keeping these out of the working directory means
+/// running `caw` inside a project never drops a `.caw/` into it; distinct
+/// corpora get distinct hashes and never share an index. Pass `--db` /
+/// `--session-dir` to override.
+fn default_cache_dir(corpus: &std::path::Path) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."));
+            home.join(".cache")
+        });
+    // canonicalize so `.`, `./crates`, and an absolute path to the same dir
+    // resolve to one cache key. Falls back to the raw path if the dir doesn't
+    // exist yet (the caller will create the index there regardless).
+    let canonical = corpus
+        .canonicalize()
+        .unwrap_or_else(|_| corpus.to_path_buf());
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    canonical.hash(&mut hasher);
+    base.join("caw").join(format!("{:016x}", hasher.finish()))
+}
+
 /// Shared, lazily-loaded BGE-small embedder. Two properties matter here:
 ///
 /// - **Lazy**: the ONNX model is loaded only on the first embed call, so a
@@ -131,7 +158,10 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     show_intent: bool,
 
-    /// SQLite database path for persistent index. Defaults to .caw/index.db in the current directory.
+    /// SQLite database path for persistent index. Defaults to a per-corpus
+    /// location under the user cache dir (XDG_CACHE_HOME or ~/.cache/caw),
+    /// keyed by the canonical `--dir` path, so running in a project never
+    /// drops an index into the working directory.
     #[arg(long)]
     db: Option<PathBuf>,
 
@@ -169,7 +199,9 @@ struct Cli {
 
     /// Directory for session history files. Each run appends to a new file;
     /// previous runs' files are indexed at startup for cross-session recall.
-    #[arg(long, default_value = ".caw")]
+    /// Defaults to a `sessions/` dir alongside the default index under the
+    /// user cache dir (see `--db`); pass a path to keep sessions elsewhere.
+    #[arg(long)]
     session_dir: Option<PathBuf>,
 
     /// Enable verbose logging for debugging and analysis
@@ -248,14 +280,22 @@ fn main() -> Result<()> {
     let mut embedder = LazyFastEmbedProvider::new();
     let dimension = embedder.dimension();
 
-    let db_path = cli
+    // The index and session history default to a per-corpus dir under the user
+    // cache (see `default_cache_dir`) so a bare `caw` run never writes into the
+    // working directory. Explicit --db / --session-dir override independently.
+    let default_root = default_cache_dir(&cli.dir);
+    let db_path_buf = cli
         .db
-        .as_ref()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| {
-            std::fs::create_dir_all(".caw").ok();
-            ".caw/index.db".to_string()
-        });
+        .clone()
+        .unwrap_or_else(|| default_root.join("index.db"));
+    if let Some(parent) = db_path_buf.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let db_path = db_path_buf.to_string_lossy().into_owned();
+    let session_dir = cli
+        .session_dir
+        .clone()
+        .unwrap_or_else(|| default_root.join("sessions"));
 
     eprintln!("Opening stub store at: {}", db_path);
     let mut store = SqliteStubStore::new(&db_path, dimension)
@@ -419,15 +459,11 @@ fn main() -> Result<()> {
     )?;
     let adapter: Arc<dyn ModelAdapter> = if cli.show_prompt {
         let mut show = caw_adapters::ShowPromptAdapter::new(raw_adapter, cli.save_prompt);
-        if let Some(sdir) = cli.session_dir.as_deref() {
-            show = show.saving_to(sdir.to_path_buf());
-        }
+        show = show.saving_to(session_dir.clone());
         Arc::new(show)
     } else if cli.save_prompt {
         let mut save = caw_adapters::SavePromptAdapter::new(raw_adapter);
-        if let Some(sdir) = cli.session_dir.as_deref() {
-            save = save.saving_to(sdir.to_path_buf());
-        }
+        save = save.saving_to(session_dir.clone());
         Arc::new(save)
     } else {
         Arc::new(raw_adapter)
@@ -481,12 +517,10 @@ fn main() -> Result<()> {
     }
 
     if !cli.amnesia {
-        if let Some(sdir) = cli.session_dir.as_deref() {
-            orchestrator = orchestrator
-                .with_session(sdir)
-                .context("Failed to set up session history")?;
-            eprintln!("[session] recording to {}", sdir.display());
-        }
+        orchestrator = orchestrator
+            .with_session(&session_dir)
+            .context("Failed to set up session history")?;
+        eprintln!("[session] recording to {}", session_dir.display());
     }
 
     if !cli.no_curate {

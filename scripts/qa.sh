@@ -91,10 +91,16 @@ for n in $(seq 1 "$NLOOPS"); do
             continue
         fi
         echo "--- Generation: qa prompt $j ---"
+        # Pin the index + session dir to .caw explicitly: caw-cli's default
+        # index/session location is now a per-corpus dir under the user cache,
+        # but the QA loop relies on artifacts landing in ./.caw to mv into
+        # .caw${LOOP_NUMBER} below.
         ./target/release/caw-cli \
             --adapter llama \
             --model "$MODEL_GGUF" \
             --dir "$LOC" \
+            --db .caw/index.db \
+            --session-dir .caw \
             --num-ctx "$CONTEXT_LENGTH" \
             --save-prompt \
             --verbose \

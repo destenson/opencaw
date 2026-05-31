@@ -43,7 +43,15 @@ All scripts live in `scripts/` and are self-locating (they find the repo root vi
 
    It sends one chat completion and prints both the model's answer and the server-side `augmented with N fragments (T tokens)` line. A small model naming a project-specific symbol/path it could not otherwise know confirms the full path works.
 
-4. **Stop** when done:
+4. **Prove it adds value** (optional) — same question to the proxy vs. straight to the upstream:
+
+   ```bash
+   docs/skills/caw-dev/scripts/ab-test.sh   # [port] [upstream] [model] [question]
+   ```
+
+   Prints both answers and the injection-proof log line. The direct answer can't name project-specific symbols; the proxied one can.
+
+5. **Stop** when done:
 
    ```bash
    docs/skills/caw-dev/scripts/stop.sh   # [port], default 8080
@@ -53,13 +61,22 @@ To use the proxy from a real tool: set the client's OpenAI base URL to `http://l
 
 ## Workflow: run the recall engine (CLI)
 
+For non-interactive testing with a sane local-only config (no Anthropic key, GPU pinned, index + sessions kept under `target/caw-dev/`), use `test-cli.sh`:
+
+```bash
+docs/skills/caw-dev/scripts/test-cli.sh -q "which struct owns the multi-pass recall loop?"
+printf 'what is opencaw?\nhow does eviction work?\n' | docs/skills/caw-dev/scripts/test-cli.sh
+docs/skills/caw-dev/scripts/test-cli.sh --intent none --model qwen3.5:9b -q "..."
+```
+
+For a raw, fully-manual invocation, `run-cli.sh` forwards all arguments straight to `cargo run -p caw-cli` (GPU pinned):
+
 ```bash
 docs/skills/caw-dev/scripts/run-cli.sh --show-intent
 docs/skills/caw-dev/scripts/run-cli.sh --adapter ollama --model qwen3.5:9b
-printf 'what is opencaw?\nhow does eviction work?\n' | docs/skills/caw-dev/scripts/run-cli.sh
 ```
 
-All arguments forward to `cargo run -p caw-cli`. Pipe questions on stdin for non-interactive testing.
+Note: `caw-cli`'s default index/session dir is a per-corpus location under `~/.cache/caw/` — a bare run no longer drops `.caw/` into the working directory. `test-cli.sh` pins both under `target/caw-dev/`.
 
 ## Gotchas (read before improvising)
 
@@ -79,5 +96,7 @@ For the full reasoning behind each gotcha, file/line references, the host's GPU 
 - **`scripts/build-index.sh`** — build an index with safe batch sizes and GPU pinning.
 - **`scripts/serve.sh`** — start the proxy (backgrounded, debug logging, GPU pinned).
 - **`scripts/smoke.sh`** — send a test request and verify injection.
+- **`scripts/ab-test.sh`** — proxy vs. direct-upstream A/B to prove context changes the answer.
 - **`scripts/stop.sh`** — stop a running proxy.
-- **`scripts/run-cli.sh`** — run the caw-cli recall loop, args forwarded.
+- **`scripts/test-cli.sh`** — drive the caw-cli recall engine non-interactively, local-only config.
+- **`scripts/run-cli.sh`** — raw pass-through to caw-cli, args forwarded.
