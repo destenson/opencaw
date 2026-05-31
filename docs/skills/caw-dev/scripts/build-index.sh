@@ -9,7 +9,8 @@
 #
 # Two non-obvious choices baked in:
 #  - GPU selection: pinned to the freest GPU via pick-gpu.sh, because the
-#    candle embedder hardcodes cuda:0 and won't fall back on OOM.
+#    candle embedder dies on OOM rather than shrinking. (The embedder also
+#    accepts CAW_EMBED_DEVICE=cuda:N for explicit selection without masking.)
 #  - Tiny batches: BGE attention memory scales as batch x seq^2. The bench
 #    default sub-batch of 256 OOMs even with 14 GB free on long chunks. The
 #    source tree is small, so throughput is irrelevant; correctness isn't.

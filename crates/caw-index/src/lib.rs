@@ -37,7 +37,7 @@ pub mod hnsw_index;
 pub use embeddings::fastembed_provider::FastEmbedProvider;
 
 #[cfg(feature = "candle")]
-pub use embeddings::candle_provider::CandleEmbeddingProvider;
+pub use embeddings::candle_provider::{CandleEmbeddingProvider, EmbedDevice};
 
 #[cfg(feature = "onnx")]
 pub use embeddings::onnx_provider::{OnnxEmbeddingProvider, OnnxVariant};

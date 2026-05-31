@@ -384,3 +384,19 @@ Fixed in `session.rs` and `dynamic.rs` (2026-05-08): `SessionFile::write_degener
 `parse_session_turns` in `session.rs` uses `extract_field` to extract both `[User]:` and `[Assistant]:` fields. `extract_field` stopped at `\n\n---` (the turn separator), but the turn format places `\n\n[Assistant]: ...` between the user text and the separator. As a result, `extract_field(section, "[User]: ")` extracted the user query AND the `\n\n[Assistant]: answer_text` that followed it. This produced embed_text like `"User: query\n\n[Assistant]: answer\nAssistant: answer"` — the assistant response appeared twice, once with brackets (from the raw session file format) and once without (from the `format!("User: ...\nAssistant: ...")` template in `collect_previous_stubs`). The duplicate was visible in QA 0020 prompt files as two adjacent assistant lines with different formatting.
 
 Fixed in `session.rs` (2026-05-08): `extract_field` now stops at the FIRST of `\n\n---` or `\n\n[` (the start of another role header), whichever appears sooner. This prevents the user field from capturing the `[Assistant]:` section that follows it in the turn format.
+
+## B23. Indexing batch size is a corpus-dependent magic number that OOMs on long chunks (medium)
+
+`crates/caw-bench/src/runner.rs:120` fixes the embedding batch at `const EMBED_BATCH: usize = 128`, hand-tuned to one machine's free VRAM. BGE attention memory scales as `batch x seq_len^2`, so a fixed *count* is the wrong unit: 128 long (512-token) chunks can still OOM, while 128 short chunks waste capacity. `build-index.sh` papers over this by forcing tiny `--batch-size 32 --sub-batch-size 8` defaults — themselves magic numbers chosen to never OOM rather than to fit the actual workload.
+
+Found while end-to-end testing the caw-dev skill (2026-05-31). Not yet fixed.
+
+Proposed fix: replace the fixed batch count with token-budget batching — accumulate texts into a batch until `current_batch_len x max_seq_len_in_batch^2` would exceed a configurable budget, then flush. This makes memory use bounded regardless of chunk length and removes the per-machine magic constant. The same change should apply to the embedder's internal sub-batching so the proxy/CLI index path benefits too, not just the bench runner.
+
+## B24. Proxy corpus-root mismatch fails semi-silently — returns HTTP 200 unaugmented (medium)
+
+`crates/caw-server/src/lib.rs:336-341`: when `get_content(stub_id)` fails (the common cause is a `--corpus-root` that doesn't match the directory the index was built against, so `corpus_root.join(stub.path)` points at nothing), the handler logs a per-stub `warn!` and `continue`s. If every fetch misses — which is exactly what a wrong corpus root produces — `fragments` ends up empty, retrieval is reported as "returned no fragments" at `debug!`, and the request is forwarded to the upstream completely unaugmented with a normal HTTP 200. There is no loud, aggregate signal that the proxy is misconfigured; a user sees a working server that silently provides no context. This violates the project's detect-don't-hide principle.
+
+Found while end-to-end testing the caw-dev skill (2026-05-31). Not yet fixed.
+
+Proposed fix: validate `corpus_root` at startup against a sample of indexed stub paths — if a sample stub's body can't be read, fail readiness (or emit one `error!` naming the corpus_root and the missing path) rather than starting a server that will silently no-op. Alternatively/additionally, track the content-fetch miss rate per request and emit a single `warn!`/`error!` when ~all candidates were dropped for unreadable bodies, so a mid-run corpus problem is visible without grepping per-stub warns.

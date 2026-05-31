@@ -4,7 +4,7 @@ use candle_transformers::models::bert::{BertModel, Config as BertConfig};
 use caw_core::{CawError, CawResult, EmbeddingProvider};
 use hf_hub::api::sync::Api;
 use tokenizers::Tokenizer;
-use tracing::debug;
+use tracing::{debug, info};
 
 const DTYPE: DType = DType::F32;
 
@@ -27,6 +27,90 @@ const MAX_SEQ_LEN: usize = 512;
 /// headroom allows, the 512-token seq-len cap still protects the model.
 const MAX_TEXT_CHARS: usize = 2_500;
 
+/// Environment variable a caller may set to choose the embedding device
+/// explicitly: `cpu`, `cuda`, or `cuda:N` (N = ordinal). This is declared
+/// configuration, not runtime inference — the library never probes which
+/// GPU is freest; that choice belongs to the caller (e.g. `pick-gpu.sh`).
+const EMBED_DEVICE_ENV: &str = "CAW_EMBED_DEVICE";
+
+/// Which compute device the candle embedder should load onto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EmbedDevice {
+    /// Honor `CAW_EMBED_DEVICE` if set; otherwise CUDA ordinal 0, falling
+    /// back to CPU only when CUDA is entirely absent. This is the historical
+    /// default and what every existing caller gets.
+    #[default]
+    Auto,
+    /// Force CPU regardless of CUDA availability.
+    Cpu,
+    /// A specific CUDA ordinal. Construction fails if that device can't be
+    /// opened — no silent CPU fallback, so a misconfigured ordinal is loud.
+    Cuda(usize),
+}
+
+impl EmbedDevice {
+    /// Parse the `cpu` / `cuda` / `cuda:N` forms of `CAW_EMBED_DEVICE`.
+    fn parse_env(raw: &str) -> Result<Self, String> {
+        let raw = raw.trim();
+        match raw.to_ascii_lowercase().as_str() {
+            "cpu" => Ok(EmbedDevice::Cpu),
+            "cuda" => Ok(EmbedDevice::Cuda(0)),
+            other => match other.strip_prefix("cuda:") {
+                Some(n) => n
+                    .parse::<usize>()
+                    .map(EmbedDevice::Cuda)
+                    .map_err(|_| format!("invalid CUDA ordinal in {EMBED_DEVICE_ENV}={raw:?}")),
+                None => Err(format!(
+                    "unrecognized {EMBED_DEVICE_ENV}={raw:?} (expected cpu, cuda, or cuda:N)"
+                )),
+            },
+        }
+    }
+
+    /// Resolve to a concrete candle `Device`. `Auto` consults the env var,
+    /// then tries CUDA:0, then CPU. Explicit `Cuda(n)` never falls back —
+    /// failing to open the requested ordinal is an error the caller must see.
+    fn resolve(self) -> CawResult<Device> {
+        let selected = match self {
+            EmbedDevice::Auto => match std::env::var(EMBED_DEVICE_ENV) {
+                Ok(raw) if !raw.trim().is_empty() => {
+                    EmbedDevice::parse_env(&raw).map_err(CawError::Embedding)?
+                }
+                _ => {
+                    // Historical Auto behavior: CUDA:0 or CPU if CUDA absent.
+                    return Ok(match Device::new_cuda(0) {
+                        Ok(d) => {
+                            info!("candle: using CUDA:0 (Auto)");
+                            d
+                        }
+                        Err(e) => {
+                            info!("candle: CUDA unavailable ({e}); falling back to CPU");
+                            Device::Cpu
+                        }
+                    });
+                }
+            },
+            other => other,
+        };
+        match selected {
+            EmbedDevice::Cpu => {
+                info!("candle: using CPU");
+                Ok(Device::Cpu)
+            }
+            EmbedDevice::Cuda(n) => {
+                let d = Device::new_cuda(n).map_err(|e| {
+                    CawError::Embedding(format!(
+                        "open CUDA:{n} failed: {e} (set {EMBED_DEVICE_ENV}=cpu or a free ordinal)"
+                    ))
+                })?;
+                info!("candle: using CUDA:{n}");
+                Ok(d)
+            }
+            EmbedDevice::Auto => unreachable!("Auto resolved above"),
+        }
+    }
+}
+
 pub struct CandleEmbeddingProvider {
     model: BertModel,
     tokenizer: Tokenizer,
@@ -40,20 +124,18 @@ impl CandleEmbeddingProvider {
     /// Load a BERT-family model from HuggingFace Hub by model ID.
     /// Downloads and caches model weights, config, and tokenizer automatically.
     ///
-    /// Tries CUDA:0 first and falls back to CPU if CUDA isn't available. The
-    /// fallback keeps non-GPU hosts working; on a CUDA host a successful
-    /// `new_cuda(0)` is the whole point of this provider.
+    /// Uses [`EmbedDevice::Auto`]: honors `CAW_EMBED_DEVICE` if set, else
+    /// CUDA:0, else CPU when CUDA is absent. To pin a specific GPU or force
+    /// CPU programmatically, use [`Self::from_pretrained_on`].
     pub fn from_pretrained(model_id: &str) -> CawResult<Self> {
-        let device = match Device::new_cuda(0) {
-            Ok(d) => {
-                eprintln!("candle: using CUDA:0");
-                d
-            }
-            Err(e) => {
-                eprintln!("candle: CUDA unavailable ({e}); falling back to CPU");
-                Device::Cpu
-            }
-        };
+        Self::from_pretrained_on(model_id, EmbedDevice::default())
+    }
+
+    /// Load a model onto an explicitly chosen device. An explicit
+    /// [`EmbedDevice::Cuda`] ordinal that can't be opened is a hard error
+    /// (no silent CPU fallback), so a busy/missing GPU surfaces immediately.
+    pub fn from_pretrained_on(model_id: &str, device: EmbedDevice) -> CawResult<Self> {
+        let device = device.resolve()?;
         let api =
             Api::new().map_err(|e| CawError::Embedding(format!("HF Hub init failed: {e}")))?;
         let repo = api.model(model_id.to_string());
@@ -99,6 +181,11 @@ impl CandleEmbeddingProvider {
     /// Convenience constructor for BAAI/bge-small-en-v1.5 (384-dim, asymmetric).
     pub fn bge_small() -> CawResult<Self> {
         Self::from_pretrained("BAAI/bge-small-en-v1.5")
+    }
+
+    /// [`Self::bge_small`] on an explicitly chosen device.
+    pub fn bge_small_on(device: EmbedDevice) -> CawResult<Self> {
+        Self::from_pretrained_on("BAAI/bge-small-en-v1.5", device)
     }
 
     fn embed_inner(&mut self, texts: Vec<&str>) -> CawResult<Vec<Vec<f32>>> {
