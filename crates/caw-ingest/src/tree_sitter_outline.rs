@@ -1,3 +1,4 @@
+use crate::chunking::floor_char_boundary;
 use tree_sitter::{Language, Node, Parser};
 
 /// Extract code symbols using tree-sitter AST parsing.
@@ -23,6 +24,125 @@ pub fn extract_outline_tree_sitter(content: &str, extension: &str) -> Option<Vec
     };
 
     Some(entries)
+}
+
+/// A top-level item's byte span plus the signal we want to concentrate at the
+/// front of its embedding. `start` reaches back over the item's leading doc
+/// comments and attributes so they travel with the item; `end` is the item's
+/// own end. `signature` and `doc` are extracted once here so the chunker can
+/// prepend them to the embed text without re-parsing.
+#[derive(Debug, Clone)]
+pub struct ItemSpan {
+    pub start: usize,
+    pub end: usize,
+    /// One-line declaration, e.g. `pub struct DynamicRecallOrchestrator<...>`.
+    pub signature: String,
+    /// The item's `///`/`//!` doc comment lines, stripped of markers and
+    /// joined with spaces. Empty when undocumented.
+    pub doc: String,
+}
+
+/// Byte spans of a file's top-level items, in source order, for boundary-aware
+/// chunking. Rust only for now — other languages return `None` and the caller
+/// falls back to line-based chunking. The failure this targets (a definitional
+/// chunk's one relevant sentence diluted across a same-domain corpus) was
+/// measured on the Rust corpus; generalizing the doc-comment/attribute
+/// gathering per grammar is deferred until a second language needs it.
+pub fn extract_item_spans(content: &str, extension: &str) -> Option<Vec<ItemSpan>> {
+    if extension != "rs" {
+        return None;
+    }
+    let language: Language = tree_sitter_rust::LANGUAGE.into();
+    let mut parser = Parser::new();
+    parser.set_language(&language).ok()?;
+    let tree = parser.parse(content, None)?;
+    let root = tree.root_node();
+
+    let mut spans = Vec::new();
+    let mut cursor = root.walk();
+    // Start byte of the current run of doc-comment / attribute nodes, so the
+    // next item absorbs them. Reset by any other node (e.g. a `use`).
+    let mut pending_start: Option<usize> = None;
+    for child in root.children(&mut cursor) {
+        match child.kind() {
+            "line_comment" | "block_comment" | "attribute_item" => {
+                pending_start.get_or_insert(child.start_byte());
+            }
+            kind if is_rust_item_kind(kind) => {
+                let item_start = child.start_byte();
+                let start = pending_start.take().unwrap_or(item_start);
+                let signature = rust_item_signature(child, content);
+                let doc = extract_doc_lines(&content[start..item_start]);
+                spans.push(ItemSpan {
+                    start,
+                    end: child.end_byte(),
+                    signature,
+                    doc,
+                });
+            }
+            _ => pending_start = None,
+        }
+    }
+
+    if spans.is_empty() { None } else { Some(spans) }
+}
+
+fn is_rust_item_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "function_item"
+            | "struct_item"
+            | "enum_item"
+            | "trait_item"
+            | "impl_item"
+            | "mod_item"
+            | "type_item"
+            | "const_item"
+            | "static_item"
+            | "union_item"
+            | "macro_definition"
+    )
+}
+
+/// One-line signature for an item node: the declaration up to its body. Mirrors
+/// the `text_until_child` boundaries used by the outline extractor.
+fn rust_item_signature(node: Node<'_>, src: &str) -> String {
+    match node.kind() {
+        "function_item" => text_until_child(node, src, "block"),
+        "struct_item" => text_until_child(node, src, "field_declaration_list"),
+        "enum_item" => text_until_child(node, src, "enum_variant_list"),
+        "trait_item" | "impl_item" => text_until_child(node, src, "declaration_list"),
+        _ => first_line(node_text(node, src)),
+    }
+}
+
+/// Pull `///` / `//!` doc text out of the bytes preceding an item (which may
+/// also contain attributes and blank lines). Strips comment markers and joins
+/// the lines with single spaces. Truncated so the prepended header stays a
+/// concentrated hint, not a second copy of a long comment.
+fn extract_doc_lines(leading: &str) -> String {
+    const MAX_DOC_CHARS: usize = 240;
+    let mut parts: Vec<&str> = Vec::new();
+    for line in leading.lines() {
+        let t = line.trim_start();
+        let body = t
+            .strip_prefix("///")
+            .or_else(|| t.strip_prefix("//!"))
+            .or_else(|| t.strip_prefix("//"));
+        if let Some(body) = body {
+            let body = body.trim();
+            if !body.is_empty() {
+                parts.push(body);
+            }
+        }
+    }
+    let joined = parts.join(" ");
+    if joined.len() > MAX_DOC_CHARS {
+        let cut = floor_char_boundary(&joined, MAX_DOC_CHARS);
+        joined[..cut].to_string()
+    } else {
+        joined
+    }
 }
 
 fn language_for_extension(ext: &str) -> Option<Language> {

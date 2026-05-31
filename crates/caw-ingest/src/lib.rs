@@ -111,6 +111,18 @@ impl IngestionPipeline {
     /// to one doc-level embedding, making chunk-level retrieval meaningless.
     pub fn ingest(&self, doc: SourceDocument) -> Vec<(Stub, String)> {
         let outline = extract_outline(doc.kind, &doc.content, &doc.path);
+        // Item byte spans drive structure-aware chunking when the language has
+        // a tree-sitter grammar; `None` falls back to line-based chunking.
+        let item_spans = match doc.kind {
+            ContentKind::Code => {
+                let extension = Path::new(&doc.path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                tree_sitter_outline::extract_item_spans(&doc.content, extension)
+            }
+            _ => None,
+        };
         let content_hash = sha256_hash(&doc.content);
 
         // Token estimate for the single-stub path. When chunking is enabled,
@@ -120,7 +132,14 @@ impl IngestionPipeline {
         let mut single_token_estimate: Option<usize> = None;
 
         if let Some(ref config) = self.chunking {
-            let chunks = chunk_document(&doc.content, doc.kind, &outline, config, &self.tokenizer);
+            let chunks = chunk_document(
+                &doc.content,
+                doc.kind,
+                &outline,
+                item_spans.as_deref(),
+                config,
+                &self.tokenizer,
+            );
             if chunks.len() > 1 {
                 return chunks
                     .into_iter()

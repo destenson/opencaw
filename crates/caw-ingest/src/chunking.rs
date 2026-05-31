@@ -1,3 +1,4 @@
+use crate::tree_sitter_outline::ItemSpan;
 use caw_core::{ContentKind, Tokenizer};
 use std::sync::Arc;
 
@@ -96,12 +97,16 @@ pub fn chunk_document(
     content: &str,
     kind: ContentKind,
     outline: &[String],
+    item_spans: Option<&[ItemSpan]>,
     config: &ChunkingConfig,
     tokenizer: &Arc<dyn Tokenizer>,
 ) -> Vec<Chunk> {
     // Below threshold? Ship a single chunk and skip the BPE pass entirely.
     // Precision is not the goal — staying off the tokenizer on small files
     // is. This is the dominant throughput win on corpora full of tiny docs.
+    // Small files are already concentrated, so the structure-aware header
+    // (which only earns its keep when one item's signal is diluted across a
+    // large multi-item chunk) is not applied here.
     let upper_bound = cheap_token_upper_bound(content);
     if upper_bound <= config.token_threshold {
         return vec![Chunk {
@@ -115,47 +120,46 @@ pub fn chunk_document(
         }];
     }
 
-    // Over the cheap threshold: chunk. We do NOT tokenize the whole file
-    // first — on a 10MB file that alone would dominate wall time. One
-    // forward pass over `content` slicing at `\n` boundaries near each
-    // char-budget target is enough; structural boundaries (headings, fn
-    // defs) would be nicer but aren't worth quadratic section enumeration
-    // on corpora where some files are 10MB+.
-    //
-    // `kind` is intentionally unused here for now — all kinds chunk the
-    // same way. Kept in the signature so a future structural variant can
-    // branch on it without changing callers.
     let _ = kind;
-    let raw_chunks = chunk_by_lines(content, config);
 
-    // Safety pass: char-based chunking under-counts tokens on dense inputs
-    // (code, URLs, minified data) where chars/token drops below the 3.5 avg
-    // the defaults assume. Any chunk whose actual token_count exceeds
-    // `MAX_SAFE_BODY_TOKENS` gets split further with tightened bounds.
-    // Without this, dense chunks get silently truncated by the embedder's
-    // `.min(MAX_SEQ_LEN)` and the tail is lost from the index entirely.
-    let mut safe_chunks: Vec<(u64, u64, String, usize)> = Vec::with_capacity(raw_chunks.len());
-    for (body_start, body_end, text) in raw_chunks {
-        let token_count = tokenizer.count_tokens(&text);
-        if token_count <= MAX_SAFE_BODY_TOKENS {
-            safe_chunks.push((body_start, body_end, text, token_count));
-            continue;
+    // `(body_start, body_end, embed_text, token_count)` either way. When
+    // tree-sitter item spans are available we tile on item boundaries and
+    // front-load each chunk with its items' signatures + docstrings so a
+    // definitional sentence isn't averaged into the noise of a same-domain
+    // corpus. Otherwise we fall back to the line-based char-budget splitter.
+    let safe_chunks: Vec<(u64, u64, String, usize)> = match item_spans {
+        Some(spans) if !spans.is_empty() => chunk_by_items(content, spans, config, tokenizer),
+        _ => {
+            // Over the cheap threshold: chunk by lines. We do NOT tokenize the
+            // whole file first — on a 10MB file that alone would dominate wall
+            // time. One forward pass slicing at `\n` near each char-budget
+            // target is enough.
+            let raw_chunks = chunk_by_lines(content, config);
+
+            // Safety pass: char-based chunking under-counts tokens on dense
+            // inputs (code, URLs, minified data) where chars/token drops below
+            // the 3.5 avg the defaults assume. Any chunk whose actual
+            // token_count exceeds `MAX_SAFE_BODY_TOKENS` gets split further
+            // with tightened bounds, else the embedder silently truncates it.
+            let mut safe = Vec::with_capacity(raw_chunks.len());
+            for (body_start, body_end, text) in raw_chunks {
+                let token_count = tokenizer.count_tokens(&text);
+                if token_count <= MAX_SAFE_BODY_TOKENS {
+                    safe.push((body_start, body_end, text, token_count));
+                    continue;
+                }
+                safe.extend(split_oversized(
+                    content,
+                    body_start as usize,
+                    body_end as usize,
+                    config,
+                    tokenizer,
+                    0,
+                ));
+            }
+            safe
         }
-        // Oversized: recurse with tightened char bounds. Halve the char
-        // budget each time — dense inputs where the heuristic fails tend
-        // to be uniformly dense, so one halving usually suffices. Bottom
-        // out at a minimum sane size to avoid infinite recursion on
-        // pathological no-break content.
-        let sub_chunks = split_oversized(
-            content,
-            body_start as usize,
-            body_end as usize,
-            config,
-            tokenizer,
-            0,
-        );
-        safe_chunks.extend(sub_chunks);
-    }
+    };
 
     let total = safe_chunks.len();
     safe_chunks
@@ -222,6 +226,110 @@ fn split_oversized(
         }
     }
     out
+}
+
+/// Tile `content` on tree-sitter item boundaries. Each chunk covers
+/// `[start_i, start_{i+1})`, so the file is tiled without gaps: leading `use`
+/// declarations attach to the first chunk, blank lines between items to the
+/// preceding one. Adjacent small items merge up to the char budget; an item
+/// past the hard cap is line-split via `chunk_by_lines`.
+///
+/// Each chunk's embed text is prefixed with the signatures + docstrings of the
+/// items that begin in it. That prefix is what the embedder and BM25 see; the
+/// returned byte range still points at the verbatim body, so served content is
+/// unchanged. Returns `(body_start, body_end, embed_text, token_count)`.
+fn chunk_by_items(
+    content: &str,
+    spans: &[ItemSpan],
+    config: &ChunkingConfig,
+    tokenizer: &Arc<dyn Tokenizer>,
+) -> Vec<(u64, u64, String, usize)> {
+    let target = config.target_chunk_chars.max(1);
+    let cap = config.max_chunk_chars.max(target);
+    let total = content.len();
+
+    // Boundaries: open a new chunk at an item start once the span since the
+    // current chunk start would exceed `target`. First boundary is 0 so the
+    // file preamble (imports) rides with the first item's chunk.
+    let mut boundaries: Vec<usize> = vec![0];
+    let mut cur_start = 0usize;
+    for sp in spans {
+        let end = sp.end.min(total);
+        if end.saturating_sub(cur_start) > target && sp.start > cur_start {
+            boundaries.push(sp.start);
+            cur_start = sp.start;
+        }
+    }
+    boundaries.push(total);
+    boundaries.dedup();
+
+    let mut out: Vec<(u64, u64, String, usize)> = Vec::with_capacity(boundaries.len());
+    for w in boundaries.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if a >= b {
+            continue;
+        }
+        let header = build_item_header(spans, a, b);
+        let body = &content[a..b];
+        let prepend = |text: &str| -> String {
+            if header.is_empty() {
+                text.to_string()
+            } else {
+                format!("{header}\n\n{text}")
+            }
+        };
+
+        // Fast path: tile within the char cap and the prefixed text within the
+        // embedder's token ceiling becomes one chunk.
+        if b - a <= cap {
+            let embed = prepend(body);
+            let count = tokenizer.count_tokens(&embed);
+            if count <= MAX_SAFE_BODY_TOKENS {
+                out.push((a as u64, b as u64, embed, count));
+                continue;
+            }
+        }
+
+        // Oversized item (or a tile that tokenizes hot): line-split the body,
+        // keeping the structural header on the first sub-chunk only.
+        let subs = chunk_by_lines(body, config);
+        for (i, (rel_start, rel_end, text)) in subs.into_iter().enumerate() {
+            let abs_start = a + rel_start as usize;
+            let abs_end = a + rel_end as usize;
+            let embed = if i == 0 { prepend(&text) } else { text };
+            let count = tokenizer.count_tokens(&embed);
+            if count <= MAX_SAFE_BODY_TOKENS {
+                out.push((abs_start as u64, abs_end as u64, embed, count));
+            } else {
+                out.extend(split_oversized(content, abs_start, abs_end, config, tokenizer, 0));
+            }
+        }
+    }
+
+    out
+}
+
+/// Join signatures (and docstrings) of items beginning in `[a, b)` into a
+/// concentrated prefix, capped so a tile full of tiny items can't crowd the
+/// body out from under the embedder's token ceiling.
+fn build_item_header(spans: &[ItemSpan], a: usize, b: usize) -> String {
+    const MAX_HEADER_CHARS: usize = 400;
+    let mut header = String::new();
+    for sp in spans.iter().filter(|sp| sp.start >= a && sp.start < b) {
+        let line = if sp.doc.is_empty() {
+            sp.signature.clone()
+        } else {
+            format!("{} — {}", sp.signature, sp.doc)
+        };
+        if !header.is_empty() && header.len() + line.len() > MAX_HEADER_CHARS {
+            break;
+        }
+        if !header.is_empty() {
+            header.push('\n');
+        }
+        header.push_str(&line);
+    }
+    header
 }
 
 /// Build a positional summary like "Chunk 2/5 of path: contains `fn foo` and `struct Bar`"
@@ -358,7 +466,7 @@ fn prepend_line_overlap(dst: &mut String, preceding: &str, overlap_chars: usize,
 
 /// Largest byte offset `<= idx` that falls on a UTF-8 char boundary. Used
 /// to make byte-offset arithmetic on char-count budgets safe to slice.
-fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
+pub(crate) fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
     if idx >= s.len() {
         return s.len();
     }
