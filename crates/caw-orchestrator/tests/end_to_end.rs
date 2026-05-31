@@ -206,36 +206,50 @@ fn recall_loop_admits_fragment_and_tags_provenance() {
     let user_query = "how does session token validation work in the authentication middleware";
     let response = orchestrator.run_turn("", user_query, &[], None).expect("run_turn");
 
-    // MockAdapter echoes the workspace via format_workspace — so if any
-    // fragment was admitted, its provenance locator appears in the answer.
-    // The bracketed format emits `[recalled from path:locator]`.
+    // Verify admission and provenance through the orchestrator's own state.
+    //
+    // The answer string is NOT a reliable witness of admission: run_turn strips
+    // `[recalled from …]` blocks from model output (so models can't smuggle
+    // fabricated recall markers into their answers), and MockAdapter echoes the
+    // injected workspace verbatim — so the provenance markers it parrots are
+    // stripped before run_turn returns. The source of truth for what was admitted
+    // is `orchestrator.loaded`, where each fragment carries its provenance locator
+    // (the same locator format_workspace renders as `[recalled from source:locator]`).
     assert!(
-        response.answer.contains("recalled from"),
-        "answer should contain provenance locator from admitted fragment; got: {}",
-        response.answer,
+        !orchestrator.loaded.is_empty(),
+        "a fragment should have been admitted for an auth-vocabulary query",
     );
-    assert!(
-        response.answer.contains("docs/auth.md"),
-        "auth doc should be the top match for an auth-vocabulary query; got: {}",
-        response.answer,
-    );
-
-    // Orchestrator-side embedder only runs when thinking-trace or probe
-    // recall fires. Both are disabled here, so the second embedder should
-    // not have been called — proves the recall path respects the config flags.
-    assert_eq!(
-        orchestrator.embedder.calls(),
-        0,
-        "recall-path embedder must not run with thinking-trace + probe recall disabled",
-    );
-
-    // The retriever's own embedder ran at least once: one call for ingestion
-    // (batched or per-doc) and one for the user query.
     assert!(
         orchestrator
             .loaded
             .iter()
-            .any(|f| f.locator.source == "docs/auth.md"),
-        "loaded workspace should contain the auth fragment",
+            .all(|f| !f.locator.source.is_empty() && !f.locator.locator.is_empty()),
+        "every admitted fragment must carry a provenance locator (source + locator)",
+    );
+    let auth = orchestrator
+        .loaded
+        .iter()
+        .find(|f| f.locator.source == "docs/auth.md")
+        .expect("auth doc should be admitted for an auth-vocabulary query");
+    assert_eq!(
+        auth.locator.locator, "stub",
+        "auth fragment should be admitted at the stub range with a provenance locator",
+    );
+
+    // run_turn still returns a synthesized answer even though the echoed recall
+    // markers were stripped from it.
+    assert!(
+        !response.answer.is_empty(),
+        "run_turn should return a non-empty answer",
+    );
+
+    // Orchestrator-side embedder only runs when thinking-trace or probe recall
+    // fires. Both are disabled here, so the second embedder must not have been
+    // called — proves the recall path respects the config flags. (Line-reference
+    // recall is active by default but resolves via read_range, not the embedder.)
+    assert_eq!(
+        orchestrator.embedder.calls(),
+        0,
+        "recall-path embedder must not run with thinking-trace + probe recall disabled",
     );
 }
