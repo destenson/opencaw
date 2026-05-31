@@ -11,6 +11,15 @@
 # ClaudeCodeAdapter shells out to the installed `claude`, ~$0.01 per eviction).
 # The defaults keep the scenario short on purpose.
 #
+# Aux must be a NON-thinking model. A thinking model (qwen3.x, deepseek-r1, …)
+# routinely emits only a reasoning trace for the consolidation prompt; after
+# split_thinking the answer body is blank, the adapter logs `degenerate output:
+# blank answer`, and eviction falls back to a deterministic templated note
+# ("Evicted (relevance decayed …)") instead of real LLM synthesis — so the very
+# path this script exists to demonstrate is skipped. It is also far slower
+# (~90-115s/note vs ~real-time), enough that the default multi-turn run cannot
+# finish inside a normal timeout. llama3.2:3b is the validated default.
+#
 # Usage:
 #   consolidation-cli.sh [--dir DIR] [--model M]
 #                        [--aux-adapter A] [--aux-model AUX]
@@ -23,7 +32,7 @@
 #   --model llama3.2:3b              completion adapter (ollama)
 #   --aux-adapter ollama             aux runs on the local stack (selectors match
 #                                    caw-cli --adapter: ollama, claude-code-haiku, …)
-#   --aux-model qwen3.5:9b           capable enough for consolidation, fits the free GPU
+#   --aux-model llama3.2:3b          non-thinking, fast, reliable synthesis (see note above)
 #   --max-tokens 1200               small workspace so admissions overflow -> eviction
 #   --max-candidates 30             wide candidate pool so turns admit a lot
 #   --no-intent-classifier          keep the run deterministic/fast
@@ -40,7 +49,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIR="crates"
 MODEL="llama3.2:3b"
 AUX_ADAPTER="ollama"
-AUX_MODEL="qwen3.5:9b"
+AUX_MODEL="llama3.2:3b"
 MAX_TOKENS="1200"
 MAX_CANDIDATES="30"
 QUESTIONS=()
@@ -113,6 +122,10 @@ set -e
 EVICTED=$(grep -c 'fragment evicted' "$LOG" || true)
 NOTES_STORE=$(grep -c 'consolidation note persisted to store' "$LOG" || true)
 NOTES_MEM=$(grep -c 'consolidation note recorded in memory' "$LOG" || true)
+# A blank aux answer makes eviction fall back to a deterministic templated note
+# instead of real LLM synthesis. The count maps 1:1 to those fallback notes, so
+# (NOTES_STORE - DEGEN) is the number of notes that were actually LLM-synthesized.
+DEGEN=$(grep -c 'degenerate output' "$LOG" || true)
 # Per-call cost is only logged by ClaudeCodeAdapter; Ollama emits no cost line.
 CC_CALLS=$(grep -c '\[claude-code\] model=' "$LOG" || true)
 # `|| true`: with `set -o pipefail`, the leading grep exits 1 when there are no
@@ -128,6 +141,7 @@ echo "caw-cli exit code:                 $RC"
 echo "fragments evicted:                 $EVICTED"
 echo "consolidation notes -> store:      $NOTES_STORE"
 echo "consolidation notes -> memory:     $NOTES_MEM"
+echo "degenerate aux outputs (fallback): $DEGEN"
 if [ "$CC_CALLS" -gt 0 ]; then
   echo "claude-code aux LLM calls:         $CC_CALLS"
   echo "claude-code aux cost (USD):        \$$CC_COST"

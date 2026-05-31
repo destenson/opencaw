@@ -90,7 +90,9 @@ docs/skills/caw-dev/scripts/consolidation-cli.sh --max-tokens 800 -q "how does r
 docs/skills/caw-dev/scripts/consolidation-cli.sh --aux-adapter claude-code-haiku   # aux via the claude CLI instead
 ```
 
-It forces eviction with a small `--max-tokens` budget. The aux model (consolidation/summarization/curation) defaults to local Ollama (`--aux-adapter ollama --aux-model qwen3.5:9b`), so the whole engine runs locally with no API key. `--aux-adapter` takes the same selectors as `--adapter`: pass `--aux-adapter claude-code-haiku` to route aux through the installed `claude` CLI instead (still no API key, ~$0.01 per eviction). After the run it prints a proof summary computed from the verbose log: eviction count, consolidation notes persisted, and — only for claude-code aux — the claude-code call count and cost.
+It forces eviction with a small `--max-tokens` budget. The aux model (consolidation/summarization/curation) defaults to local Ollama (`--aux-adapter ollama --aux-model llama3.2:3b`), so the whole engine runs locally with no API key. `--aux-adapter` takes the same selectors as `--adapter`: pass `--aux-adapter claude-code-haiku` to route aux through the installed `claude` CLI instead (still no API key, ~$0.01 per eviction). After the run it prints a proof summary computed from the verbose log: eviction count, consolidation notes persisted, and — only for claude-code aux — the claude-code call count and cost.
+
+**Aux must be a non-thinking model.** A thinking aux (`qwen3.x`, `deepseek-r1`, …) routinely returns only a reasoning trace for the consolidation prompt; after `split_thinking` the body is blank, the adapter logs `degenerate output: blank answer`, and eviction falls back to a deterministic templated note instead of real LLM synthesis — silently skipping the path this script exists to demonstrate. It is also ~90–115s per note vs. roughly real-time, enough that the default multi-turn run will not finish inside a normal timeout. `llama3.2:3b` is the validated default.
 
 ### Dump exactly what the model sees
 
