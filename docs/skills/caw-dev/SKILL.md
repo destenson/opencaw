@@ -78,6 +78,17 @@ docs/skills/caw-dev/scripts/run-cli.sh --adapter ollama --model qwen3.5:9b
 
 Note: `caw-cli`'s default index/session dir is a per-corpus location under `~/.cache/caw/` — a bare run no longer drops `.caw/` into the working directory. `test-cli.sh` pins both under `target/caw-dev/`.
 
+### Exercise the differentiating engine (eviction + consolidation)
+
+`test-cli.sh` disables the LLM consolidation/summarization path (`--no-llm-consolidation`) so it can run without an Anthropic key. To actually test the core novelty — workspace fills past budget, fragments are **evicted**, and each eviction synthesizes an LLM **consolidation note** persisted to the stub store for later recall — use `consolidation-cli.sh`:
+
+```bash
+docs/skills/caw-dev/scripts/consolidation-cli.sh
+docs/skills/caw-dev/scripts/consolidation-cli.sh --max-tokens 800 -q "how does recall work?" -q "what gets evicted?"
+```
+
+It forces eviction with a small `--max-tokens` budget and routes the aux model through the local `claude` CLI (`ClaudeCodeAdapter`, no API key needed — but each eviction spawns one `claude` call costing real tokens, ~$0.01 each with haiku). After the run it prints a proof summary computed from the verbose log: eviction count, consolidation notes persisted, aux LLM calls, and total aux cost. Only `haiku`|`sonnet` are meaningful for `--aux-model` — `build_aux_adapter` (caw-cli `main.rs`) ignores everything else and cannot currently route aux tasks to Ollama.
+
 ## Gotchas (read before improvising)
 
 - **GPU OOM is a device-pinning problem, not a memory-shortage problem.** The candle embedder hardcodes `cuda:0` and only falls back to CPU when CUDA is *absent* — never on an OOM. The scripts pin the freest GPU to dodge this. Do not run the raw `cargo` commands without that pin when a large model occupies GPU 0.
@@ -98,5 +109,6 @@ For the full reasoning behind each gotcha, file/line references, the host's GPU 
 - **`scripts/smoke.sh`** — send a test request and verify injection.
 - **`scripts/ab-test.sh`** — proxy vs. direct-upstream A/B to prove context changes the answer.
 - **`scripts/stop.sh`** — stop a running proxy.
-- **`scripts/test-cli.sh`** — drive the caw-cli recall engine non-interactively, local-only config.
+- **`scripts/test-cli.sh`** — drive the caw-cli recall engine non-interactively, local-only config (LLM consolidation OFF).
+- **`scripts/consolidation-cli.sh`** — exercise the full engine (eviction + LLM consolidation) and print a computed proof summary; aux model via the local `claude` CLI.
 - **`scripts/run-cli.sh`** — raw pass-through to caw-cli, args forwarded.
