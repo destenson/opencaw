@@ -1268,6 +1268,15 @@ pub trait ModelAdapter {
         }
         Ok(response)
     }
+
+    /// The provenance wrapping format this adapter uses when it renders recalled
+    /// workspace fragments into the prompt (via `CompletionRequest::format_workspace`).
+    /// Prompt-dump tooling queries this to reproduce exactly the context string
+    /// the model receives. Defaults to `Bracketed` (the OpenAI-protocol format);
+    /// Anthropic-family adapters override to `Xml`.
+    fn provenance_format(&self) -> ProvenanceFormat {
+        ProvenanceFormat::Bracketed
+    }
 }
 
 /// Forward `ModelAdapter` through a boxed trait object so callers that build
@@ -1304,6 +1313,10 @@ impl<T: ModelAdapter + ?Sized> ModelAdapter for Box<T> {
     ) -> CawResult<CompletionResponse> {
         (**self).thinking_with_steps(req, on_step)
     }
+
+    fn provenance_format(&self) -> ProvenanceFormat {
+        (**self).provenance_format()
+    }
 }
 
 /// Forward `ModelAdapter` through an `Arc` so a single loaded adapter can be
@@ -1338,6 +1351,10 @@ impl<T: ModelAdapter + ?Sized> ModelAdapter for std::sync::Arc<T> {
         on_step: &mut dyn FnMut(&str) -> CawResult<bool>,
     ) -> CawResult<CompletionResponse> {
         (**self).thinking_with_steps(req, on_step)
+    }
+
+    fn provenance_format(&self) -> ProvenanceFormat {
+        (**self).provenance_format()
     }
 }
 

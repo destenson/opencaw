@@ -86,6 +86,10 @@ impl ModelAdapter for AnthropicAdapter {
         &self.model
     }
 
+    fn provenance_format(&self) -> ProvenanceFormat {
+        ProvenanceFormat::Xml
+    }
+
     fn capabilities(&self) -> ModelCapabilities {
         ModelCapabilities {
             supports_tool_calls: true,

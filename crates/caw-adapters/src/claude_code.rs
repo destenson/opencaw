@@ -151,6 +151,10 @@ impl ModelAdapter for ClaudeCodeAdapter {
         &self.model
     }
 
+    fn provenance_format(&self) -> ProvenanceFormat {
+        ProvenanceFormat::Xml
+    }
+
     fn capabilities(&self) -> ModelCapabilities {
         // Claude models reason internally and will follow marker-emission
         // instructions even though `--print` doesn't surface the reasoning

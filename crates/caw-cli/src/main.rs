@@ -249,13 +249,15 @@ struct Cli {
     #[arg(long)]
     max_new_tokens: Option<usize>,
 
-    /// Print the full formatted prompt to stderr before each llama generation.
-    /// Useful for inspecting exactly what context the model receives.
+    /// Print the exact context string the model receives to stderr before each
+    /// generation (any adapter): the system message with the recalled workspace
+    /// rendered in the adapter's own provenance format, then the user message.
     #[arg(long, default_value_t = false)]
     show_prompt: bool,
 
-    /// Save the full formatted prompt to a file before each llama generation.
-    /// Useful for inspecting exactly what context the model receives.
+    /// Save the exact context string the model receives to a file (one per turn,
+    /// `prompt-{timestamp}-turn-{N}.txt` beside the session files) before each
+    /// generation. Works with any adapter.
     #[arg(long, default_value_t = false)]
     save_prompt: bool,
 }

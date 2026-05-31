@@ -1,5 +1,6 @@
 use caw_core::{
-    CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities
+    CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities,
+    ProvenanceFormat,
 };
 use std::fmt::Write as FmtWrite;
 use std::path::PathBuf;
@@ -115,18 +116,7 @@ impl SavePromptAdapter {
     }
 
     fn log_prompt(&self, req: &CompletionRequest, res: CawResult<CompletionResponse>) -> CawResult<CompletionResponse> {
-        let fragment_tokens: usize = req.workspace_fragments.iter().map(|f| f.tokens).sum();
-        let mut out = String::new();
-        writeln!(out, "\n─── PROMPT ({} workspace tokens across {} fragments) [MODEL: {}] ───", fragment_tokens, req.workspace_fragments.len(), self.inner.model_name())?;
-        writeln!(out, "[system]\n{}", req.system)?;
-        writeln!(out, "[user]\n{}", req.user)?;
-        for frag in &req.workspace_fragments {
-            writeln!(out, "[fragment: {} | {} tokens]\n{}", frag.locator.source, frag.tokens, frag.content)?;
-        }
-        writeln!(out, "─────────────────────────")?;
-        writeln!(out, "Response: {}", res.as_ref().map(|r| r.answer.clone()).unwrap_or_else(|e| format!("Error: {}", e)))?;
-        writeln!(out, "─────────────────────────")?;
-
+        let out = render_prompt_dump(req, self.inner.model_name(), self.inner.provenance_format(), &res)?;
         let mut turn = self.turn.lock().unwrap();
         *turn += 1;
         let path = self.prompt_dir.join(format!("prompt-{}-turn-{}.txt", self.timestamp, *turn));
@@ -136,6 +126,45 @@ impl SavePromptAdapter {
         res
     }
 
+}
+
+/// Render the exact context a model receives for one turn, for prompt-dump
+/// tooling. The string mirrors what every adapter builds before its API call:
+/// the system text concatenated with the recalled workspace block formatted
+/// via the adapter's own `provenance_format` (`format_workspace` is the single
+/// renderer all adapters share), followed by the user message. Some chat
+/// adapters (e.g. Ollama for models whose template omits a system slot) fold
+/// the system text into the first user message — the content is identical, only
+/// the message boundary differs.
+fn render_prompt_dump(
+    req: &CompletionRequest,
+    model_name: &str,
+    format: ProvenanceFormat,
+    res: &CawResult<CompletionResponse>,
+) -> CawResult<String> {
+    let fragment_tokens: usize = req.workspace_fragments.iter().map(|f| f.tokens).sum();
+    let full_system = format!("{}{}", req.system, req.format_workspace(format));
+    let mut out = String::new();
+    writeln!(
+        out,
+        "\n─── PROMPT ({} workspace tokens across {} fragments) [MODEL: {} | provenance: {:?}] ───",
+        fragment_tokens,
+        req.workspace_fragments.len(),
+        model_name,
+        format,
+    )?;
+    writeln!(out, "[system message]\n{}", full_system)?;
+    writeln!(out, "\n[user message]\n{}", req.user)?;
+    writeln!(out, "─────────────────────────")?;
+    writeln!(
+        out,
+        "Response: {}",
+        res.as_ref()
+            .map(|r| r.answer.clone())
+            .unwrap_or_else(|e| format!("Error: {}", e))
+    )?;
+    writeln!(out, "─────────────────────────")?;
+    Ok(out)
 }
 
 /// Wraps any adapter and prints the contents of each CompletionRequest to
@@ -173,17 +202,7 @@ impl ShowPromptAdapter {
     }
 
     fn log_prompt(&self, req: &CompletionRequest, res: CawResult<CompletionResponse>) -> CawResult<CompletionResponse> {
-        let fragment_tokens: usize = req.workspace_fragments.iter().map(|f| f.tokens).sum();
-        let mut out = String::new();
-        writeln!(out, "\n─── PROMPT ({} workspace tokens across {} fragments) [MODEL: {}] ───", fragment_tokens, req.workspace_fragments.len(), self.inner.model_name())?;
-        writeln!(out, "[system]\n{}", req.system)?;
-        writeln!(out, "[user]\n{}", req.user)?;
-        for frag in &req.workspace_fragments {
-            writeln!(out, "[fragment: {} | {} tokens]\n{}", frag.locator.source, frag.tokens, frag.content)?;
-        }
-        writeln!(out, "─────────────────────────")?;
-        writeln!(out, "Response: {}", res.as_ref().map(|r| r.answer.clone()).unwrap_or_else(|e| format!("Error: {}", e)))?;
-        writeln!(out, "─────────────────────────")?;
+        let out = render_prompt_dump(req, self.inner.model_name(), self.inner.provenance_format(), &res)?;
         eprint!("{out}");
 
         if let Some(dir) = &self.prompt_dir {

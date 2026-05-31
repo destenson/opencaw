@@ -90,6 +90,14 @@ docs/skills/caw-dev/scripts/consolidation-cli.sh --aux-adapter claude-code-haiku
 
 It forces eviction with a small `--max-tokens` budget. The aux model (consolidation/summarization/curation) defaults to local Ollama (`--aux-adapter ollama --aux-model qwen3.5:9b`), so the whole engine runs locally with no API key. `--aux-adapter` takes the same selectors as `--adapter`: pass `--aux-adapter claude-code-haiku` to route aux through the installed `claude` CLI instead (still no API key, ~$0.01 per eviction). After the run it prints a proof summary computed from the verbose log: eviction count, consolidation notes persisted, and — only for claude-code aux — the claude-code call count and cost.
 
+### Dump exactly what the model sees
+
+To verify the workspace contents, add `--show-prompt` (prints to stderr) and/or `--save-prompt` (one `prompt-{timestamp}-turn-{N}.txt` per model call, beside the session files) to any `run-cli.sh`/`test-cli.sh`/`consolidation-cli.sh` invocation. These work with any adapter and dump the **exact context string** the model receives: the system message with the recalled workspace rendered in the adapter's own provenance format (`Bracketed` for ollama/groq/vllm/llama, `Xml` for anthropic/claude-code), followed by the user message. The recall loop makes several model calls per turn, so each turn produces several dumps — you can watch the workspace grow across the multi-pass loop.
+
+```bash
+docs/skills/caw-dev/scripts/run-cli.sh --dir crates --adapter ollama --model llama3.2:3b --max-tokens 1200 --show-prompt
+```
+
 ## Gotchas (read before improvising)
 
 - **GPU OOM is a device-pinning problem, not a memory-shortage problem.** The candle embedder hardcodes `cuda:0` and only falls back to CPU when CUDA is *absent* — never on an OOM. The scripts pin the freest GPU to dodge this. Do not run the raw `cargo` commands without that pin when a large model occupies GPU 0.
