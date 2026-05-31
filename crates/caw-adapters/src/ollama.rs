@@ -33,12 +33,15 @@ pub struct OllamaAdapter {
     /// models will echo as literal text. Enable only for models you've verified
     /// follow the protocol (e.g. via caw-bench-coop).
     cooperative_probes: bool,
-    /// Cached result of querying `/api/show` to check whether the model's
-    /// chat template handles a `system` role message. Mistral-family models
-    /// often omit `{{ .System }}` from their template; sending a system
-    /// message to such a model causes degenerate looping output. When false,
-    /// the system content is folded into the first user message instead.
-    system_supported: std::sync::OnceLock<bool>,
+    /// When true, the system content is concatenated into the first user
+    /// message instead of being sent as a separate `system`-role message.
+    /// Default false: send a real system message and let Ollama apply the
+    /// model's chat template. Enable this only for a specific model whose
+    /// template lacks a system slot (some Mistral-family templates omit
+    /// `{{ .System }}`, so a system message is dropped or — worse — triggers
+    /// degenerate looping). The correct alternative is to fix that model's
+    /// template; this flag is the escape hatch when you can't.
+    fold_system: bool,
 }
 
 impl std::fmt::Debug for OllamaAdapter {
@@ -64,8 +67,16 @@ impl OllamaAdapter {
             temperature: None,
             num_ctx: None,
             cooperative_probes: false,
-            system_supported: std::sync::OnceLock::new(),
+            fold_system: false,
         }
+    }
+
+    /// Concatenate the system content into the first user message instead of
+    /// sending a separate `system`-role message. Only needed for a model whose
+    /// chat template lacks a `{{ .System }}` slot; see the field docs.
+    pub fn with_fold_system(mut self, fold_system: bool) -> Self {
+        self.fold_system = fold_system;
+        self
     }
 
     /// Override the default sampling temperature. Pass 0.0 for deterministic
@@ -116,63 +127,24 @@ impl OllamaAdapter {
         Self::local("granite4:micro", runtime)
     }
 
-    /// Build the messages array, folding the system content into the first
-    /// user message when the model's template doesn't support a system role.
+    /// Build the messages array. By default a non-empty system goes in a real
+    /// `system`-role message; with `fold_system` it is concatenated into the
+    /// first user message instead (see the field docs).
     fn build_messages(&self, system: String, user: String) -> Vec<OllamaChatMessage> {
-        let supported = self.system_supported.get_or_init(|| {
-            self.runtime
-                .block_on(probe_system_support(&self.client, &self.base_url, &self.model))
-        });
-
-        if *supported && !system.is_empty() {
-            vec![
-                OllamaChatMessage { role: "system".to_string(), content: system },
-                OllamaChatMessage { role: "user".to_string(), content: user },
-            ]
-        } else if !system.is_empty() {
+        if system.is_empty() {
+            vec![OllamaChatMessage { role: "user".to_string(), content: user }]
+        } else if self.fold_system {
             vec![OllamaChatMessage {
                 role: "user".to_string(),
                 content: format!("{}\n\n{}", system, user),
             }]
         } else {
-            vec![OllamaChatMessage { role: "user".to_string(), content: user }]
+            vec![
+                OllamaChatMessage { role: "system".to_string(), content: system },
+                OllamaChatMessage { role: "user".to_string(), content: user },
+            ]
         }
     }
-}
-
-/// Query Ollama's `/api/show` endpoint and return whether the model's chat
-/// template includes a system-message placeholder (`{{ .System }}`). Mistral-
-/// family models frequently omit it; sending a separate system role message to
-/// such a model causes the tokenizer to produce degenerate looping output.
-/// Falls back to `true` (assume supported) on any network or parse error so
-/// that unexpected failures degrade gracefully rather than silently mangling
-/// every request.
-async fn probe_system_support(client: &Client, base_url: &str, model: &str) -> bool {
-    #[derive(serde::Deserialize)]
-    struct ShowResponse {
-        template: Option<String>,
-    }
-
-    let Ok(resp) = client
-        .post(format!("{}/api/show", base_url))
-        .json(&serde_json::json!({ "model": model }))
-        .send()
-        .await
-    else {
-        return true;
-    };
-
-    if !resp.status().is_success() {
-        return true;
-    }
-
-    let Ok(show) = resp.json::<ShowResponse>().await else {
-        return true;
-    };
-
-    show.template
-        .map(|t| t.contains(".System"))
-        .unwrap_or(true)
 }
 
 /// Uses Ollama's /api/chat endpoint with proper message roles

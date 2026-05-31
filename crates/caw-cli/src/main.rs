@@ -239,6 +239,13 @@ struct Cli {
     #[arg(long)]
     temperature: Option<f32>,
 
+    /// Ollama adapter only: concatenate the system prompt into the first user
+    /// message instead of sending a separate system-role message. Needed only
+    /// for a model whose chat template lacks a `{{ .System }}` slot (e.g. some
+    /// Mistral-family templates). Off by default — a real system message is sent.
+    #[arg(long, default_value_t = false)]
+    ollama_fold_system: bool,
+
     /// Number of model layers to offload to GPU. -1 = all layers (default).
     /// Pass a lower value if you need to split between GPU and CPU RAM.
     /// Llama adapter only.
@@ -467,6 +474,7 @@ fn main() -> Result<()> {
         cli.temperature,
         cli.n_gpu_layers,
         cli.max_new_tokens,
+        cli.ollama_fold_system,
     )?;
     let adapter: Arc<dyn ModelAdapter> = if cli.show_prompt {
         let mut show = caw_adapters::ShowPromptAdapter::new(raw_adapter, cli.save_prompt);
@@ -561,7 +569,7 @@ fn main() -> Result<()> {
 /// default. `Send + Sync` is required because ingestion summarizes in parallel
 /// (rayon); `build_completion_adapter` already guarantees it.
 fn build_aux_adapter(adapter: &str, model: &str) -> Result<Box<dyn ModelAdapter + Send + Sync>> {
-    build_completion_adapter(adapter, Some(model), None, None, None, None)
+    build_completion_adapter(adapter, Some(model), None, None, None, None, false)
 }
 
 fn build_completion_adapter(
@@ -571,6 +579,7 @@ fn build_completion_adapter(
     temperature: Option<f32>,
     n_gpu_layers: Option<i32>,
     max_new_tokens: Option<usize>,
+    fold_system: bool,
 ) -> Result<Box<dyn ModelAdapter + Send + Sync>> {
     let adapter: Box<dyn ModelAdapter + Send + Sync> = match adapter_name {
         "mock" => Box::new(MockAdapter::new("mock-local", true)),
@@ -617,7 +626,8 @@ fn build_completion_adapter(
             let adapter = match model.unwrap_or("qwen3.6:35b") {
                 "haiku" => caw_adapters::OllamaAdapter::llama3_2(rt),
                 m => caw_adapters::OllamaAdapter::local(m, rt),
-            };
+            }
+            .with_fold_system(fold_system);
             let adapter = if let Some(t) = temperature {
                 adapter.with_temperature(t)
             } else {
@@ -685,7 +695,7 @@ fn build_completion_adapter(
         other => {
             let rt = caw_adapters::create_runtime()?;
             let m = model.unwrap_or(other);
-            let adapter = caw_adapters::OllamaAdapter::local(m, rt);
+            let adapter = caw_adapters::OllamaAdapter::local(m, rt).with_fold_system(fold_system);
             let adapter = if let Some(t) = temperature {
                 adapter.with_temperature(t)
             } else {
@@ -704,7 +714,7 @@ fn build_intent_adapter(
     // Temperature 0 for deterministic JSON output — stochastic sampling at the
     // classifier's default (~0.8) produces formatting variations that cause
     // parse failures and degenerate detection false positives.
-    build_completion_adapter(adapter_name, Some(model), None, Some(0.0), None, None)
+    build_completion_adapter(adapter_name, Some(model), None, Some(0.0), None, None, false)
 }
 
 fn classify_query_intent(adapter: &dyn ModelAdapter, query: &str) -> Result<QueryIntent> {
