@@ -228,6 +228,15 @@ fn retrieve_fragments(state: &AppState, query: &str) -> Result<Vec<RecallFragmen
         index.search(&query_embedding, state.max_candidates)
     };
 
+    // Diagnostic: the full ranked candidate list with cosine scores, before
+    // the token-budget clamp below decides which survive into the workspace.
+    // Lets you see whether a relevant stub was ranked out vs. clamped out.
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        for (rank, (id, score)) in hits.iter().enumerate() {
+            debug!("candidate #{rank} score={score:.4} {}", id.0);
+        }
+    }
+
     let store = state
         .store
         .lock()
