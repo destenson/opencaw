@@ -19,9 +19,9 @@ use axum::{
 };
 use caw_core::{
     count_tokens_cl100k, CompletionRequest, EmbeddingProvider, Locator, ProvenanceFormat,
-    RecallFragment, StubStore, VectorIndex,
+    RecallFragment, StubId, StubStore, VectorIndex,
 };
-use caw_index::{CandleEmbeddingProvider, FlatVectorIndex, HnswVectorIndex, SqliteStubStore};
+use caw_index::{BM25Index, CandleEmbeddingProvider, FlatVectorIndex, HnswVectorIndex, SqliteStubStore};
 
 /// Which in-memory vector index backs the server's retrieval path.
 /// Chosen once at startup via `--retriever` and fixed for the life of
@@ -35,7 +35,22 @@ pub enum RetrieverKind {
     /// to avoid a first-query latency spike; use when the flat scan is
     /// too slow.
     Hnsw,
+    /// Flat cosine fused with a BM25 lexical index over `path + summary +
+    /// body`. Fixes the failure mode where a definitional chunk's one
+    /// relevant sentence is mean-pooled into the noise of a same-domain
+    /// corpus: the lexical half catches exact symbol/term matches the
+    /// embedding washes out. Pays a startup cost to read every body once
+    /// and build the posting lists.
+    Hybrid,
 }
+
+/// Reciprocal weighting for hybrid fusion, mirroring
+/// `caw_index::HybridRetriever::balanced`. Semantic and keyword scores
+/// are each min-max normalized within their own candidate set, then
+/// summed with these weights. Tuned by that retriever's defaults, not by
+/// this corpus.
+const HYBRID_SEMANTIC_WEIGHT: f32 = 0.6;
+const HYBRID_KEYWORD_WEIGHT: f32 = 0.4;
 use serde_json::Value;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -60,6 +75,11 @@ pub struct AppState {
     /// without leaking a generic parameter all the way through the
     /// handlers and router state.
     pub index: Mutex<Box<dyn VectorIndex + Send>>,
+    /// Present only under `RetrieverKind::Hybrid`: a BM25 lexical index
+    /// over every stub's `path + summary + body`. When set, retrieval
+    /// fuses its scores with the cosine candidates. `None` leaves the
+    /// pure-cosine path untouched.
+    pub bm25: Option<Mutex<BM25Index>>,
     /// Base URL of the upstream chat-completions server, e.g.
     /// `http://localhost:11434/v1` for Ollama. The `/chat/completions`
     /// suffix is appended by the handler.
@@ -109,8 +129,11 @@ pub fn build_state(
         index_path
     );
 
+    // The vector half is Flat for both Flat and Hybrid; Hnsw only for Hnsw.
     let index: Box<dyn VectorIndex + Send> = match retriever {
-        RetrieverKind::Flat => Box::new(FlatVectorIndex::from_points(all.clone())),
+        RetrieverKind::Flat | RetrieverKind::Hybrid => {
+            Box::new(FlatVectorIndex::from_points(all.clone()))
+        }
         RetrieverKind::Hnsw => {
             let mut hnsw = HnswVectorIndex::new();
             for (stub_id, embedding) in &all {
@@ -123,6 +146,41 @@ pub fn build_state(
             let _ = hnsw.search(&vec![0.0_f32; dim], 1);
             Box::new(hnsw)
         }
+    };
+
+    // Hybrid pays a one-time cost to read every body and build BM25 posting
+    // lists, indexed on the same `path + summary + body` text that
+    // `HybridRetriever::insert` uses so lexical scoring matches the library
+    // retriever. Bodies are read transiently and not retained here.
+    let bm25 = match retriever {
+        RetrieverKind::Hybrid => {
+            let mut bm25 = BM25Index::new();
+            let mut missing = 0usize;
+            for (stub_id, _emb) in &all {
+                let stub = match store.get_stub(stub_id) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        missing += 1;
+                        continue;
+                    }
+                };
+                let body = match store.get_content(stub_id) {
+                    Ok(c) => c,
+                    Err(_) => {
+                        missing += 1;
+                        continue;
+                    }
+                };
+                let text = format!("{} {} {}", stub.path, stub.summary, body);
+                bm25.add(stub_id.clone(), &text);
+            }
+            if missing > 0 {
+                warn!("BM25 build: {missing} stubs had no readable stub/body and were skipped");
+            }
+            info!("BM25 lexical index built: {} docs", bm25.len());
+            Some(Mutex::new(bm25))
+        }
+        RetrieverKind::Flat | RetrieverKind::Hnsw => None,
     };
 
     info!(
@@ -138,6 +196,7 @@ pub fn build_state(
         embedder: Mutex::new(embedder),
         store: Mutex::new(store),
         index: Mutex::new(index),
+        bm25,
         upstream_base,
         max_candidates,
         max_workspace_tokens,
@@ -220,15 +279,40 @@ fn retrieve_fragments(state: &AppState, query: &str) -> Result<Vec<RecallFragmen
         .next()
         .ok_or_else(|| anyhow::anyhow!("empty embedding batch"))?;
 
-    let hits = {
+    // Fetch a wider pool than we ultimately keep so the lexical half can
+    // pull in stubs the embedding ranks out entirely (the failure mode that
+    // motivated hybrid). Mirrors `HybridRetriever`'s `fetch_k = top_k * 3`.
+    let fetch_k = state
+        .max_candidates
+        .saturating_mul(3)
+        .max(state.max_candidates);
+
+    let semantic_hits = {
         let mut index = state
             .index
             .lock()
             .map_err(|_| anyhow::anyhow!("index mutex poisoned"))?;
-        index.search(&query_embedding, state.max_candidates)
+        index.search(&query_embedding, fetch_k)
     };
 
-    // Diagnostic: the full ranked candidate list with cosine scores, before
+    let hits: Vec<(StubId, f32)> = match &state.bm25 {
+        Some(bm25) => {
+            let bm25_hits = {
+                let bm = bm25
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("bm25 mutex poisoned"))?;
+                bm.search(query, fetch_k)
+            };
+            fuse_hybrid(&semantic_hits, &bm25_hits, state.max_candidates)
+        }
+        None => {
+            let mut h = semantic_hits;
+            h.truncate(state.max_candidates);
+            h
+        }
+    };
+
+    // Diagnostic: the full ranked candidate list with (fused) scores, before
     // the token-budget clamp below decides which survive into the workspace.
     // Lets you see whether a relevant stub was ranked out vs. clamped out.
     if tracing::enabled!(tracing::Level::DEBUG) {
@@ -275,6 +359,56 @@ fn retrieve_fragments(state: &AppState, query: &str) -> Result<Vec<RecallFragmen
         used_tokens += tokens;
     }
     Ok(fragments)
+}
+
+/// Fuse cosine and BM25 candidate lists into a single ranking. Each side's
+/// scores are min-max normalized within its own list (so the two unrelated
+/// score scales become comparable), weighted, and summed per stub. A stub
+/// present in only one list still scores on that side alone — this is what
+/// lets a strong lexical match enter even when the embedding ranked it out
+/// of the cosine pool entirely.
+///
+/// Identical normalization, weighting, and tie-break to
+/// `caw_index::HybridRetriever::search`, kept in sync deliberately: the
+/// proxy can't reuse that type directly (it owns its embedder/store/index
+/// behind separate mutexes), but the fusion math must match the library
+/// retriever so results are the same.
+fn fuse_hybrid(
+    semantic: &[(StubId, f32)],
+    bm25: &[(StubId, f32)],
+    top_k: usize,
+) -> Vec<(StubId, f32)> {
+    use std::collections::HashMap;
+    let mut combined: HashMap<StubId, f32> = HashMap::new();
+
+    if !semantic.is_empty() {
+        let max = semantic.iter().map(|(_, s)| *s).fold(0.0f32, f32::max);
+        let min = semantic.iter().map(|(_, s)| *s).fold(f32::MAX, f32::min);
+        let range = (max - min).max(f32::EPSILON);
+        for (id, score) in semantic {
+            let normalized = (score - min) / range;
+            *combined.entry(id.clone()).or_default() += normalized * HYBRID_SEMANTIC_WEIGHT;
+        }
+    }
+
+    if !bm25.is_empty() {
+        let max = bm25.iter().map(|(_, s)| *s).fold(0.0f32, f32::max);
+        let min = bm25.iter().map(|(_, s)| *s).fold(f32::MAX, f32::min);
+        let range = (max - min).max(f32::EPSILON);
+        for (id, score) in bm25 {
+            let normalized = (score - min) / range;
+            *combined.entry(id.clone()).or_default() += normalized * HYBRID_KEYWORD_WEIGHT;
+        }
+    }
+
+    let total_weight = HYBRID_SEMANTIC_WEIGHT + HYBRID_KEYWORD_WEIGHT;
+    let mut fused: Vec<(StubId, f32)> = combined
+        .into_iter()
+        .map(|(id, score)| (id, score / total_weight))
+        .collect();
+    fused.sort_by(|a, b| b.1.total_cmp(&a.1));
+    fused.truncate(top_k);
+    fused
 }
 
 /// Splice recalled fragments into the final user message's content. We
