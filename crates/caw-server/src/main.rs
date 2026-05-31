@@ -41,11 +41,13 @@ struct Cli {
     #[arg(long, default_value = "2000")]
     max_workspace_tokens: usize,
 
-    /// In-memory vector index to back retrieval. `flat` is a brute-force
-    /// cosine scan (no warmup, O(n·d) per query, correct for corpora
-    /// under ~1M stubs). `hnsw` is instant-distance with an eager build
-    /// at startup — use when the flat scan outgrows your latency budget.
-    #[arg(long, value_enum, default_value_t = RetrieverKind::Flat)]
+    /// Retrieval backend. `hybrid` (default) fuses BM25 lexical scores with
+    /// cosine, which surfaces definitional chunks that pure cosine buries on
+    /// a single-domain corpus; it pays a one-time startup cost to read every
+    /// body and build posting lists. `flat` is a brute-force cosine scan (no
+    /// warmup, O(n·d) per query). `hnsw` is instant-distance with an eager
+    /// build at startup — use when the flat scan outgrows your latency budget.
+    #[arg(long, value_enum, default_value_t = RetrieverKind::Hybrid)]
     retriever: RetrieverKind,
 }
 
