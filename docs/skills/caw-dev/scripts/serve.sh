@@ -2,12 +2,15 @@
 # Start the caw-server drop-in OpenAI proxy in the background, pinned to the
 # freest GPU, with debug logging so context injection is verifiable.
 #
-# Usage: serve.sh <index.sqlite> <corpus-root> [upstream] [port] [max-tokens]
+# Usage: serve.sh <index.sqlite> <corpus-root> [upstream] [port] [max-tokens] [retriever]
 #   index.sqlite   index built by build-index.sh
 #   corpus-root    MUST match the --corpus passed to build-index.sh
 #   upstream       OpenAI-compatible base URL (default Ollama: http://localhost:11434/v1)
-#   port           listen port (default 8080)
+#   port           listen port (default 8090)
 #   max-tokens     hard cap on injected context (default 2000)
+#   retriever      flat | hnsw | hybrid (default hybrid). hybrid fuses BM25
+#                  lexical scores with cosine and pays a one-time startup cost
+#                  to read every body; flat is pure cosine.
 #
 # Runtime state (pid + log) lives in $ROOT/target/caw-dev/ — the standard
 # Rust throwaway dir, already gitignored and cleaned by `cargo clean`, so no
@@ -21,8 +24,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INDEX="${1:?usage: serve.sh <index.sqlite> <corpus-root> [upstream] [port] [max-tokens]}"
 CORPUS_ROOT="${2:?usage: serve.sh <index.sqlite> <corpus-root> [upstream] [port] [max-tokens]}"
 UPSTREAM="${3:-http://localhost:11434/v1}"
-PORT="${4:-8080}"
+PORT="${4:-8090}"
 MAX_TOKENS="${5:-2000}"
+RETRIEVER="${6:-hybrid}"
 
 STATE="$ROOT/target/caw-dev"
 mkdir -p "$STATE"
@@ -35,7 +39,7 @@ if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
 fi
 
 GPU="$(bash "$SCRIPT_DIR/pick-gpu.sh")"
-echo "serve: GPU='${GPU:-cpu}' index='$INDEX' corpus-root='$CORPUS_ROOT' upstream='$UPSTREAM' port=$PORT" >&2
+echo "serve: GPU='${GPU:-cpu}' index='$INDEX' corpus-root='$CORPUS_ROOT' upstream='$UPSTREAM' port=$PORT retriever='$RETRIEVER'" >&2
 
 cd "$ROOT"
 RUST_LOG=caw_server=debug,info CUDA_VISIBLE_DEVICES="$GPU" \
@@ -45,6 +49,7 @@ RUST_LOG=caw_server=debug,info CUDA_VISIBLE_DEVICES="$GPU" \
     --upstream "$UPSTREAM" \
     --port "$PORT" \
     --max-workspace-tokens "$MAX_TOKENS" \
+    --retriever "$RETRIEVER" \
   >"$LOG" 2>&1 &
 echo $! >"$PIDFILE"
 

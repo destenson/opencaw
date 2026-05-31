@@ -29,10 +29,12 @@ All scripts live in `scripts/` and are self-locating (they find the repo root vi
 
    ```bash
    docs/skills/caw-dev/scripts/serve.sh target/caw-dev/code-index.sqlite crates
-   #                                     <index>                                <corpus-root> [upstream] [port] [max-tokens]
+   #                                     <index>                         <corpus-root> [upstream] [port] [max-tokens] [retriever]
    ```
 
-   Defaults: upstream `http://localhost:11434/v1` (Ollama), port `8080`, max injected tokens `2000`. The script backgrounds the server, waits for readiness, and prints the log path. Startup includes a compile + candle init + index load, so allow up to ~90s.
+   Defaults: upstream `http://localhost:11434/v1` (Ollama), port `8090`, max injected tokens `2000`, retriever `hybrid`. The script backgrounds the server, waits for readiness, and prints the log path. Startup includes a compile + candle init + index load (hybrid also reads every body once to build BM25 posting lists), so allow up to ~90s.
+
+   The retriever defaults to `hybrid` (BM25 lexical fused with cosine) because pure cosine buries definitional chunks on a single-domain corpus — a query paraphrasing a struct's doc comment can rank that struct at the median of the score band. Pass `flat` as the 6th arg for pure cosine, or `hnsw` for the ANN index. Every request logs the full ranked candidate list with scores at DEBUG (`candidate #N score=… path`), so you can see whether a relevant stub was ranked out vs. clamped out by the token budget.
 
 3. **Smoke test** that injection actually happens (not just that the model answered):
 
@@ -54,10 +56,10 @@ All scripts live in `scripts/` and are self-locating (they find the repo root vi
 5. **Stop** when done:
 
    ```bash
-   docs/skills/caw-dev/scripts/stop.sh   # [port], default 8080
+   docs/skills/caw-dev/scripts/stop.sh   # [port], default 8090
    ```
 
-To use the proxy from a real tool: set the client's OpenAI base URL to `http://localhost:8080/v1` and use any model name Ollama has (`ollama list`).
+To use the proxy from a real tool: set the client's OpenAI base URL to `http://localhost:8090/v1` and use any model name Ollama has (`ollama list`).
 
 ## Workflow: run the recall engine (CLI)
 
