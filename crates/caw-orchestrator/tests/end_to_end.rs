@@ -13,7 +13,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use caw_adapters::MockAdapter;
 use caw_core::provenance::InMemoryProvenanceStore;
-use caw_core::{CawResult, ContentKind, EmbeddingProvider, RecallThresholds};
+use caw_core::{
+    CawError, CawResult, CompletionRequest, CompletionResponse, ContentKind, EmbeddingProvider,
+    ModelAdapter, ModelCapabilities, RecallThresholds,
+};
 use caw_index::{HnswVectorIndex, SemanticRetriever, SqliteStubStore};
 use caw_ingest::{IngestionPipeline, SourceDocument};
 use caw_orchestrator::dynamic::{DynamicRecallConfig, DynamicRecallOrchestrator};
@@ -206,15 +209,13 @@ fn recall_loop_admits_fragment_and_tags_provenance() {
     let user_query = "how does session token validation work in the authentication middleware";
     let response = orchestrator.run_turn("", user_query, &[], None).expect("run_turn");
 
-    // Verify admission and provenance through the orchestrator's own state.
-    //
-    // The answer string is NOT a reliable witness of admission: run_turn strips
-    // `[recalled from …]` blocks from model output (so models can't smuggle
-    // fabricated recall markers into their answers), and MockAdapter echoes the
-    // injected workspace verbatim — so the provenance markers it parrots are
-    // stripped before run_turn returns. The source of truth for what was admitted
-    // is `orchestrator.loaded`, where each fragment carries its provenance locator
-    // (the same locator format_workspace renders as `[recalled from source:locator]`).
+    // Verify admission and provenance through the orchestrator's own state, not
+    // the answer string. MockAdapter is a cooperative model: it acknowledges the
+    // recalled context but does not reproduce the `[recalled from …]` injection
+    // scaffold (a model that does is treated as degenerate). So the answer is not
+    // a witness of what was admitted. The source of truth is `orchestrator.loaded`,
+    // where each fragment carries its provenance locator — the same locator
+    // format_workspace renders as `[recalled from source:locator]`.
     assert!(
         !orchestrator.loaded.is_empty(),
         "a fragment should have been admitted for an auth-vocabulary query",
@@ -251,5 +252,81 @@ fn recall_loop_admits_fragment_and_tags_provenance() {
         orchestrator.embedder.calls(),
         0,
         "recall-path embedder must not run with thinking-trace + probe recall disabled",
+    );
+}
+
+/// A model that reproduces the `[recalled from …]` injection scaffold in its
+/// answer is degenerate (the scaffold is the injector's format, never the
+/// model's own prose). The orchestrator must detect it, retry up to
+/// `max_degenerate_retries` more times, and — when it persists — flag the turn
+/// degenerate so the failure is surfaced, NOT silently strip the scaffold and
+/// return a hollow "clean" answer.
+#[test]
+fn degenerate_scaffold_is_retried_then_flagged() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct ScaffoldEchoAdapter {
+        calls: AtomicUsize,
+    }
+    impl ModelAdapter for ScaffoldEchoAdapter {
+        fn model_name(&self) -> &str {
+            "scaffold-echo"
+        }
+        fn capabilities(&self) -> ModelCapabilities {
+            ModelCapabilities::default()
+        }
+        fn complete(&self, _req: CompletionRequest) -> CawResult<CompletionResponse> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(CompletionResponse {
+                answer: "Here is the answer.\n\
+                    [recalled from fake/path.rs:1-5]\nfn x() {}\n[end recall]"
+                    .to_string(),
+                thinking: None,
+                usage: None,
+            })
+        }
+    }
+
+    let dim = 64;
+    let store = SqliteStubStore::in_memory(dim).expect("store");
+    let retriever = SemanticRetriever::new(HashEmbedder::new(dim), store, HnswVectorIndex::new());
+
+    let config = DynamicRecallConfig {
+        max_candidates: 4,
+        max_recall_iterations: 1,
+        max_degenerate_retries: 2,
+        enable_thinking_trace_recall: false,
+        enable_probe_recall: false,
+        enable_line_reference_recall: false,
+        ..Default::default()
+    };
+
+    let adapter = ScaffoldEchoAdapter {
+        calls: AtomicUsize::new(0),
+    };
+    let mut orchestrator: DynamicRecallOrchestrator<_, _, _, _, _, SqliteStubStore> =
+        DynamicRecallOrchestrator::new(
+            retriever,
+            HashEmbedder::new(dim),
+            HnswVectorIndex::new(),
+            InMemoryProvenanceStore::default(),
+            adapter,
+            config,
+        );
+
+    let result = orchestrator.run_turn("", "any question", &[], None);
+
+    // The turn is flagged degenerate, not scrubbed into a clean-looking answer.
+    assert!(
+        matches!(result, Err(CawError::DegenerateOutput { .. })),
+        "scaffold-reproducing model should be flagged degenerate; got: {:?}",
+        result.map(|r| r.answer),
+    );
+    // Exactly max_degenerate_retries + 1 attempts: the initial completion plus
+    // two retries before giving up.
+    assert_eq!(
+        orchestrator.adapter.calls.load(Ordering::Relaxed),
+        3,
+        "degenerate completion should be retried max_degenerate_retries times",
     );
 }

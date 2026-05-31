@@ -1,5 +1,5 @@
 use caw_core::{
-    CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities, ProvenanceFormat
+    CawError, CawResult, CompletionRequest, CompletionResponse, ModelAdapter, ModelCapabilities
 };
 use std::fmt::Write as FmtWrite;
 use std::path::PathBuf;
@@ -65,12 +65,24 @@ impl ModelAdapter for MockAdapter {
     }
 
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
-        let workspace_context = req.format_workspace(ProvenanceFormat::Bracketed);
+        // A cooperative model acknowledges the recalled context without
+        // reproducing the `[recalled from …]` injection scaffold in its answer.
+        // Reproducing that scaffold is exactly the degenerate behavior the
+        // orchestrator detects, so the mock must not emit it — otherwise every
+        // mock turn with injected fragments would be flagged degenerate.
+        let grounding = if req.workspace_fragments.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " (grounded in {} recalled fragment(s))",
+                req.workspace_fragments.len()
+            )
+        };
 
         Ok(CompletionResponse {
             answer: format!(
                 "[{}] synthesized answer for: {}{}",
-                self.name, req.user, workspace_context,
+                self.name, req.user, grounding,
             ),
             thinking: None,
             usage: None,

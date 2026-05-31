@@ -14,6 +14,8 @@ use std::path::Path;
 use std::time::Instant;
 use tracing::{debug, info, trace, warn};
 
+// TODO: this module is getting pretty large. To keep it maintainable, we should consider splitting it into multiple files.
+
 /// Controls whether the orchestrator injects probe/annotation cooperation
 /// instructions into the system prompt.
 ///
@@ -118,6 +120,13 @@ pub struct DynamicRecallConfig {
     /// density). 0.25 allows up to 3 000 tokens of history in the default
     /// 12 000-token budget while reserving 9 000 for workspace stubs.
     pub session_history_budget_fraction: f32,
+    /// How many additional times to re-issue a completion when the response is
+    /// degenerate — the adapter raised `DegenerateOutput` (loops, leaked chat
+    /// template tokens) or the answer reproduced the `[recalled from …]`
+    /// injection scaffold. `2` means up to three total attempts. After the
+    /// budget is exhausted the turn is recorded as degenerate rather than
+    /// silently cleaned up.
+    pub max_degenerate_retries: usize,
 }
 
 impl Default for DynamicRecallConfig {
@@ -138,6 +147,7 @@ impl Default for DynamicRecallConfig {
             passive_injection_interval: 32,
             passive_injection_window_size: 192,
             session_history_budget_fraction: 0.25,
+            max_degenerate_retries: 2,
         }
     }
 }
@@ -551,26 +561,11 @@ where
         // logging: record the best response we have, then propagate the error.
         let mut degenerate_err: Option<CawError> = None;
 
-        let initial_result = if caps.supports_passive_injection {
-            self.run_with_passive_injection(initial_req)
-        } else {
-            self.adapter.complete(initial_req)
-        };
-        let mut last_response = match initial_result {
-            Ok(r) => r,
-            Err(e) => {
-                if let CawError::DegenerateOutput { ref sample, .. } = e {
-                    warn!(turn = self.session_turn + 1, "degenerate output on initial completion — turn will be recorded before propagating");
-                    // Preserve the valid prefix rather than discarding it: the sample
-                    // is the first ~120 chars of the response before the loop started.
-                    let answer = sample.clone();
-                    degenerate_err = Some(e);
-                    CompletionResponse { answer, thinking: None, usage: None }
-                } else {
-                    return Err(e);
-                }
-            }
-        };
+        let (mut last_response, deg) =
+            self.complete_with_retry(&initial_req, caps.supports_passive_injection)?;
+        if deg.is_some() {
+            degenerate_err = deg;
+        }
 
         // When the candidate list was shown, check if the model's response
         // mentions any candidate file paths explicitly. If so, load those files
@@ -598,19 +593,17 @@ where
                         "loading files mentioned in response to candidate list"
                     );
                     self.load_fragments(mentioned)?;
-                    let result = self.adapter.complete(CompletionRequest {
+                    let req = CompletionRequest {
                         system: system_prompt.clone(),
                         user: user.to_string(),
                         workspace_fragments: self.loaded.clone(),
                         workspace_guidance: guidance.to_vec(),
-                    });
-                    match result {
-                        Ok(r) => last_response = r,
-                        Err(e) if matches!(e, CawError::DegenerateOutput { .. }) => {
-                            warn!(turn = self.session_turn + 1, "degenerate output on candidate re-complete");
-                            degenerate_err = Some(e);
-                        }
-                        Err(e) => return Err(e),
+                    };
+                    let (resp, deg) = self.complete_with_retry(&req, false)?;
+                    if deg.is_some() {
+                        degenerate_err = deg;
+                    } else {
+                        last_response = resp;
                     }
                 }
             }
@@ -689,37 +682,33 @@ where
                     format!("{}\n\n{}", system_prompt, warnings)
                 };
 
-                let result = self.adapter.complete(CompletionRequest {
+                let req = CompletionRequest {
                     system: enriched_system,
                     user: user.to_string(),
                     workspace_fragments: self.loaded.clone(),
                     workspace_guidance: guidance.to_vec(),
-                });
-                match result {
-                    Ok(r) => {
-                        let new_score = answer_quality_score(&r.answer);
-                        let best_score = answer_quality_score(&best_response.answer);
-                        if new_score >= best_score {
-                            best_response = r.clone();
-                        } else {
-                            warn!(
-                                iteration = i + 1,
-                                new_score,
-                                best_score,
-                                "refinement produced lower-quality answer — keeping prior best"
-                            );
-                        }
-                        // Always advance last_response so the next iteration
-                        // uses the most recent output for context extraction.
-                        last_response = r;
-                    }
-                    Err(e) if matches!(e, CawError::DegenerateOutput { .. }) => {
-                        warn!(turn = self.session_turn + 1, iteration = i + 1, "degenerate output during refinement — stopping iterations");
-                        degenerate_err = Some(e);
-                        break;
-                    }
-                    Err(e) => return Err(e),
+                };
+                let (resp, deg) = self.complete_with_retry(&req, false)?;
+                if let Some(e) = deg {
+                    warn!(turn = self.session_turn + 1, iteration = i + 1, "degenerate output during refinement — stopping iterations");
+                    degenerate_err = Some(e);
+                    break;
                 }
+                let new_score = answer_quality_score(&resp.answer);
+                let best_score = answer_quality_score(&best_response.answer);
+                if new_score >= best_score {
+                    best_response = resp.clone();
+                } else {
+                    warn!(
+                        iteration = i + 1,
+                        new_score,
+                        best_score,
+                        "refinement produced lower-quality answer — keeping prior best"
+                    );
+                }
+                // Always advance last_response so the next iteration uses the
+                // most recent output for context extraction.
+                last_response = resp;
             }
         }
         // Use the best answer seen across all refinement iterations, not
@@ -734,14 +723,11 @@ where
             workspace_tokens = self.loaded.iter().map(|f| f.tokens).sum::<usize>(),
             "run_turn complete"
         );
-        let fake_recall_count = count_fake_recall_markers(&last_response.answer);
-        if fake_recall_count > 0 {
-            warn!(
-                count = fake_recall_count,
-                turn = self.session_turn,
-                "model generated fake [recalled from] blocks — stripped from answer",
-            );
-        }
+        // Remove only the cooperation-protocol plumbing (notes/probes/think/
+        // template tokens). Fabricated [recalled from …] scaffold is NOT stripped
+        // here — it was detected and retried in complete_with_retry, and if it
+        // persisted the turn is already flagged degenerate above, so leaving it
+        // in the answer surfaces the failure instead of hiding it.
         last_response.answer = strip_markers(&last_response.answer);
 
         // Record completed turn to session history. Take the SessionFile out of
@@ -835,6 +821,92 @@ where
     /// The `retriever`, `loaded_ids`, and `adapter` fields are disjoint struct
     /// members, so Rust NLL allows the split borrow across the closure and the
     /// method call simultaneously.
+    /// Run one completion with capped retries on degenerate output.
+    ///
+    /// A response is degenerate when the adapter raises `DegenerateOutput`
+    /// (generation loops, leaked chat-template tokens) or when the answer
+    /// reproduces the `[recalled from …]` injection scaffold — a model never
+    /// legitimately emits that format, so its presence means the model
+    /// regurgitated the scaffold instead of answering. Each degenerate attempt
+    /// is logged loudly and the same request is re-issued up to
+    /// `max_degenerate_retries` more times.
+    ///
+    /// Returns `Ok((response, None))` for a clean answer; `Ok((response,
+    /// Some(err)))` when the response is still degenerate after exhausting
+    /// retries — the answer is returned unmodified so the caller records the
+    /// turn honestly rather than scrubbing it; or `Err(e)` for a hard,
+    /// non-degenerate adapter error (not worth retrying).
+    fn complete_with_retry(
+        &mut self,
+        req: &CompletionRequest,
+        passive: bool,
+    ) -> CawResult<(CompletionResponse, Option<CawError>)> {
+        let attempts = self.config.max_degenerate_retries + 1;
+        let model = self.adapter.model_name().to_string();
+        let turn = self.session_turn + 1;
+        let mut last: Option<CompletionResponse> = None;
+
+        for attempt in 1..=attempts {
+            let result = if passive {
+                self.run_with_passive_injection(req.clone())
+            } else {
+                self.adapter.complete(req.clone())
+            };
+            match result {
+                Ok(resp) => {
+                    let fake = count_fake_recall_markers(&resp.answer);
+                    if fake == 0 {
+                        return Ok((resp, None));
+                    }
+                    warn!(
+                        attempt,
+                        attempts,
+                        fake_blocks = fake,
+                        model = %model,
+                        turn,
+                        "model reproduced the [recalled from …] injection scaffold instead of answering — retrying"
+                    );
+                    last = Some(resp);
+                }
+                Err(CawError::DegenerateOutput { model: m, sample }) => {
+                    warn!(
+                        attempt,
+                        attempts,
+                        model = %m,
+                        turn,
+                        sample = %sample,
+                        "degenerate output from adapter — retrying"
+                    );
+                    last = Some(CompletionResponse {
+                        answer: sample,
+                        thinking: None,
+                        usage: None,
+                    });
+                }
+                // A hard, non-degenerate error (network, parse, etc.) won't be
+                // fixed by retrying the same request — surface it immediately.
+                Err(e) => return Err(e),
+            }
+        }
+
+        // Retries exhausted and the answer is still degenerate. Return it
+        // unmodified alongside a DegenerateOutput so the caller records the turn
+        // as a failure instead of hiding it.
+        let response = last.unwrap_or(CompletionResponse {
+            answer: String::new(),
+            thinking: None,
+            usage: None,
+        });
+        let sample: String = response.answer.chars().take(120).collect();
+        warn!(
+            model = %model,
+            turn,
+            attempts,
+            "degenerate output persisted after all attempts — recording turn as degenerate"
+        );
+        Ok((response, Some(CawError::DegenerateOutput { model, sample })))
+    }
+
     fn run_with_passive_injection(
         &mut self,
         req: CompletionRequest,

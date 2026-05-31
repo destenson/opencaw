@@ -100,11 +100,18 @@ pub fn count_fake_recall_markers(text: &str) -> usize {
     FAKE_RECALL_PATTERN.find_iter(text).count()
 }
 
-/// Strip cooperation-protocol markers from the final answer before returning
-/// it to the caller. Note content is kept inline (small models often wrap their
-/// entire answer in a note tag). Probe markers, thinking traces, leaked
-/// chat-template tokens, and model-generated fake `[recalled from]` blocks ***SHOULD NOT BE***
-/// discarded — they indicated BAD MODEL BEHAVIOR THAT MUST BE DEALT WITH.
+/// Strip cooperation-protocol plumbing from the final answer before returning
+/// it to the caller. This removes only the orchestrator's own control markers,
+/// which are signals the orchestrator has already consumed and which must not
+/// surface as prose: annotation `<note>` tags (unwrapped to their inner text,
+/// since small models often wrap their whole answer in one), `<probe>` markers,
+/// `<think>` reasoning traces, and leaked chat-template sentinel tokens.
+///
+/// Fabricated `[recalled from …]` scaffold is deliberately NOT stripped here. A
+/// model reproducing the injection format is degenerate output, not answer text;
+/// it is detected upstream via `count_fake_recall_markers` and routed through the
+/// degenerate retry/record path so the misbehavior is surfaced to the developer
+/// rather than silently scrubbed.
 pub fn strip_markers(text: &str) -> String {
     let text = ANNOTATION_PATTERN.replace_all(text, "$2");
     let text = PROBE_PATTERN.replace_all(&text, "");
@@ -115,10 +122,6 @@ pub fn strip_markers(text: &str) -> String {
         Some(pos) => std::borrow::Cow::Owned(text[..pos].to_string()),
         None => text,
     };
-    // Strip model-generated fake recall blocks. The model sometimes reproduces
-    // the injection format verbatim as a generation scaffold — these blocks are
-    // never valid answer text and corrupt logs if left in.
-    let text = FAKE_RECALL_PATTERN.replace_all(&text, "");
     // Chat-template sentinel tokens that leak when stop sequences aren't
     // configured correctly are an unambiguous sign of a degenerate response.
     let text = text.replace("<|im_end|>", "").replace("<|im_start|>", "");
