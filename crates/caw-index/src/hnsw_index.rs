@@ -4,19 +4,29 @@ use instant_distance::{Builder, HnswMap, Search};
 #[derive(Clone)]
 struct EmbeddingPoint(Vec<f32>);
 
+/// L2-normalize a vector so cosine similarity reduces to a dot product. A
+/// zero vector is left as-is (its dot with anything is 0 → max distance).
+fn normalize(v: &[f32]) -> Vec<f32> {
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm == 0.0 {
+        return v.to_vec();
+    }
+    v.iter().map(|x| x / norm).collect()
+}
+
 impl instant_distance::Point for EmbeddingPoint {
     fn distance(&self, other: &Self) -> f32 {
-        // instant-distance expects distance (lower = closer).
-        // Cosine distance = 1 - cosine_similarity
-        let dot: f32 = self.0.iter().zip(other.0.iter()).map(|(a, b)| a * b).sum();
-        let norm_a: f32 = self.0.iter().map(|x| x * x).sum::<f32>().sqrt();
-        let norm_b: f32 = other.0.iter().map(|x| x * x).sum::<f32>().sqrt();
-
-        if norm_a == 0.0 || norm_b == 0.0 {
-            return 1.0;
-        }
-
-        1.0 - (dot / (norm_a * norm_b))
+        // Points are stored L2-normalized (see `normalize`), so cosine
+        // distance is just `1 - dot`. instant-distance calls this O(n·log n)
+        // times per build; recomputing both norms + two sqrt per call here
+        // (the previous implementation) made a 750-point rebuild take ~17s.
+        let dot: f32 = self
+            .0
+            .iter()
+            .zip(other.0.iter())
+            .map(|(a, b)| a * b)
+            .sum();
+        1.0 - dot
     }
 }
 
@@ -47,6 +57,15 @@ impl HnswVectorIndex {
         }
     }
 
+    /// Build the graph now if stale, so the cost lands here (e.g. right after
+    /// ingest) instead of lazily on the first `search` — which otherwise makes
+    /// the first query of a turn pay the full build. No-op if already current.
+    pub fn ensure_built(&mut self) {
+        if self.dirty || self.index.is_none() {
+            self.rebuild();
+        }
+    }
+
     fn rebuild(&mut self) {
         if self.points.is_empty() {
             self.index = None;
@@ -62,7 +81,14 @@ impl HnswVectorIndex {
 
         let ids: Vec<StubId> = self.points.iter().map(|(id, _)| id.clone()).collect();
 
+        let t = std::time::Instant::now();
+        let n = embeddings.len();
         let map = Builder::default().seed(42).build(embeddings, ids);
+        tracing::debug!(
+            points = n,
+            elapsed_s = t.elapsed().as_secs_f64(),
+            "HnswVectorIndex rebuilt"
+        );
 
         self.index = Some(map);
         self.dirty = false;
@@ -77,7 +103,8 @@ impl Default for HnswVectorIndex {
 
 impl VectorIndex for HnswVectorIndex {
     fn add(&mut self, id: StubId, embedding: Vec<f32>) {
-        self.points.push((id, embedding));
+        // Store normalized so the build-time distance fn is a bare dot product.
+        self.points.push((id, normalize(&embedding)));
         self.dirty = true;
     }
 
@@ -91,7 +118,9 @@ impl VectorIndex for HnswVectorIndex {
             None => return Vec::new(),
         };
 
-        let query = EmbeddingPoint(query_embedding.to_vec());
+        // Query must be normalized to match the stored points so the dot
+        // product equals cosine similarity.
+        let query = EmbeddingPoint(normalize(query_embedding));
 
         index
             .search(&query, &mut self.search_buf)

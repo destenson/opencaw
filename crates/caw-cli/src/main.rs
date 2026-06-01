@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use caw_adapters::MockAdapter;
 use caw_core::{
-    CompletionRequest, EmbeddingProvider, ModelAdapter, QueryIntent, StubStore, VectorIndex,
+    CompletionRequest, EmbeddingProvider, ModelAdapter, QueryIntent, Stub, StubStore, VectorIndex,
     WhitespaceTokenizer, Tokenizer, provenance::InMemoryProvenanceStore,
 };
 use caw_curation::{
@@ -9,7 +9,7 @@ use caw_curation::{
     ExtractiveToolOutputCompressor, HistorySummarizerConfig, LlmHistorySummarizer,
     LlmToolOutputCompressor, ToolOutputCompressorConfig, TurnMetadata, TurnRole,
 };
-use caw_index::{FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
+use caw_index::{CandleEmbeddingProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
 use caw_ingest::summarizer::LlmSummarizer;
 use caw_ingest::{DocumentIdSet, IngestionPipeline};
 use caw_orchestrator::consolidation::LlmConsolidation;
@@ -21,11 +21,11 @@ use std::sync::{Arc, Mutex};
 use tracing::debug;
 
 /// Concrete orchestrator type used by the CLI. The retriever and the
-/// trace embedder are the same `LazyFastEmbedProvider` type so they can
-/// share a single underlying model (see `LazyFastEmbedProvider`).
+/// trace embedder are the same `LazyCandleEmbedProvider` type so they can
+/// share a single underlying model (see `LazyCandleEmbedProvider`).
 type CliOrchestrator = DynamicRecallOrchestrator<
-    SemanticRetriever<LazyFastEmbedProvider, SqliteStubStore, HnswVectorIndex>,
-    LazyFastEmbedProvider,
+    SemanticRetriever<LazyCandleEmbedProvider, SqliteStubStore, HnswVectorIndex>,
+    LazyCandleEmbedProvider,
     HnswVectorIndex,
     InMemoryProvenanceStore,
     Arc<dyn ModelAdapter>,
@@ -59,22 +59,29 @@ fn default_cache_dir(corpus: &std::path::Path) -> PathBuf {
     base.join("caw").join(format!("{:016x}", hasher.finish()))
 }
 
-/// Shared, lazily-loaded BGE-small embedder. Two properties matter here:
+/// Shared, lazily-loaded BGE-small embedder backed by candle. Two properties
+/// matter here:
 ///
-/// - **Lazy**: the ONNX model is loaded only on the first embed call, so a
-///   warm start (everything already cached, no new files to embed and no
-///   query yet) never pays the load cost.
+/// - **Lazy**: the model is loaded only on the first embed call, so a warm
+///   start (everything already cached, no new files to embed and no query
+///   yet) never pays the load cost.
 /// - **Shared**: `Clone` hands out additional handles to the *same*
-///   `FastEmbedProvider` behind an `Arc<Mutex<…>>`. The CLI needs the
+///   `CandleEmbeddingProvider` behind an `Arc<Mutex<…>>`. The CLI needs the
 ///   embedder in two places — the retriever (document/query embedding) and
 ///   the orchestrator's trace embedder — and both are the same model, so
 ///   cloning a shared handle loads BGE-small once instead of twice.
+///
+/// candle (not fastembed/onnx) because onnxruntime's prebuilt CUDA provider
+/// silently falls back to CPU on this hardware (cuDNN/CUDA version mismatch),
+/// whereas candle JITs its own kernels and runs on GPU. Device selection is
+/// candle's `EmbedDevice::Auto`: honors `CAW_EMBED_DEVICE`, else CUDA:0, else
+/// CPU when CUDA is absent.
 #[derive(Clone)]
-struct LazyFastEmbedProvider {
-    inner: Arc<Mutex<Option<FastEmbedProvider>>>,
+struct LazyCandleEmbedProvider {
+    inner: Arc<Mutex<Option<CandleEmbeddingProvider>>>,
 }
 
-impl LazyFastEmbedProvider {
+impl LazyCandleEmbedProvider {
     fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(None)),
@@ -86,18 +93,52 @@ impl LazyFastEmbedProvider {
     /// clone drives the same model and the load happens at most once.
     fn with_loaded<T>(
         &self,
-        f: impl FnOnce(&mut FastEmbedProvider) -> caw_core::CawResult<T>,
+        f: impl FnOnce(&mut CandleEmbeddingProvider) -> caw_core::CawResult<T>,
     ) -> caw_core::CawResult<T> {
         let mut guard = self.inner.lock().expect("embedder mutex poisoned");
         if guard.is_none() {
             eprintln!("Loading embedding model...");
-            *guard = Some(FastEmbedProvider::bge_small()?);
+            *guard = Some(CandleEmbeddingProvider::bge_small()?);
         }
         f(guard.as_mut().unwrap())
     }
 }
 
-impl EmbeddingProvider for LazyFastEmbedProvider {
+/// Embed a batch of pending stubs and insert them atomically, draining the
+/// buffer. No-op on an empty buffer. Kept as a free function (not a closure)
+/// so it can borrow `embedder` and `store` mutably at the two call sites
+/// (batch-full mid-loop and the final remainder) without lifetime gymnastics.
+fn embed_and_insert_batch(
+    embedder: &mut LazyCandleEmbedProvider,
+    store: &mut SqliteStubStore,
+    pending: &mut Vec<(Stub, String)>,
+) -> anyhow::Result<()> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let texts: Vec<&str> = pending.iter().map(|(_, t)| t.as_str()).collect();
+    let embeddings = embedder
+        .embed_document(texts)
+        .context("Failed to generate embeddings for batch")?;
+    if embeddings.len() != pending.len() {
+        anyhow::bail!(
+            "embedder returned {} embeddings for {} inputs",
+            embeddings.len(),
+            pending.len()
+        );
+    }
+    let items: Vec<(Stub, Vec<f32>)> = pending
+        .drain(..)
+        .zip(embeddings)
+        .map(|((stub, _text), emb)| (stub, emb))
+        .collect();
+    store
+        .insert_batch(items)
+        .context("Failed to insert embedding batch into stub store")?;
+    Ok(())
+}
+
+impl EmbeddingProvider for LazyCandleEmbedProvider {
     fn embed(&mut self, texts: Vec<&str>) -> caw_core::CawResult<Vec<Vec<f32>>> {
         self.with_loaded(|e| e.embed(texts))
     }
@@ -111,7 +152,7 @@ impl EmbeddingProvider for LazyFastEmbedProvider {
         384 // BGE-small-en-v1.5 is always 384-dimensional
     }
     fn provider_name(&self) -> &str {
-        "fastembed-bge-small"
+        "candle-bge-small"
     }
 }
 
@@ -270,6 +311,13 @@ struct Cli {
     /// generation. Works with any adapter.
     #[arg(long, default_value_t = false)]
     save_prompt: bool,
+
+    /// Print a wall-clock breakdown of the major workflow phases (ingest,
+    /// embedding, index build, and each query turn) to stderr. Useful for
+    /// finding where a slow run spends its time without enabling full debug
+    /// logging.
+    #[arg(long, default_value_t = false)]
+    timing: bool,
 }
 
 fn default_aux_model() -> String {
@@ -310,7 +358,7 @@ fn main() -> Result<()> {
 
     // Shared, lazy embedder: loads BGE-small at most once and is cloned into
     // both the retriever and the orchestrator's trace embedder below.
-    let mut embedder = LazyFastEmbedProvider::new();
+    let mut embedder = LazyCandleEmbedProvider::new();
     let dimension = embedder.dimension();
 
     // The index and session history default to a per-corpus dir under the user
@@ -370,9 +418,17 @@ fn main() -> Result<()> {
         .into_iter()
         .collect();
 
+    let t_ingest = std::time::Instant::now();
     let (documents, skipped) = pipeline
         .ingest_directory(&cli.dir, !cli.gitignore, &already_indexed)
         .context("Failed to ingest directory")?;
+    if cli.timing {
+        eprintln!(
+            "  phase: ingest_directory (chunk+summarize {} docs) {:.1}s",
+            documents.len(),
+            t_ingest.elapsed().as_secs_f64()
+        );
+    }
 
     // Chunks whose content is below these thresholds carry no retrieval signal.
     // token_estimate catches tiny raw files; summary_chars catches stubs where the
@@ -383,6 +439,16 @@ fn main() -> Result<()> {
     const MIN_SUMMARY_CHARS: usize = 15;
 
     let ingested = documents.len();
+    let t_embed = std::time::Instant::now();
+    // Batch embedding. Feeding the embedder one stub at a time starves the GPU:
+    // per-call tokenize + kernel launch + device sync dominates, so a full
+    // ingest runs no faster than CPU. Collect filtered stubs and embed in
+    // batches, inserting each batch atomically. BGE attention memory scales as
+    // batch×seq² and the candle provider forwards the whole batch in one pass
+    // (no internal sub-batching), so cap the batch to stay clear of OOM on a
+    // shared GPU. (docs/bugs.md B23: a token budget would replace this constant.)
+    const EMBED_BATCH: usize = 32;
+    let mut pending: Vec<(Stub, String)> = Vec::with_capacity(EMBED_BATCH);
     for (stub, embed_text) in documents {
         if stub.token_estimate < MIN_INDEX_TOKENS {
             continue;
@@ -396,14 +462,14 @@ fn main() -> Result<()> {
         // The old approach (path + summary + outline) repeated every symbol name
         // 2-3x and discarded the actual code content entirely.
         let text = format!("{}\n{}", stub.path, embed_text);
-        let embeddings = embedder
-            .embed_document(vec![text.as_str()])
-            .context("Failed to generate embedding")?;
-        if let Some(embedding) = embeddings.into_iter().next() {
-            store
-                .insert(stub, embedding)
-                .context("Failed to insert into stub store")?;
+        pending.push((stub, text));
+        if pending.len() >= EMBED_BATCH {
+            embed_and_insert_batch(&mut embedder, &mut store, &mut pending)?;
         }
+    }
+    embed_and_insert_batch(&mut embedder, &mut store, &mut pending)?;
+    if cli.timing {
+        eprintln!("  phase: embed+insert {:.1}s", t_embed.elapsed().as_secs_f64());
     }
 
     match store.apply_cawignore(&cli.dir) {
@@ -415,6 +481,7 @@ fn main() -> Result<()> {
         Err(e) => eprintln!("Warning: failed to apply .cawignore: {e}"),
     }
 
+    let t_index = std::time::Instant::now();
     let all_emb = store
         .all_embeddings()
         .context("Failed to load embeddings")?;
@@ -429,6 +496,21 @@ fn main() -> Result<()> {
     for (id, emb) in all_emb {
         vector_index.add(id.clone(), emb.clone());
         trace_index.add(id, emb);
+    }
+    // Build both graphs now, not lazily on the first search inside a turn —
+    // otherwise the first query pays the full HNSW build (seconds for a
+    // thousand-vector corpus). add() only buffers points and marks dirty. The
+    // two indexes are independent, so build them on separate threads.
+    std::thread::scope(|s| {
+        s.spawn(|| vector_index.ensure_built());
+        s.spawn(|| trace_index.ensure_built());
+    });
+    if cli.timing {
+        eprintln!(
+            "  phase: load_embeddings + build 2x HNSW ({} vectors) {:.1}s",
+            total_indexed,
+            t_index.elapsed().as_secs_f64()
+        );
     }
 
     eprintln!(
@@ -575,6 +657,7 @@ fn main() -> Result<()> {
         &cli.aux_adapter,
         &cli.aux_model,
         cli.max_tokens,
+        cli.timing,
     )
 }
 
@@ -757,6 +840,7 @@ fn run_interactive(
     aux_adapter: &str,
     aux_model: &str,
     context_budget: usize,
+    timing: bool,
 ) -> Result<()> {
     let mut history: Vec<ConversationTurn> = Vec::new();
 
@@ -924,8 +1008,14 @@ fn run_interactive(
         }
         */
 
+        let t_turn = std::time::Instant::now();
         let response = match orchestrator.run_turn(&effective_system, query, &guidance, signals.as_ref()) {
-            Ok(r) => r,
+            Ok(r) => {
+                if timing {
+                    eprintln!("  phase: run_turn {:.1}s", t_turn.elapsed().as_secs_f64());
+                }
+                r
+            }
             Err(caw_core::CawError::DegenerateOutput { sample, .. }) => {
                 // The session log already captured the turn (B15 fix). Skip to the
                 // next query rather than aborting the entire session.

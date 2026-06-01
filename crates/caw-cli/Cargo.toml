@@ -12,7 +12,11 @@ anyhow.workspace = true
 caw-adapters = { workspace = true, features = ["cli"] }
 caw-core = { workspace = true }
 caw-curation = { workspace = true }
-caw-index = { workspace = true }
+# candle backs the CLI embedder: onnxruntime's prebuilt CUDA provider silently
+# falls back to CPU on this hardware, candle runs on GPU. Defaults (fastembed,
+# sqlite) stay enabled for the rest of the workspace; the CLI just no longer
+# constructs the fastembed provider, so onnxruntime never loads at runtime.
+caw-index = { workspace = true, features = ["candle"] }
 caw-ingest = { workspace = true }
 caw-orchestrator = { workspace = true }
 caw-transform = { workspace = true }
