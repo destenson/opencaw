@@ -43,7 +43,7 @@ echo "serve: GPU='${GPU:-cpu}' index='$INDEX' corpus-root='$CORPUS_ROOT' upstrea
 
 cd "$ROOT"
 RUST_LOG=caw_server=debug,info CUDA_VISIBLE_DEVICES="$GPU" \
-  nohup cargo run --quiet -p caw-server --bin caw-server -- \
+  nohup cargo run --release --quiet -p caw-server --bin caw-server -- \
     --index "$INDEX" \
     --corpus-root "$CORPUS_ROOT" \
     --upstream "$UPSTREAM" \

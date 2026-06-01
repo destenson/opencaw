@@ -127,7 +127,7 @@ if [[ -z "${OUTFILE}" ]]; then
     OUTFILE="${OUTDIR}/intent-report.json"
 fi
 
-cmd=(cargo run -p caw-bench --bin caw-bench-intent "${RELEASE_FLAG}" --
+cmd=(cargo run -p caw-bench --release --bin caw-bench-intent "${RELEASE_FLAG}" --
     --adapter ollama
     --ollama-url "${OLLAMA_URL}"
     --temperature "${TEMPERATURE}"

@@ -39,7 +39,7 @@ else
 fi
 
 cd "$ROOT"
-CUDA_VISIBLE_DEVICES="$GPU" cargo run --quiet -p caw-bench --bin caw-bench-build-index -- \
+CUDA_VISIBLE_DEVICES="$GPU" cargo run --release --quiet -p caw-bench --bin caw-bench-build-index -- \
   --corpus "$CORPUS" \
   --out "$OUT" \
   --rebuild \

@@ -63,7 +63,7 @@ cd "$ROOT"
 # --db and --session-dir both point under target/caw-dev so the CLI's default
 # .caw/ index + session dirs don't litter the repo root.
 printf '%s\n' "${QUESTIONS[@]}" | env CUDA_VISIBLE_DEVICES="$GPU" \
-  cargo run --quiet -p caw-cli -- \
+  cargo run --release --quiet -p caw-cli -- \
     --dir "$DIR" \
     --adapter ollama --model "$MODEL" \
     --no-llm-summarize --no-llm-consolidation \

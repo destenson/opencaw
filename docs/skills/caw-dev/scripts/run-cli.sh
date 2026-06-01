@@ -10,9 +10,13 @@
 #   For non-interactive testing, pipe questions on stdin (one per line):
 #     printf 'what is opencaw?\nhow does eviction work?\n' | run-cli.sh
 #
-# GPU is pinned to the freest device for any in-process CUDA embedder. The
-# default CLI embedder is FastEmbed (CPU ONNX), so this is usually a no-op,
-# but it keeps behavior consistent if the CLI is switched to candle.
+# GPU is pinned to the freest device for the in-process candle embedder, which
+# runs BGE on the GPU (the CLI embedder was switched from FastEmbed/ONNX to
+# candle in d29c679), so the pin is load-bearing, not a no-op.
+#
+# Runs --release: the recall engine is compute-heavy and the debug HNSW graph
+# build is ~17x slower (per-turn latency ~33s debug vs ~0.1s release). The first
+# release build is a long one-time compile; subsequent runs reuse it.
 set -euo pipefail
 
 ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
@@ -20,4 +24,4 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GPU="$(bash "$SCRIPT_DIR/pick-gpu.sh")"
 
 cd "$ROOT"
-exec env CUDA_VISIBLE_DEVICES="$GPU" cargo run --quiet -p caw-cli -- "$@"
+exec env CUDA_VISIBLE_DEVICES="$GPU" cargo run --release --quiet -p caw-cli -- "$@"

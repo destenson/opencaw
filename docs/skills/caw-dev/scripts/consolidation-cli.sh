@@ -37,9 +37,11 @@
 #   --max-candidates 30             wide candidate pool so turns admit a lot
 #   --no-intent-classifier          keep the run deterministic/fast
 #
-# After the run it prints a COMPUTED proof summary parsed from the verbose log:
-# eviction count, consolidation notes persisted, and (only when --aux-adapter is
-# claude-code*) the claude-code LLM call count and total cost. Interpretation of
+# After the run it prints a COMPUTED proof summary parsed from the verbose log
+# and the per-call prompt dumps (--save-prompt, on automatically): eviction
+# count, consolidation notes persisted, how many later turns RECALLED a persisted
+# note (the full loop, not just persistence), and — only when --aux-adapter is
+# claude-code* — the claude-code LLM call count and total cost. Interpretation of
 # those numbers is left to the caller — the script only reports what it counted.
 set -euo pipefail
 
@@ -95,23 +97,37 @@ echo "consolidation-cli: dir=$DIR model=$MODEL aux=$AUX_ADAPTER/$AUX_MODEL max_t
 echo "consolidation-cli: full verbose log -> $LOG" >&2
 
 cd "$ROOT"
+SESSION_DIR="$ROOT/target/caw-dev/cli-sessions"
+mkdir -p "$SESSION_DIR"
+# Sentinel to identify the prompt dumps THIS run produces (others accumulate in
+# the same dir across runs). --save-prompt writes one prompt-{ts}-turn-{N}.txt
+# per model call beside the session files; we grep only files newer than this.
+RUN_SENTINEL="$SESSION_DIR/.run-sentinel"
+touch "$RUN_SENTINEL"
+
 # --verbose enables debug-level logs so eviction + consolidation events are
 # emitted. We omit --no-llm-consolidation so the LLM consolidation synthesizer
 # runs. --no-llm-summarize is kept ON: the warm cli-index.db already has stubs,
 # so re-summarizing buys nothing; flip it off (drop the flag) only when building
 # a fresh index where you also want LLM stub summaries.
+# --save-prompt dumps the exact workspace per model call: when a previously
+# evicted+consolidated stub is re-recalled on a later turn, its content carries a
+# "[Prior session notes for this source:" block (dynamic.rs prepends it). That
+# block is the ONLY evidence of the full novelty loop — eviction notes being
+# RECALLED, not merely persisted — so we count it below.
 set +e
 printf '%s\n' "${QUESTIONS[@]}" | env CUDA_VISIBLE_DEVICES="$GPU" \
-  cargo run --quiet -p caw-cli -- \
+  cargo run --release --quiet -p caw-cli -- \
     --dir "$DIR" \
     --adapter ollama --model "$MODEL" \
     --aux-adapter "$AUX_ADAPTER" --aux-model "$AUX_MODEL" \
     --no-llm-summarize \
     --db "$DB" \
-    --session-dir "$ROOT/target/caw-dev/cli-sessions" \
+    --session-dir "$SESSION_DIR" \
     --max-tokens "$MAX_TOKENS" \
     --max-candidates "$MAX_CANDIDATES" \
     --no-intent-classifier \
+    --save-prompt \
     --verbose \
     "${EXTRA[@]}" > "$LOG" 2>&1
 RC=$?
@@ -126,6 +142,19 @@ NOTES_MEM=$(grep -c 'consolidation note recorded in memory' "$LOG" || true)
 # instead of real LLM synthesis. The count maps 1:1 to those fallback notes, so
 # (NOTES_STORE - DEGEN) is the number of notes that were actually LLM-synthesized.
 DEGEN=$(grep -c 'degenerate output' "$LOG" || true)
+# Full-loop proof: how many model calls THIS run received a workspace containing
+# a recalled consolidation note (the "[Prior session notes…" prepend). Counted
+# only over prompt dumps newer than the sentinel so prior runs don't inflate it.
+# A persisted note may originate from this run's eviction or an earlier run's —
+# either way its presence proves persisted notes are recalled into later turns.
+RECALL_MARKER='Prior session notes for this source'
+RUN_PROMPTS=$(find "$SESSION_DIR" -name 'prompt-*.txt' -newer "$RUN_SENTINEL" 2>/dev/null)
+NOTES_RECALLED=0
+if [ -n "$RUN_PROMPTS" ]; then
+  NOTES_RECALLED=$(printf '%s\n' "$RUN_PROMPTS" \
+    | xargs grep -l "$RECALL_MARKER" 2>/dev/null | wc -l | tr -d ' ')
+fi
+rm -f "$RUN_SENTINEL"
 # Per-call cost is only logged by ClaudeCodeAdapter; Ollama emits no cost line.
 CC_CALLS=$(grep -c '\[claude-code\] model=' "$LOG" || true)
 # `|| true`: with `set -o pipefail`, the leading grep exits 1 when there are no
@@ -142,6 +171,7 @@ echo "fragments evicted:                 $EVICTED"
 echo "consolidation notes -> store:      $NOTES_STORE"
 echo "consolidation notes -> memory:     $NOTES_MEM"
 echo "degenerate aux outputs (fallback): $DEGEN"
+echo "later turns recalling a note:      $NOTES_RECALLED  (full loop: persisted note -> recalled into a later workspace)"
 if [ "$CC_CALLS" -gt 0 ]; then
   echo "claude-code aux LLM calls:         $CC_CALLS"
   echo "claude-code aux cost (USD):        \$$CC_COST"
