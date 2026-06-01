@@ -35,6 +35,33 @@ pub enum CooperationMode {
     Transparent,
 }
 
+/// Whether `load_fragments` injects the cheap stub summary or the full chunk
+/// body for a recalled stub.
+///
+/// Broad, automatic surfacing (the initial query pass, reasoning-driven recall)
+/// uses `Stub`: the model is shown a candidate it has not asked for, so a
+/// one-line summary is the right cost. When the model *explicitly expresses a
+/// need* for a specific source — by emitting a `<probe>` or by naming a file
+/// from the presented candidate list — `Full` loads the chunk body so the
+/// answer is grounded in real content rather than a summary. This is the
+/// on-demand body load the system prompt promises ("Context loading is handled
+/// automatically by the system").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoadMode {
+    Stub,
+    Full,
+}
+
+impl LoadMode {
+    /// The `read_range` range string corresponding to this mode.
+    fn range(self) -> &'static str {
+        match self {
+            LoadMode::Stub => "stub",
+            LoadMode::Full => "full",
+        }
+    }
+}
+
 /// Advanced orchestrator with iterative multi-pass recall.
 ///
 /// Each turn follows: initial retrieval -> complete -> extract probes/traces ->
@@ -508,7 +535,7 @@ where
                         .collect();
                     if !session_hits.is_empty() {
                         debug!(hits = session_hits.len(), "session turn initial recall");
-                        self.load_fragments(session_hits)?;
+                        self.load_fragments(session_hits, LoadMode::Stub)?;
                     }
                 }
             }
@@ -531,6 +558,7 @@ where
                     .into_iter()
                     .map(|hit| (hit.stub.id, hit.score))
                     .collect(),
+                LoadMode::Stub,
             )?;
             candidate_initial_hits = None;
         } else {
@@ -592,7 +620,10 @@ where
                         count = mentioned.len(),
                         "loading files mentioned in response to candidate list"
                     );
-                    self.load_fragments(mentioned)?;
+                    // The model named these files from the candidate list — an
+                    // explicit expressed need — so inject their bodies, not the
+                    // summaries it has already seen.
+                    self.load_fragments(mentioned, LoadMode::Full)?;
                     let req = CompletionRequest {
                         system: system_prompt.clone(),
                         user: user.to_string(),
@@ -804,7 +835,7 @@ where
                 let hits = self
                     .vector_index
                     .search(embedding, self.config.max_candidates);
-                self.load_fragments(hits)?;
+                self.load_fragments(hits, LoadMode::Stub)?;
             }
         }
 
@@ -965,7 +996,7 @@ where
 
         // Update the loaded workspace state to reflect what was injected mid-generation.
         for (stub_id, score) in injected {
-            self.load_fragments(vec![(stub_id, score)])?;
+            self.load_fragments(vec![(stub_id, score)], LoadMode::Stub)?;
         }
 
         Ok(response)
@@ -988,10 +1019,13 @@ where
             let hits = self
                 .retriever
                 .search(&probe.content, self.config.max_candidates)?;
+            // A probe is the model explicitly asking for material it's missing,
+            // so fulfill it with the chunk body rather than another summary.
             self.load_fragments(
                 hits.into_iter()
                     .map(|hit| (hit.stub.id, hit.score))
                     .collect(),
+                LoadMode::Full,
             )?;
             if let Some(eval) = &mut self.evaluator {
                 eval.record_probe(&probe.content, self.loaded.len() > loaded_before, 0.0);
@@ -1258,7 +1292,7 @@ where
         }
     }
 
-    fn load_fragments(&mut self, hits: Vec<(StubId, f32)>) -> CawResult<()> {
+    fn load_fragments(&mut self, hits: Vec<(StubId, f32)>, mode: LoadMode) -> CawResult<()> {
         let history_budget = (self.config.max_workspace_tokens as f32
             * self.config.session_history_budget_fraction) as usize;
         let mut current_history_tokens: usize = self
@@ -1332,7 +1366,7 @@ where
                         mtime_unix_secs: 0,
                     }
                 }
-                None => match self.retriever.read_range(&stub_id, "stub") {
+                None => match self.retriever.read_range(&stub_id, mode.range()) {
                     Ok(mut f) => {
                         // If there are persisted consolidation notes for this stub
                         // (written on prior evictions), prepend them so the model
