@@ -51,9 +51,15 @@ pub enum RetrieverKind {
 /// this corpus.
 const HYBRID_SEMANTIC_WEIGHT: f32 = 0.6;
 const HYBRID_KEYWORD_WEIGHT: f32 = 0.4;
+
+/// Number of indexed stub bodies to read at startup to verify `--corpus-root`
+/// actually resolves to the directory the index was built against. Small
+/// because one missing body is enough signal and the Hybrid path re-reads all
+/// bodies for BM25 anyway.
+const CORPUS_ROOT_PROBE_SAMPLE: usize = 8;
 use serde_json::Value;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Everything the request handler needs. Index, store, embedder, and
 /// upstream config live here for the life of the process.
@@ -116,6 +122,7 @@ pub fn build_state(
         .map_err(|e| anyhow::anyhow!("init bge-small (candle): {e}"))?;
     let dim = embedder.dimension();
 
+    let corpus_root_display = corpus_root.display().to_string();
     let store = SqliteStubStore::new(index_path, dim)
         .with_context(|| format!("open prebuilt index {index_path}"))?
         .with_corpus_root(corpus_root);
@@ -128,6 +135,43 @@ pub fn build_state(
         "prebuilt index {} is empty — rebuild with caw-bench-build-index",
         index_path
     );
+
+    // A wrong --corpus-root joins indexed (relative) stub paths against the
+    // wrong directory, so every body read misses and the proxy forwards
+    // unaugmented with a normal HTTP 200 — a working-looking server that
+    // silently provides no context. Detect that misconfiguration loudly here,
+    // before the (expensive) BM25 body pass, rather than letting it surface
+    // only as per-request debug noise. We read the stub path before calling
+    // get_content because a missing body marks the row stale, after which
+    // get_stub itself would fail and we'd lose the example path.
+    let sample_n = CORPUS_ROOT_PROBE_SAMPLE.min(all.len());
+    let mut readable = 0usize;
+    let mut first_missing: Option<String> = None;
+    for (stub_id, _emb) in all.iter().take(sample_n) {
+        let path = store.get_stub(stub_id).ok().map(|s| s.path);
+        match store.get_content(stub_id) {
+            Ok(_) => readable += 1,
+            Err(_) => {
+                if first_missing.is_none() {
+                    first_missing = path;
+                }
+            }
+        }
+    }
+    if sample_n > 0 && readable == 0 {
+        error!(
+            "corpus-root probe: 0/{sample_n} sampled stub bodies are readable under corpus-root '{}' (e.g. '{}'). \
+             The index was almost certainly built against a different directory — every request will forward UNAUGMENTED. \
+             Re-run with the same directory passed to build-index.",
+            corpus_root_display,
+            first_missing.as_deref().unwrap_or("<unknown>"),
+        );
+    } else if readable < sample_n {
+        warn!(
+            "corpus-root probe: only {readable}/{sample_n} sampled stub bodies are readable under corpus-root '{}' — some content fetches will miss",
+            corpus_root_display,
+        );
+    }
 
     // The vector half is Flat for both Flat and Hybrid; Hnsw only for Hnsw.
     let index: Box<dyn VectorIndex + Send> = match retriever {
@@ -328,6 +372,8 @@ fn retrieve_fragments(state: &AppState, query: &str) -> Result<Vec<RecallFragmen
 
     let mut fragments = Vec::with_capacity(hits.len());
     let mut used_tokens = 0usize;
+    let candidate_count = hits.len();
+    let mut content_misses = 0usize;
     for (stub_id, _score) in hits {
         let stub = match store.get_stub(&stub_id) {
             Ok(s) => s,
@@ -336,6 +382,7 @@ fn retrieve_fragments(state: &AppState, query: &str) -> Result<Vec<RecallFragmen
         let content = match store.get_content(&stub_id) {
             Ok(c) => c,
             Err(e) => {
+                content_misses += 1;
                 warn!("get_content({}) failed: {e}", stub_id.0);
                 continue;
             }
@@ -357,6 +404,16 @@ fn retrieve_fragments(state: &AppState, query: &str) -> Result<Vec<RecallFragmen
             mtime_unix_secs: stub.mtime_unix_secs,
         });
         used_tokens += tokens;
+    }
+    // If we had candidates but every body read missed, the workspace is empty
+    // for a fetch-side reason (almost always a corpus-root mismatch), not
+    // because nothing matched the query. Surface that as one aggregate error
+    // rather than only per-stub warns the operator has to add up by hand.
+    if candidate_count > 0 && content_misses == candidate_count {
+        error!(
+            "all {candidate_count} retrieved candidates had unreadable bodies — request forwarded UNAUGMENTED. \
+             Check that --corpus-root matches the directory the index was built against."
+        );
     }
     Ok(fragments)
 }
