@@ -272,14 +272,17 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     amnesia: bool,
 
-    /// Context window size in tokens for the llama adapter. Defaults to 8192.
-    /// Note: Qwen3 models have a 128K training context; leaving this unset
-    /// causes llama.cpp to pre-allocate a KV cache that will OOM on 16GB GPUs.
+    /// Context window size in tokens. For the llama adapter it defaults to
+    /// 8192 (Qwen3 models have a 128K training context; leaving this unset
+    /// causes llama.cpp to pre-allocate a KV cache that will OOM on 16GB GPUs).
+    /// For the ollama adapter, leaving this unset lets Ollama use its server
+    /// default (commonly 2048/4096), which silently truncates a large recalled
+    /// workspace — set it to cover the workspace budget plus generation.
     #[arg(long)]
     num_ctx: Option<u32>,
 
     /// Sampling temperature. Lower = more deterministic; higher = more creative.
-    /// Applies to the llama adapter; other adapters use their own defaults.
+    /// Applies to the llama and ollama adapters; others use their own defaults.
     #[arg(long)]
     temperature: Option<f32>,
 
@@ -679,8 +682,8 @@ fn build_completion_adapter(
     max_new_tokens: Option<usize>,
     fold_system: bool,
 ) -> Result<Box<dyn ModelAdapter + Send + Sync>> {
-    // TODO: use the `num_ctx`, `n_gpu_layers`, and `max_new_tokens` parameters somwhere.
-
+    // `num_ctx` and `temperature` are honored by both the llama and ollama
+    // branches below; `n_gpu_layers` and `max_new_tokens` are llama-only.
     let adapter: Box<dyn ModelAdapter + Send + Sync> = match adapter_name {
         "mock" => Box::new(MockAdapter::new("mock-local", true)),
         "anthropic" | "claude" => {
@@ -730,6 +733,15 @@ fn build_completion_adapter(
             .with_fold_system(fold_system);
             let adapter = if let Some(t) = temperature {
                 adapter.with_temperature(t)
+            } else {
+                adapter
+            };
+            // Without an explicit num_ctx, Ollama falls back to its server
+            // default (commonly 2048/4096 tokens) and silently truncates the
+            // prompt — which on this project means lopping off the recalled
+            // workspace, the entire payload. Honor the flag when set.
+            let adapter = if let Some(n) = num_ctx {
+                adapter.with_num_ctx(n)
             } else {
                 adapter
             };
