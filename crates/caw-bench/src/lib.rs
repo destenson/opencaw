@@ -1,4 +1,5 @@
 pub mod adapter_factory;
+pub mod concept_mistral_q;
 pub mod intent;
 pub mod judge;
 pub mod niah;

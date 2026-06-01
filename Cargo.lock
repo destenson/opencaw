@@ -574,6 +574,9 @@ name = "caw-bench"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
  "caw-adapters",
  "caw-core",
  "caw-eval",
@@ -581,11 +584,13 @@ dependencies = [
  "caw-ingest",
  "caw-orchestrator",
  "clap",
+ "hf-hub 0.5.0",
  "rayon",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "tokenizers 0.21.4",
  "tokio",
  "toml",
  "walkdir",
