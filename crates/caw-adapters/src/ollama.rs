@@ -176,6 +176,16 @@ struct OllamaChatResponse {
     message: OllamaChatMessage,
     prompt_eval_count: Option<u32>,
     eval_count: Option<u32>,
+    /// Nanosecond timings Ollama reports for every non-streaming response.
+    /// Logged so the per-completion cost (prompt processing vs token
+    /// generation throughput) is visible without external profiling.
+    total_duration: Option<u64>,
+    /// Time Ollama spent loading the model for this call. Large and recurring
+    /// across turns means models are being swapped in/out of VRAM (thrash),
+    /// which is a config problem, not generation cost.
+    load_duration: Option<u64>,
+    prompt_eval_duration: Option<u64>,
+    eval_duration: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -270,6 +280,28 @@ impl ModelAdapter for OllamaAdapter {
                     (Some(i), Some(o)) => Some(TokenUsage { input_tokens: i, output_tokens: o }),
                     _ => None,
                 };
+                // Report the cost of this completion from Ollama's own timings.
+                // gen_tps (eval tokens / eval seconds) is the throughput knob;
+                // a large prompt_ms with small eval_ms means context size, not
+                // generation, dominates the call.
+                let ms = |ns: Option<u64>| ns.map(|n| n as f64 / 1e6).unwrap_or(0.0);
+                let eval_s = ms(parsed.eval_duration) / 1e3;
+                let gen_tps = if eval_s > 0.0 {
+                    parsed.eval_count.unwrap_or(0) as f64 / eval_s
+                } else {
+                    0.0
+                };
+                info!(
+                    model = %self.model,
+                    prompt_tokens = parsed.prompt_eval_count.unwrap_or(0),
+                    eval_tokens = parsed.eval_count.unwrap_or(0),
+                    load_ms = format_args!("{:.0}", ms(parsed.load_duration)),
+                    prompt_ms = format_args!("{:.0}", ms(parsed.prompt_eval_duration)),
+                    eval_ms = format_args!("{:.0}", ms(parsed.eval_duration)),
+                    total_ms = format_args!("{:.0}", ms(parsed.total_duration)),
+                    gen_tps = format_args!("{:.1}", gen_tps),
+                    "ollama completion timing"
+                );
                 trace!(model = %self.model, answer = %answer, "← llm");
                 Ok(CompletionResponse { answer, thinking, usage })
             }

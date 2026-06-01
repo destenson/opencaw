@@ -273,21 +273,29 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let logstr = ["reqwest", "rustls", "globset", "h2", "hyper", "webpki"]
-        .map(|s| format!("{s}=info"))
-        .join(",");
-    let logstr = if cli.verbose {
-        format!("debug,{}", logstr)
-    } else {
-        logstr
+    // An explicit RUST_LOG is the user's deliberate choice — honor it verbatim
+    // and don't splice our defaults onto it. Only when it's unset do we build a
+    // default filter: quiet the chatty deps, and raise the app to debug under
+    // --verbose.
+    let filter = match std::env::var("RUST_LOG") {
+        Ok(existing) if !existing.trim().is_empty() => {
+            tracing_subscriber::EnvFilter::new(existing)
+        }
+        _ => {
+            let noise = ["reqwest", "rustls", "globset", "h2", "hyper", "webpki"]
+                .map(|s| format!("{s}=info"))
+                .join(",");
+            let default = if cli.verbose {
+                format!("debug,{noise}")
+            } else {
+                noise
+            };
+            tracing_subscriber::EnvFilter::new(default)
+        }
     };
-    match std::env::var("RUST_LOG") {
-        Ok(existing) => unsafe { std::env::set_var("RUST_LOG", format!("{existing},{}", logstr)) },
-        Err(_) => unsafe { std::env::set_var("RUST_LOG", logstr) },
-    }
 
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(filter)
         .with_target(true)
         .with_file(true)
         .with_line_number(true)
