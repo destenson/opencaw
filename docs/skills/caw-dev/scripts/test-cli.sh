@@ -45,8 +45,13 @@ if [ "${#QUESTIONS[@]}" -eq 0 ] && [ ! -t 0 ]; then
     [ -n "$line" ] && QUESTIONS+=("$line")
   done
 fi
+# No -q and no stdin: fall back to the shared query pool (queries.txt) so a bare
+# run exercises retrieval across several subsystems instead of the same question
+# every time. Skip blanks and '#' comments.
 if [ "${#QUESTIONS[@]}" -eq 0 ]; then
-  QUESTIONS=("In this project, which struct owns the multi-pass recall loop and what file is it in?")
+  while IFS= read -r line; do
+    [ -n "$line" ] && [ "${line#\#}" = "$line" ] && QUESTIONS+=("$line")
+  done < "$SCRIPT_DIR/queries.txt"
 fi
 
 INTENT_ARGS=(--intent-model "$INTENT")

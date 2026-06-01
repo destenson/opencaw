@@ -79,11 +79,20 @@ if [ "${#QUESTIONS[@]}" -eq 0 ] && [ ! -t 0 ]; then
     [ -n "$line" ] && QUESTIONS+=("$line")
   done
 fi
+# This default set is intentionally NOT the shared queries.txt pool: that pool
+# spans distinct subsystems, whereas this script needs a topically COHERENT batch
+# (all about the recall engine) so the consolidation notes synthesized on
+# eviction concern a single subject rather than noise. More turns here = more
+# eviction/consolidation events to observe, so the larger the coherent batch the
+# better — just keep every question on the recall/eviction/consolidation theme.
 if [ "${#QUESTIONS[@]}" -eq 0 ]; then
   QUESTIONS=(
     "How does the dynamic recall loop decide which fragments to admit?"
     "What triggers eviction of a fragment from the workspace?"
     "How are consolidation notes synthesized when fragments are evicted?"
+    "Where are consolidation notes persisted, and how are they recalled on later turns?"
+    "How does relevance decay affect which fragments survive across turns?"
+    "What role does the workspace token budget play in eviction?"
     "Walk me through provenance tagging end to end."
   )
 fi

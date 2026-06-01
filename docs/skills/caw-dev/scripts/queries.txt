@@ -1,0 +1,17 @@
+# Shared default query pool for the caw-dev scripts (smoke.sh, ab-test.sh,
+# test-cli.sh). One query per line; blank lines and lines starting with '#'
+# are ignored. Each question is codebase-specific — answerable only from the
+# injected/recalled source — and the set spans distinct subsystems so a run
+# exercises retrieval across the whole stack rather than the same chunk twice.
+#
+# To broaden coverage, add lines here; every consuming script picks them up.
+# Pass an explicit query/-q to a script to override this whole pool for that run.
+
+In this Rust project, what does the DynamicRecallOrchestrator do and which source file defines it? Be specific.
+Which struct owns the multi-pass recall loop, what file is it in, and name two things it does on eviction?
+How does the dynamic recall loop decide which fragments to admit to the workspace?
+What triggers eviction of a fragment from the workspace, and what happens to it on the way out?
+How are consolidation notes synthesized when a fragment is evicted, and where are they persisted?
+How does the hybrid retriever combine lexical (BM25) and vector (cosine) scores?
+What does the caw-server proxy inject into an incoming request, and how does it select the fragments?
+How are source files chunked and summarized into stubs during indexing?

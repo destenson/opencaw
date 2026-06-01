@@ -43,15 +43,15 @@ All scripts live in `scripts/` and are self-locating (they find the repo root vi
    #                                     [port] [model] [question]
    ```
 
-   It sends one chat completion and prints both the model's answer and the server-side `augmented with N fragments (T tokens)` line. A small model naming a project-specific symbol/path it could not otherwise know confirms the full path works.
+   With no `question` arg it runs the whole shared query pool (`scripts/queries.txt`), one request per question, and prints each answer with its `augmented with N fragments (T tokens)` line — so one run exercises retrieval across several subsystems instead of the same chunk every time. Pass a `question` to run just that one. A small model naming a project-specific symbol/path it could not otherwise know confirms the full path works.
 
-4. **Prove it adds value** (optional) — same question to the proxy vs. straight to the upstream:
+4. **Prove it adds value** (optional) — proxy vs. straight to the upstream:
 
    ```bash
    docs/skills/caw-dev/scripts/ab-test.sh   # [port] [upstream] [model] [question]
    ```
 
-   Prints both answers and the injection-proof log line. The direct answer can't name project-specific symbols; the proxied one can.
+   Same default: with no `question` it runs an A/B pair for every question in `scripts/queries.txt`; pass one to A/B just that question. Prints both answers and the injection-proof log line. The direct answer can't name project-specific symbols; the proxied one can.
 
 5. **Stop** when done:
 
@@ -118,8 +118,9 @@ For the full reasoning behind each gotcha, file/line references, the host's GPU 
 - **`scripts/pick-gpu.sh`** — prints the freest CUDA ordinal (empty = CPU); used by the other scripts.
 - **`scripts/build-index.sh`** — build an index with safe batch sizes and GPU pinning.
 - **`scripts/serve.sh`** — start the proxy (backgrounded, debug logging, GPU pinned).
-- **`scripts/smoke.sh`** — send a test request and verify injection.
-- **`scripts/ab-test.sh`** — proxy vs. direct-upstream A/B to prove context changes the answer.
+- **`scripts/queries.txt`** — shared default query pool (one per line) used by `smoke.sh`, `ab-test.sh`, and `test-cli.sh` when no query is passed. Add lines here to broaden coverage for all three.
+- **`scripts/smoke.sh`** — send test requests (whole pool by default) and verify injection.
+- **`scripts/ab-test.sh`** — proxy vs. direct-upstream A/B (whole pool by default) to prove context changes the answer.
 - **`scripts/stop.sh`** — stop a running proxy.
 - **`scripts/test-cli.sh`** — drive the caw-cli recall engine non-interactively, local-only config (LLM consolidation OFF).
 - **`scripts/consolidation-cli.sh`** — exercise the full engine (eviction + LLM consolidation) and print a computed proof summary; aux model via the local `claude` CLI.
