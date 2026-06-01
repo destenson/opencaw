@@ -123,9 +123,13 @@ pub fn build_state(
     let dim = embedder.dimension();
 
     let corpus_root_display = corpus_root.display().to_string();
+    // Read-only: the proxy serves a prebuilt index and has no reingest worker,
+    // so get_content must not mark rows stale on a missing/misconfigured path —
+    // that would persist into the shared index and degrade every later run.
     let store = SqliteStubStore::new(index_path, dim)
         .with_context(|| format!("open prebuilt index {index_path}"))?
-        .with_corpus_root(corpus_root);
+        .with_corpus_root(corpus_root)
+        .with_read_only(true);
 
     let all = store
         .all_embeddings()

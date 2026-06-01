@@ -28,6 +28,14 @@ pub struct SqliteStubStore {
     /// row is just left stale until someone else schedules reingestion
     /// (e.g. via a startup sweep).
     reindex_queue: Option<Arc<dyn ReindexQueue>>,
+    /// When set, `get_content` never mutates the database: a missing or
+    /// changed source file still surfaces as `CawError::StaleStub` so the
+    /// caller skips the stub, but the row is not marked stale and nothing is
+    /// enqueued for reingestion. For read-only consumers of a prebuilt index
+    /// (the caw-server proxy) that have no reingest worker — there, marking a
+    /// row stale on a transient/misconfigured miss would silently degrade the
+    /// index for every later run.
+    read_only: bool,
 }
 
 impl SqliteStubStore {
@@ -168,6 +176,7 @@ impl SqliteStubStore {
             db_path,
             corpus_root: None,
             reindex_queue: None,
+            read_only: false,
         })
     }
 
@@ -190,6 +199,7 @@ impl SqliteStubStore {
         let mut other = Self::new(path_str, self.dimension)?;
         other.corpus_root = self.corpus_root.clone();
         other.reindex_queue = self.reindex_queue.clone();
+        other.read_only = self.read_only;
         Ok(other)
     }
 
@@ -199,6 +209,16 @@ impl SqliteStubStore {
     /// background work is scheduled.
     pub fn with_reindex_queue(mut self, queue: Arc<dyn ReindexQueue>) -> Self {
         self.reindex_queue = Some(queue);
+        self
+    }
+
+    /// Open the store in read-only mode: `get_content` will never call
+    /// `mark_path_stale` or enqueue reingestion. Use for consumers of a
+    /// prebuilt index that have no reingest worker (the proxy), so a missing
+    /// or misconfigured source path doesn't persist `stale = 1` into the
+    /// shared index and degrade later runs.
+    pub fn with_read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
         self
     }
 
@@ -562,8 +582,10 @@ impl StubStore for SqliteStubStore {
         // and serving the old byte range would hand the caller bytes that no
         // longer correspond to the indexed content.
         if stale != 0 {
-            if let Some(q) = &self.reindex_queue {
-                q.enqueue(&path);
+            if !self.read_only {
+                if let Some(q) = &self.reindex_queue {
+                    q.enqueue(&path);
+                }
             }
             return Err(CawError::StaleStub { path });
         }
@@ -589,10 +611,14 @@ impl StubStore for SqliteStubStore {
             Err(_) => {
                 // Missing / unreadable source → mark stale and schedule
                 // reingestion (the worker will see the file is gone and
-                // drop the stubs).
-                let _ = self.mark_path_stale(&path);
-                if let Some(q) = &self.reindex_queue {
-                    q.enqueue(&path);
+                // drop the stubs). Read-only stores skip the mutation: they
+                // have no worker, and a transient/misconfigured miss must not
+                // persist staleness into the shared index.
+                if !self.read_only {
+                    let _ = self.mark_path_stale(&path);
+                    if let Some(q) = &self.reindex_queue {
+                        q.enqueue(&path);
+                    }
                 }
                 return Err(CawError::StaleStub { path });
             }
@@ -601,9 +627,11 @@ impl StubStore for SqliteStubStore {
         // in-memory bench corpora written to a tempdir). Skip the staleness
         // check in that case rather than flagging every stub as stale.
         if stored_mtime != 0 && current_mtime != Some(stored_mtime) {
-            let _ = self.mark_path_stale(&path);
-            if let Some(q) = &self.reindex_queue {
-                q.enqueue(&path);
+            if !self.read_only {
+                let _ = self.mark_path_stale(&path);
+                if let Some(q) = &self.reindex_queue {
+                    q.enqueue(&path);
+                }
             }
             return Err(CawError::StaleStub { path });
         }
