@@ -68,14 +68,14 @@ For non-interactive testing with a sane local-only config (no Anthropic key, GPU
 ```bash
 docs/skills/caw-dev/scripts/test-cli.sh -q "which struct owns the multi-pass recall loop?"
 printf 'what is opencaw?\nhow does eviction work?\n' | docs/skills/caw-dev/scripts/test-cli.sh
-docs/skills/caw-dev/scripts/test-cli.sh --intent none --model qwen3.5:9b -q "..."
+docs/skills/caw-dev/scripts/test-cli.sh --intent none --model llama3.2:3b -q "..."
 ```
 
 For a raw, fully-manual invocation, `run-cli.sh` forwards all arguments straight to `cargo run -p caw-cli` (GPU pinned):
 
 ```bash
 docs/skills/caw-dev/scripts/run-cli.sh --show-intent
-docs/skills/caw-dev/scripts/run-cli.sh --adapter ollama --model qwen3.5:9b
+docs/skills/caw-dev/scripts/run-cli.sh --adapter ollama --model llama3.2:3b
 ```
 
 Note: `caw-cli`'s default index/session dir is a per-corpus location under `~/.cache/caw/` — a bare run no longer drops `.caw/` into the working directory. `test-cli.sh` pins both under `target/caw-dev/`.

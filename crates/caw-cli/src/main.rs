@@ -198,8 +198,11 @@ struct Cli {
     aux_adapter: String,
 
     /// Model for auxiliary LLM tasks (summarization, consolidation, curation),
-    /// interpreted by --aux-adapter.
-    #[arg(long, default_value = "qwen3.5:9b")]
+    /// interpreted by --aux-adapter. A non-thinking model is required: a
+    /// thinking model (qwen3.x, deepseek-r1) routinely emits only a reasoning
+    /// trace for these prompts, blanks after split_thinking, and forces a
+    /// templated-note fallback instead of real synthesis.
+    #[arg(long, default_value_t = default_aux_model())]
     aux_model: String,
 
     /// Disable curation pipeline (history summarization + tool output compression)
@@ -267,6 +270,10 @@ struct Cli {
     /// generation. Works with any adapter.
     #[arg(long, default_value_t = false)]
     save_prompt: bool,
+}
+
+fn default_aux_model() -> String {
+    "llama3.2:3b".to_string()
 }
 
 // TODO: refactor this function
@@ -633,7 +640,7 @@ fn build_completion_adapter(
         "claude-code-haiku" => Box::new(caw_adapters::ClaudeCodeAdapter::haiku()),
         "ollama" => {
             let rt = caw_adapters::create_runtime()?;
-            let adapter = match model.unwrap_or("qwen3.6:35b") {
+            let adapter = match model.unwrap_or(&default_aux_model()) {
                 "haiku" => caw_adapters::OllamaAdapter::llama3_2(rt),
                 m => caw_adapters::OllamaAdapter::local(m, rt),
             }
