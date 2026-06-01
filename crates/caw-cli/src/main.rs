@@ -382,9 +382,16 @@ fn main() -> Result<()> {
         .unwrap_or_else(|| default_root.join("sessions"));
 
     eprintln!("Opening stub store at: {}", db_path);
+    // Stored stub paths are the directory-walk paths of `cli.dir` (e.g.
+    // `crates/caw-core/src/lib.rs`), which are resolved relative to the process
+    // CWD — not relative to `cli.dir`. `get_content` resolves a stub by
+    // `corpus_root.join(stored_path)`, so the corpus root must be the CWD;
+    // using `cli.dir` here doubles the prefix (`crates/crates/...`), the file
+    // appears missing, and every full read marks its stubs stale.
+    let corpus_root = std::env::current_dir().context("Failed to determine current directory")?;
     let mut store = SqliteStubStore::new(&db_path, dimension)
         .context("Failed to open SQLite stub store")?
-        .with_corpus_root(cli.dir.clone());
+        .with_corpus_root(corpus_root);
 
     let tokenizer: Arc<dyn Tokenizer> = match cli.tokenizer.as_str() {
         "cl100k" => Arc::new(
