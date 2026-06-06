@@ -18,6 +18,7 @@ See [docs/getting-started.md](docs/getting-started.md) for adapter setup, enviro
 
 | | |
 |---|---|
+| [Glossary](docs/glossary.md) | Canonical definitions for every term used in the project |
 | [Architecture](docs/architecture.md) | Crates, data flow, design principles |
 | [Getting Started](docs/getting-started.md) | Build, run, environment variables, code example |
 | [Adapters](docs/adapters.md) | Anthropic, Groq, Ollama, OpenAI-compat, LlamaCpp, Mock |
