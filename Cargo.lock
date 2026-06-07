@@ -610,6 +610,8 @@ dependencies = [
  "caw-transform",
  "clap",
  "rustyline",
+ "serde",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]

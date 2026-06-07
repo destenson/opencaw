@@ -1,6 +1,6 @@
 # Graphify Integration Spike
 
-Status: proposed (spec for review — no code yet)
+Status: in progress — edge sidecar + Graphify ingest implemented and validated end-to-end (`caw-index::graph_edges`, `caw-cli` bin `caw-graph-ingest`). Retrieval-side expansion wiring and the measurement harness are pending. Sections below marked _(as built)_ record what the implementation actually does, which in places differs from the original spec.
 
 ## Goal
 
@@ -25,21 +25,23 @@ This spike does **not** touch OpenCAW's differentiator (thinking-trace recall, e
 | Boundary | **Subprocess, JSON over the wire** | Shell out to `graphify extract`, read `graph.json`. No PyO3, no FFI, no native reimplementation of extraction. Graphify stays an external tool. |
 | Role of the graph | **Retrieval signal, never context payload** | Edges drive neighbor expansion *behind* retrieval. The graph is never dumped into the model's context. This is the opposite of Graphify's own "consult GRAPH_REPORT.md before grep" hook model, which we explicitly reject — it fights "context is a workspace." |
 | Corpus | **A real code repo** | Default: OpenCAW itself (Rust, dogfood). The graph helps most on code-structure questions, so the eval must be a code corpus — not the prose/NIAH workloads. |
-| Stub mapping | **Overlay edges on existing chunk-stubs** | Do *not* fork ingestion to make one stub per Graphify node. Map each Graphify node's line range to the OpenCAW chunk-stub(s) whose byte range overlaps it, and attach edges between chunk-stubs. Keeps `caw-ingest` as the single source of stubs. |
+| Stub mapping | **Overlay edges on existing chunk-stubs** | Do *not* fork ingestion to make one stub per Graphify node. Map each Graphify node to the chunk-stub that covers its source location, and attach edges between chunk-stubs. Keeps `caw-ingest` as the single source of stubs. _(As built: nodes carry a single start line, so mapping is line-containment, not range-overlap — see Constraint.)_ |
 | Core changes | **Additive sidecar only** | No change to `Stub`. Edges live in a separate table keyed by `StubId`. `caw-core` is untouched. |
 
 ## Constraint discovered during investigation
 
-Graphify's nodes are **file-backed**: each carries a source path and a line range. OpenCAW's `Stub` is *also* file-backed — `caw-core/src/lib.rs:375` defines `Stub { path, byte_offset, byte_length, .. }` and content is reconstructed by slicing `[byte_offset, byte_offset+byte_length)` out of `path` (there is no inline-content store; `caw-core/src/lib.rs:1429`). So Graphify nodes and OpenCAW stubs live in the same coordinate system (a file + a span). **No materialization step is needed** — Graphify nodes drop onto the stub model directly, because both are addressed as (file, span). A non-file corpus (e.g. records in a database) would instead need each record written out to a file before the existing pipeline could index it; Graphify avoids that entirely.
+Graphify's nodes are **file-backed**: each carries a source path and a source location. OpenCAW's `Stub` is *also* file-backed — `caw-core/src/lib.rs:375` defines `Stub { path, byte_offset, byte_length, .. }` and content is reconstructed by slicing `[byte_offset, byte_offset+byte_length)` out of `path` (there is no inline-content store; `caw-core/src/lib.rs:1429`). So Graphify nodes and OpenCAW stubs live in the same coordinate system (a file + a position). **No materialization step is needed** — Graphify nodes drop onto the stub model directly. A non-file corpus (e.g. records in a database) would instead need each record written out to a file before the existing pipeline could index it; Graphify avoids that entirely.
 
-The mismatch is **granularity, not addressing**:
+_(As built)_ Two facts about the real `graph.json` (Graphify 0.8.33) shaped the mapping:
 
-- Graphify node = one function / class / symbol (line range).
-- OpenCAW stub = one chunk (token-threshold split with structural boundaries — `caw-ingest/src/chunking.rs`), expressed as a byte range.
+- **A node's `source_location` is a single start line (`"L20"`), not a range.** The spec assumed ranges. So a node maps to *the one chunk-stub whose byte range covers the byte offset of that start line* — line-containment, not range-overlap. `caw-graph-ingest` reads each source file once to build a line→byte table, converts each node's start line to a byte offset, and finds the covering stub via `GraphEdgeStore::stub_geometry(path)`. Chunks tile a file contiguously, so a location past the last chunk's end clamps to the last chunk rather than going unmapped.
+- **`source_file` is relative to the extract root**, matching how stub paths are stored (e.g. `caw-core/src/lib.rs`). For a graph from `graphify extract crates/`, the ingest reads files under `--source-root crates`. The two coordinate systems line up with no translation.
 
-A chunk may contain several Graphify nodes; a large function may span chunks. The spike resolves this by **range-overlap mapping**: for each Graphify edge `(node_a → node_b)`, resolve `node_a`/`node_b` to the set of chunk-stubs whose `[byte_offset, byte_offset+byte_length)` overlaps the node's line range (converted to bytes), and record a stub-level edge for each overlapping pair. Many-to-many is fine; dedupe at the stub-pair level.
+The remaining mismatch is **granularity**: a Graphify node = one symbol; an OpenCAW stub = one chunk (`caw-ingest/src/chunking.rs`). Many nodes can land on one chunk. For each graph edge, both endpoints are resolved to their covering stubs; the edge is kept only if they land on *different* stubs (intra-chunk edges add nothing for cross-chunk expansion), and stub edges are deduped at `(src, dst, relation)`.
 
 > Whether to eventually carry symbol-level nodes as first-class stubs (finer recall units than chunks) is a **finding**, explicitly out of scope. The spike's job is to surface whether the structure signal is worth that investment at all.
+
+_(As built — validated end-to-end)_ Pure-AST extract of `crates/` (72 code files, no LLM): **1909 nodes, 4733 edges**. Ingesting with the default relation set produced **1027 stub edges** (calls 474, contains 285, method 160, imports_from 57, implements 51) — 953 linking different chunks of the same large file, 74 cross-file. Dropped: 2478 `references` (excluded by default as the vague bucket), 362 intra-chunk self-edges, 332 endpoints in files the test index predated. (Validated against a stale index copy; a freshly matched index is needed for measurement.)
 
 ## Components
 

@@ -33,6 +33,9 @@ pub mod storage {
 pub mod flat_index;
 pub mod hnsw_index;
 
+#[cfg(feature = "sqlite")]
+pub mod graph_edges;
+
 #[cfg(feature = "fastembed")]
 pub use embeddings::fastembed_provider::FastEmbedProvider;
 
