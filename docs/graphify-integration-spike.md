@@ -109,6 +109,22 @@ A/B is expansion-on vs expansion-off, **same index, same budget, same question s
 
 Honest deliverable: **a measured chunk-rank delta on code-structure questions, with edge-kind attribution and a regression count.** If the delta is flat or negative on OpenCAW's workloads, the conclusion is "structure signal doesn't help here," and the sidecar/expansion code is dropped — that's a successful spike.
 
+## Result (first pass — as built)
+
+Fresh BGE-small index of `crates/` (3174 stubs), 1077 stub edges, semantic-only baseline (top-k=30), expansion discount 0.5, cap 8, relations `calls,imports_from,implements,inherits,method,contains`. Golden set: `crates/caw-bench/src/qa/graph_eval_qa.json` (19 questions, 13 structural / 6 definition, gold lines verified against current source). Run via `caw-bench-graph-eval`.
+
+**Aggregate: flat.** recall@1/5/10 unchanged (0.316 / 0.684 / 0.842 overall), MRR 0.517 → 0.519 (+0.002). 1 improvement, 0 regressions across 19 questions.
+
+**The one improvement is the mechanism working as designed.** `s01_callers_count_tokens` ("which functions call `count_tokens_cl100k`") went from **miss → rank 31 via a `calls` edge**: the caller chunk carried none of the query's semantic signal, so cosine missed it in the top-30 entirely, and the graph edge from a high-ranked seed recovered it. That is exactly the case the spike predicted graph expansion would uniquely serve.
+
+**Why aggregate lift is ~0, honestly:**
+
+- The baseline is already strong on this set. Most questions put the answer's symbol name *in* the query, so BGE ranks the gold chunk in the top 1–5 — no headroom. This includes the trait-implementation structural questions (`impl Retriever for ...` literally contains "Retriever"), which turned out to be weaker stressors than hoped.
+- Expansion only admits neighbors *below* the seeds (discounted), so it can only change the outcome when the gold chunk is *outside* the baseline top-k. On a 3174-stub corpus with k=30, baseline recall@30 is high, leaving little to rescue. Only `s01` was both out-of-top-k and reachable via an edge.
+- `s10_get_content` stayed miss→miss: not reachable from any top-30 seed via the selected relations.
+
+**This is the "underpowered test" risk flagged before the run, now confirmed.** The result does *not* show the graph is useless; it shows that on codebase Q&A where embeddings already rank the answer high, expansion rarely changes the result — and when the answer is semantically invisible (pure caller/trace), it does help. To fairly judge the hypothesis the next pass needs: (a) more "gold chunk lacks the query's terms" questions (pure callers / multi-hop traces), and (b) a top-k sweep — at smaller k the baseline misses more, which is exactly where expansion can act.
+
 ## File inventory
 
 OpenCAW (this repo):

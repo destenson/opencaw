@@ -17,7 +17,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use caw_core::StubId;
-use caw_index::graph_edges::{GraphEdgeStore, StubEdge, StubGeometry};
+use caw_index::graph_edges::{
+    byte_offset_of_line, line_start_offsets, stub_for_byte, GraphEdgeStore, StubEdge,
+};
 use clap::Parser;
 use serde::Deserialize;
 use tracing::{info, warn};
@@ -240,73 +242,4 @@ fn main() -> anyhow::Result<()> {
 /// Parse a Graphify `source_location` like `"L20"` into a 1-indexed line number.
 fn parse_line(loc: &str) -> Option<usize> {
     loc.strip_prefix('L').and_then(|n| n.parse().ok())
-}
-
-/// Byte offset of the start of each line. `out[k]` is the offset of line `k+1`
-/// (1-indexed); line 1 starts at byte 0, and each `\n` opens the next line.
-fn line_start_offsets(content: &[u8]) -> Vec<u64> {
-    let mut starts = vec![0u64];
-    for (i, b) in content.iter().enumerate() {
-        if *b == b'\n' {
-            starts.push((i + 1) as u64);
-        }
-    }
-    starts
-}
-
-/// Byte offset for a 1-indexed line, clamped to the last known line start if the
-/// line number exceeds the file (graph and index can drift between rebuilds).
-fn byte_offset_of_line(line_starts: &[u64], line: usize) -> u64 {
-    if line == 0 {
-        return 0;
-    }
-    let idx = (line - 1).min(line_starts.len() - 1);
-    line_starts[idx]
-}
-
-/// Find the chunk-stub whose byte range covers `byte`. Chunks tile a file
-/// contiguously, so a byte past the last chunk's end (e.g. trailing whitespace
-/// the chunker dropped) maps to the last chunk rather than going unmapped.
-fn stub_for_byte(geom: &[StubGeometry], byte: u64) -> Option<StubId> {
-    for g in geom {
-        if byte >= g.byte_offset && byte < g.byte_offset + g.byte_length {
-            return Some(g.id.clone());
-        }
-    }
-    geom.iter()
-        .filter(|g| g.byte_offset <= byte)
-        .max_by_key(|g| g.byte_offset)
-        .map(|g| g.id.clone())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn line_offsets_and_lookup() {
-        let content = b"aaa\nbbbb\ncc\n";
-        let starts = line_start_offsets(content);
-        // line 1 @ 0, line 2 @ 4 ("bbbb"), line 3 @ 9 ("cc"), line 4 @ 12 (EOF)
-        assert_eq!(starts, vec![0, 4, 9, 12]);
-        assert_eq!(byte_offset_of_line(&starts, 1), 0);
-        assert_eq!(byte_offset_of_line(&starts, 2), 4);
-        assert_eq!(byte_offset_of_line(&starts, 3), 9);
-        // beyond EOF clamps to last
-        assert_eq!(byte_offset_of_line(&starts, 99), 12);
-    }
-
-    #[test]
-    fn byte_maps_to_covering_chunk() {
-        let geom = vec![
-            StubGeometry { id: StubId("c0".into()), byte_offset: 0, byte_length: 10 },
-            StubGeometry { id: StubId("c1".into()), byte_offset: 10, byte_length: 10 },
-        ];
-        assert_eq!(stub_for_byte(&geom, 0).unwrap().0, "c0");
-        assert_eq!(stub_for_byte(&geom, 9).unwrap().0, "c0");
-        assert_eq!(stub_for_byte(&geom, 10).unwrap().0, "c1");
-        assert_eq!(stub_for_byte(&geom, 19).unwrap().0, "c1");
-        // past the end clamps to the last chunk
-        assert_eq!(stub_for_byte(&geom, 50).unwrap().0, "c1");
-    }
 }

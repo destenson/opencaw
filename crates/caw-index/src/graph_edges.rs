@@ -166,6 +166,24 @@ impl GraphEdgeStore {
         Ok(written)
     }
 
+    /// In-memory edge store for tests: creates only the `stub_edge` table (no
+    /// `stubs` table, so `stub_geometry` is unavailable here).
+    #[cfg(test)]
+    fn in_memory() -> Self {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE stub_edge (
+                src_stub_id TEXT NOT NULL,
+                dst_stub_id TEXT NOT NULL,
+                relation    TEXT NOT NULL,
+                weight      REAL NOT NULL,
+                PRIMARY KEY (src_stub_id, dst_stub_id, relation)
+             );",
+        )
+        .unwrap();
+        Self { conn }
+    }
+
     pub fn edge_count(&self) -> CawResult<usize> {
         self.conn
             .query_row("SELECT COUNT(*) FROM stub_edge", [], |r| r.get::<_, i64>(0))
@@ -188,23 +206,27 @@ impl GraphEdgeStore {
         }
         let seed_set: HashSet<&str> = seed_ids.iter().map(|s| s.0.as_str()).collect();
 
-        let seed_ph = placeholders(1, seed_ids.len());
-        let rel_ph = placeholders(1 + seed_ids.len(), relations.len());
-        // Match a seed on either endpoint so expansion is direction-agnostic:
-        // a callee is worth pulling in for its caller and vice versa.
+        // Distinct placeholder ranges for the two IN-clauses: SQLite numbered
+        // params are positional, so reusing one range while binding the seed
+        // list twice would mismatch bind count against the highest index. Match
+        // a seed on either endpoint so expansion is direction-agnostic: a callee
+        // is worth pulling in for its caller and vice versa.
+        let n = seed_ids.len();
+        let src_ph = placeholders(1, n);
+        let dst_ph = placeholders(1 + n, n);
+        let rel_ph = placeholders(1 + 2 * n, relations.len());
         let sql = format!(
             "SELECT src_stub_id, dst_stub_id, relation, weight FROM stub_edge
-             WHERE (src_stub_id IN ({seed_ph}) OR dst_stub_id IN ({seed_ph}))
+             WHERE (src_stub_id IN ({src_ph}) OR dst_stub_id IN ({dst_ph}))
                AND relation IN ({rel_ph})"
         );
         let mut stmt = self
             .conn
             .prepare(&sql)
             .map_err(|e| CawError::VectorStore(format!("graph edges: prepare neighbors: {}", e)))?;
-        // Bind order: seeds (used twice via the named-less duplicate above is not
-        // possible, so bind seeds once and reference the same list twice by
-        // repeating them), then relations. Build the bind vector to match.
-        let mut binds: Vec<&str> = Vec::with_capacity(seed_ids.len() * 2 + relations.len());
+        // Bind order matches the placeholder ranges: seeds for src, seeds again
+        // for dst, then relations.
+        let mut binds: Vec<&str> = Vec::with_capacity(n * 2 + relations.len());
         for s in seed_ids {
             binds.push(s.0.as_str());
         }
@@ -249,6 +271,46 @@ impl GraphEdgeStore {
         }
         Ok(out)
     }
+}
+
+/// Byte offset of the start of each line in `content`. `out[k]` is the offset
+/// of line `k+1` (1-indexed): line 1 starts at byte 0, and each `\n` opens the
+/// next line. Used to turn a source location (a line) into a byte offset so it
+/// can be matched against a stub's byte range.
+pub fn line_start_offsets(content: &[u8]) -> Vec<u64> {
+    let mut starts = vec![0u64];
+    for (i, b) in content.iter().enumerate() {
+        if *b == b'\n' {
+            starts.push((i + 1) as u64);
+        }
+    }
+    starts
+}
+
+/// Byte offset for a 1-indexed line, clamped to the last known line start if the
+/// line number exceeds the file (a graph and an index can drift between
+/// rebuilds, and a clamped match is better than dropping the location).
+pub fn byte_offset_of_line(line_starts: &[u64], line: usize) -> u64 {
+    if line == 0 || line_starts.is_empty() {
+        return 0;
+    }
+    let idx = (line - 1).min(line_starts.len() - 1);
+    line_starts[idx]
+}
+
+/// Find the chunk-stub whose byte range covers `byte`. Chunks tile a file
+/// contiguously, so a byte past the last chunk's end (e.g. trailing whitespace
+/// the chunker dropped) maps to the last chunk rather than going unmapped.
+pub fn stub_for_byte(geom: &[StubGeometry], byte: u64) -> Option<StubId> {
+    for g in geom {
+        if byte >= g.byte_offset && byte < g.byte_offset + g.byte_length {
+            return Some(g.id.clone());
+        }
+    }
+    geom.iter()
+        .filter(|g| g.byte_offset <= byte)
+        .max_by_key(|g| g.byte_offset)
+        .map(|g| g.id.clone())
 }
 
 /// SQL placeholder list `?n, ?n+1, ...` of length `count`, starting at `start`.
@@ -389,6 +451,77 @@ mod tests {
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].via_seed.0, "c");
         assert!((plan[0].score - 0.45).abs() < 1e-6);
+    }
+
+    #[test]
+    fn line_offsets_and_lookup() {
+        let content = b"aaa\nbbbb\ncc\n";
+        let starts = line_start_offsets(content);
+        // line 1 @ 0, line 2 @ 4 ("bbbb"), line 3 @ 9 ("cc"), line 4 @ 12 (EOF)
+        assert_eq!(starts, vec![0, 4, 9, 12]);
+        assert_eq!(byte_offset_of_line(&starts, 1), 0);
+        assert_eq!(byte_offset_of_line(&starts, 2), 4);
+        assert_eq!(byte_offset_of_line(&starts, 3), 9);
+        assert_eq!(byte_offset_of_line(&starts, 99), 12); // beyond EOF clamps
+    }
+
+    #[test]
+    fn byte_maps_to_covering_chunk() {
+        let geom = vec![
+            StubGeometry { id: StubId("c0".into()), byte_offset: 0, byte_length: 10 },
+            StubGeometry { id: StubId("c1".into()), byte_offset: 10, byte_length: 10 },
+        ];
+        assert_eq!(stub_for_byte(&geom, 0).unwrap().0, "c0");
+        assert_eq!(stub_for_byte(&geom, 9).unwrap().0, "c0");
+        assert_eq!(stub_for_byte(&geom, 10).unwrap().0, "c1");
+        assert_eq!(stub_for_byte(&geom, 19).unwrap().0, "c1");
+        assert_eq!(stub_for_byte(&geom, 50).unwrap().0, "c1"); // past end clamps
+    }
+
+    #[test]
+    fn neighbors_match_either_endpoint_and_filter_relation() {
+        let mut store = GraphEdgeStore::in_memory();
+        let edge = |s: &str, d: &str, r: &str| StubEdge {
+            src: StubId(s.into()),
+            dst: StubId(d.into()),
+            relation: r.into(),
+            weight: 1.0,
+        };
+        store
+            .replace_edges(&[
+                edge("a", "b", "calls"),
+                edge("b", "c", "calls"),
+                edge("x", "a", "imports_from"),
+            ])
+            .unwrap();
+
+        // From `a` along `calls`: a->b gives b. The imports_from edge x->a is
+        // filtered out by relation.
+        let got = store
+            .neighbors(&[StubId("a".into())], &["calls".to_string()])
+            .unwrap();
+        let mut ns: Vec<String> = got.into_iter().map(|n| n.neighbor.0).collect();
+        ns.sort();
+        assert_eq!(ns, vec!["b"]);
+
+        // From `b` along `calls`: a->b (b is dst -> neighbor a) and b->c
+        // (b is src -> neighbor c). Exercises the both-endpoint match and the
+        // distinct-placeholder binding for the two IN-clauses.
+        let got = store
+            .neighbors(&[StubId("b".into())], &["calls".to_string()])
+            .unwrap();
+        let mut ns: Vec<String> = got.into_iter().map(|n| n.neighbor.0).collect();
+        ns.sort();
+        assert_eq!(ns, vec!["a", "c"]);
+
+        // Multi-seed query: the binding must scale with seed count.
+        let got = store
+            .neighbors(
+                &[StubId("a".into()), StubId("b".into())],
+                &["calls".to_string()],
+            )
+            .unwrap();
+        assert!(!got.is_empty());
     }
 
     #[test]

@@ -1,0 +1,196 @@
+{
+  "note": "Golden question set for the graphify graph-expansion measurement. Authored fresh against the current source (the older opencaw_qa.json had drifted: e.g. it recorded default_hysteresis unload=0.4, but the code now returns 0.55). Each question's `expected` entries were verified by reading the source; any one expected location counts as a hit. Paths are crates/-relative to match stub paths in the index. `line` is 1-indexed and is resolved to the covering chunk-stub at measurement time. `type` is structural (intended to stress cross-chunk graph edges) or definition (control: the answer symbol usually appears in the query).",
+  "questions": [
+    {
+      "id": "s01_callers_count_tokens",
+      "type": "structural",
+      "question": "Which functions call count_tokens_cl100k to compute a fragment's or chunk's token count?",
+      "reference_answer": "Fragment/stub construction in caw-core, caw-index, and the bench runner all call count_tokens_cl100k.",
+      "expected": [
+        {"path": "caw-core/src/lib.rs", "symbol": "candidate_list_fragment", "line": 439},
+        {"path": "caw-index/src/lib.rs", "symbol": "SemanticRetriever::insert", "line": 153},
+        {"path": "caw-index/src/lib.rs", "symbol": "read_range", "line": 169},
+        {"path": "caw-bench/src/runner.rs", "symbol": "token count helper", "line": 655}
+      ]
+    },
+    {
+      "id": "s02_callers_detect_loop",
+      "type": "structural",
+      "question": "Which model adapters call detect_loop to guard against degenerate looping output?",
+      "reference_answer": "The OpenAI-compatible, llama.cpp, Claude Code, and Groq adapters call detect_loop on the model's answer.",
+      "expected": [
+        {"path": "caw-adapters/src/openai_compatible.rs", "symbol": "complete", "line": 317},
+        {"path": "caw-adapters/src/llama_cpp.rs", "symbol": "complete", "line": 193},
+        {"path": "caw-adapters/src/claude_code.rs", "symbol": "complete", "line": 375},
+        {"path": "caw-adapters/src/groq.rs", "symbol": "complete", "line": 152}
+      ]
+    },
+    {
+      "id": "s03_impl_retriever",
+      "type": "structural",
+      "question": "What types implement the Retriever trait used to search the index?",
+      "reference_answer": "SemanticRetriever, HybridRetriever, and InMemoryIndex implement Retriever.",
+      "expected": [
+        {"path": "caw-index/src/lib.rs", "symbol": "impl Retriever for SemanticRetriever", "line": 119},
+        {"path": "caw-index/src/lib.rs", "symbol": "impl Retriever for HybridRetriever", "line": 236},
+        {"path": "caw-index/src/lib.rs", "symbol": "impl Retriever for InMemoryIndex", "line": 330}
+      ]
+    },
+    {
+      "id": "s04_impl_model_adapter",
+      "type": "structural",
+      "question": "Which adapter types implement the ModelAdapter trait for talking to a model backend?",
+      "reference_answer": "AnthropicAdapter, OllamaAdapter, GroqAdapter, OpenAiCompatibleAdapter, ClaudeCodeAdapter, and LlamaCppAdapter implement ModelAdapter.",
+      "expected": [
+        {"path": "caw-adapters/src/anthropic.rs", "symbol": "impl ModelAdapter for AnthropicAdapter", "line": 84},
+        {"path": "caw-adapters/src/ollama.rs", "symbol": "impl ModelAdapter for OllamaAdapter", "line": 197},
+        {"path": "caw-adapters/src/groq.rs", "symbol": "impl ModelAdapter for GroqAdapter", "line": 89},
+        {"path": "caw-adapters/src/openai_compatible.rs", "symbol": "impl ModelAdapter for OpenAiCompatibleAdapter", "line": 238},
+        {"path": "caw-adapters/src/claude_code.rs", "symbol": "impl ModelAdapter for ClaudeCodeAdapter", "line": 149},
+        {"path": "caw-adapters/src/llama_cpp.rs", "symbol": "impl ModelAdapter for LlamaCppAdapter", "line": 152}
+      ]
+    },
+    {
+      "id": "s05_impl_stub_store",
+      "type": "structural",
+      "question": "Which storage backends implement the StubStore trait?",
+      "reference_answer": "SqliteStubStore and QdrantStubStore implement StubStore.",
+      "expected": [
+        {"path": "caw-index/src/storage/sqlite_store.rs", "symbol": "impl StubStore for SqliteStubStore", "line": 554},
+        {"path": "caw-index/src/storage/qdrant_store.rs", "symbol": "impl StubStore for QdrantStubStore", "line": 155}
+      ]
+    },
+    {
+      "id": "s06_impl_embedding_provider",
+      "type": "structural",
+      "question": "Which types implement the EmbeddingProvider trait?",
+      "reference_answer": "CandleEmbeddingProvider, FastEmbedProvider, OnnxEmbeddingProvider, and ApiEmbeddingProvider implement EmbeddingProvider.",
+      "expected": [
+        {"path": "caw-index/src/embeddings/candle_provider.rs", "symbol": "impl EmbeddingProvider for CandleEmbeddingProvider", "line": 355},
+        {"path": "caw-index/src/embeddings/fastembed_provider.rs", "symbol": "impl EmbeddingProvider for FastEmbedProvider", "line": 152},
+        {"path": "caw-index/src/embeddings/onnx_provider.rs", "symbol": "impl EmbeddingProvider for OnnxEmbeddingProvider", "line": 368},
+        {"path": "caw-index/src/embeddings/api_provider.rs", "symbol": "impl EmbeddingProvider for ApiEmbeddingProvider", "line": 84}
+      ]
+    },
+    {
+      "id": "s07_impl_vector_index",
+      "type": "structural",
+      "question": "Which types implement the VectorIndex trait?",
+      "reference_answer": "HnswVectorIndex, FlatVectorIndex, and QdrantStubStore implement VectorIndex.",
+      "expected": [
+        {"path": "caw-index/src/hnsw_index.rs", "symbol": "impl VectorIndex for HnswVectorIndex", "line": 104},
+        {"path": "caw-index/src/flat_index.rs", "symbol": "impl VectorIndex for FlatVectorIndex", "line": 39},
+        {"path": "caw-index/src/storage/qdrant_store.rs", "symbol": "impl VectorIndex for QdrantStubStore", "line": 373}
+      ]
+    },
+    {
+      "id": "s08_impl_provenance_store",
+      "type": "structural",
+      "question": "Which types implement the ProvenanceStore trait?",
+      "reference_answer": "InMemoryProvenanceStore and ProvenanceLedger implement ProvenanceStore.",
+      "expected": [
+        {"path": "caw-core/src/provenance.rs", "symbol": "impl ProvenanceStore for InMemoryProvenanceStore", "line": 11},
+        {"path": "caw-core/src/provenance.rs", "symbol": "impl ProvenanceStore for ProvenanceLedger", "line": 59}
+      ]
+    },
+    {
+      "id": "s09_impl_budget_scheduler",
+      "type": "structural",
+      "question": "Which type implements the BudgetScheduler trait that decides what to load within the token budget?",
+      "reference_answer": "GreedyBudgetScheduler implements BudgetScheduler.",
+      "expected": [
+        {"path": "caw-core/src/scheduler.rs", "symbol": "impl BudgetScheduler for GreedyBudgetScheduler", "line": 28}
+      ]
+    },
+    {
+      "id": "s10_get_content_from_disk",
+      "type": "structural",
+      "question": "Which function reconstructs a stub's body text by slicing bytes out of the source file on disk?",
+      "reference_answer": "SqliteStubStore::get_content slices [byte_offset, byte_offset+byte_length) from the file at the stub's path.",
+      "expected": [
+        {"path": "caw-index/src/storage/sqlite_store.rs", "symbol": "get_content", "line": 559}
+      ]
+    },
+    {
+      "id": "s11_tracing_adapter",
+      "type": "structural",
+      "question": "Which type wraps another ModelAdapter to trace its prompts and responses?",
+      "reference_answer": "TracingAdapter<A> wraps an inner ModelAdapter.",
+      "expected": [
+        {"path": "caw-adapters/src/tracing.rs", "symbol": "TracingAdapter", "line": 100}
+      ]
+    },
+    {
+      "id": "s12_dynamic_orchestrator",
+      "type": "structural",
+      "question": "Which struct runs the multi-pass dynamic recall loop with eviction and consolidation?",
+      "reference_answer": "DynamicRecallOrchestrator.",
+      "expected": [
+        {"path": "caw-orchestrator/src/dynamic.rs", "symbol": "DynamicRecallOrchestrator", "line": 70}
+      ]
+    },
+    {
+      "id": "s13_cli_embedder",
+      "type": "structural",
+      "question": "Which embedding provider does the CLI construct to embed queries and documents?",
+      "reference_answer": "LazyCandleEmbedProvider, which lazily builds a CandleEmbeddingProvider.",
+      "expected": [
+        {"path": "caw-cli/src/main.rs", "symbol": "LazyCandleEmbedProvider", "line": 141}
+      ]
+    },
+    {
+      "id": "d01_default_max_recall_iterations",
+      "type": "definition",
+      "question": "What is the default value of max_recall_iterations in DynamicRecallConfig?",
+      "reference_answer": "3",
+      "expected": [
+        {"path": "caw-orchestrator/src/dynamic.rs", "symbol": "max_recall_iterations default", "line": 165}
+      ]
+    },
+    {
+      "id": "d02_default_max_initial_fragments",
+      "type": "definition",
+      "question": "What is the default value of max_initial_fragments in DynamicRecallConfig?",
+      "reference_answer": "4",
+      "expected": [
+        {"path": "caw-orchestrator/src/dynamic.rs", "symbol": "max_initial_fragments default", "line": 171}
+      ]
+    },
+    {
+      "id": "d03_default_convergence_min_new_tokens",
+      "type": "definition",
+      "question": "What is the default value of convergence_min_new_tokens in DynamicRecallConfig?",
+      "reference_answer": "200",
+      "expected": [
+        {"path": "caw-orchestrator/src/dynamic.rs", "symbol": "convergence_min_new_tokens default", "line": 173}
+      ]
+    },
+    {
+      "id": "d04_default_hysteresis_load",
+      "type": "definition",
+      "question": "What load threshold does RecallThresholds::default_hysteresis return?",
+      "reference_answer": "0.7",
+      "expected": [
+        {"path": "caw-core/src/lib.rs", "symbol": "default_hysteresis load", "line": 1118}
+      ]
+    },
+    {
+      "id": "d05_default_hysteresis_unload",
+      "type": "definition",
+      "question": "What unload threshold does RecallThresholds::default_hysteresis return?",
+      "reference_answer": "0.55",
+      "expected": [
+        {"path": "caw-core/src/lib.rs", "symbol": "default_hysteresis unload", "line": 1119}
+      ]
+    },
+    {
+      "id": "d06_sqlite_journal_mode",
+      "type": "definition",
+      "question": "What journal mode does SqliteStubStore set on the database connection?",
+      "reference_answer": "WAL (journal_mode=WAL)",
+      "expected": [
+        {"path": "caw-index/src/storage/sqlite_store.rs", "symbol": "journal_mode pragma", "line": 58}
+      ]
+    }
+  ]
+}

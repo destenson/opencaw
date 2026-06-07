@@ -34,6 +34,10 @@ path = "src/bin/coop.rs"
 name = "caw-bench-concept-probe"
 path = "src/bin/concept_vector_probe.rs"
 
+[[bin]]
+name = "caw-bench-graph-eval"
+path = "src/bin/graph_eval.rs"
+
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
