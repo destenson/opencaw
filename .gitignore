@@ -9,3 +9,4 @@ opencaw-corpora/
 .caw*/
 qa/log.txt
 qa/claude_*.txt
+graphify-out/

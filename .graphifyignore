@@ -1,0 +1,7 @@
+# Keep the graph a pure code-structure graph: exclude prose/doc/data so
+# AST extraction runs offline with no LLM (semantic) pass. .gitignore is
+# also honored by graphify (target/, data/, opencaw-corpora/, etc.).
+*.md
+*.txt
+docs/
+qa/
