@@ -1,6 +1,6 @@
 # Graphify Integration Spike
 
-Status: in progress — edge sidecar + Graphify ingest implemented and validated end-to-end (`caw-index::graph_edges`, `caw-cli` bin `caw-graph-ingest`). Retrieval-side expansion wiring and the measurement harness are pending. Sections below marked _(as built)_ record what the implementation actually does, which in places differs from the original spec.
+Status: spike complete — edge sidecar + ingest + expansion + measurement all built and run over two passes (`caw-index::graph_edges`, `caw-cli` bin `caw-graph-ingest`, `caw-bench` bin `caw-bench-graph-eval`). Verdict in **Result (second pass)**: call-graph expansion with rank-adjacent merge is a real retrieval signal that recovers answers cosine misses, but needs a displacement gate before it goes on by default. Not wired into the orchestrator. Sections marked _(as built)_ record what the implementation does, which in places differs from the original spec.
 
 ## Goal
 
@@ -109,7 +109,7 @@ A/B is expansion-on vs expansion-off, **same index, same budget, same question s
 
 Honest deliverable: **a measured chunk-rank delta on code-structure questions, with edge-kind attribution and a regression count.** If the delta is flat or negative on OpenCAW's workloads, the conclusion is "structure signal doesn't help here," and the sidecar/expansion code is dropped — that's a successful spike.
 
-## Result (first pass — as built)
+## Result (first pass — discounted merge, easy questions)
 
 Fresh BGE-small index of `crates/` (3174 stubs), 1077 stub edges, semantic-only baseline (top-k=30), expansion discount 0.5, cap 8, relations `calls,imports_from,implements,inherits,method,contains`. Golden set: `crates/caw-bench/src/qa/graph_eval_qa.json` (19 questions, 13 structural / 6 definition, gold lines verified against current source). Run via `caw-bench-graph-eval`.
 
@@ -124,6 +124,34 @@ Fresh BGE-small index of `crates/` (3174 stubs), 1077 stub edges, semantic-only 
 - `s10_get_content` stayed miss→miss: not reachable from any top-30 seed via the selected relations.
 
 **This is the "underpowered test" risk flagged before the run, now confirmed.** The result does *not* show the graph is useless; it shows that on codebase Q&A where embeddings already rank the answer high, expansion rarely changes the result — and when the answer is semantically invisible (pure caller/trace), it does help. To fairly judge the hypothesis the next pass needs: (a) more "gold chunk lacks the query's terms" questions (pure callers / multi-hop traces), and (b) a top-k sweep — at smaller k the baseline misses more, which is exactly where expansion can act.
+
+## Result (second pass — harder questions + rank-adjacent merge)
+
+Two changes from the first pass. **(1) Harder questions:** added 8 `type: "caller"` questions ("which functions call X"), gold = the cross-file *caller* chunks, phrased so cosine ranks X's definition (the seed) but not the callers. As intended these are hard for the baseline: caller recall@5 = 0.375, MRR 0.145. **(2) Merge policy:** the first pass exposed a design flaw — a neighbor scored `seed × discount` always sorts *below* the pool, so it can never lift a gold already ranked and dumps a recovered miss at the very bottom (the two first-pass rescues landed at rank 101/102, useless). The fix is **rank-adjacent merge**: insert each admitted neighbor immediately after the seed that pulled it in, so a caller inherits its callee-definition's rank. `caw-bench-graph-eval --merge {adjacent,discounted}`; `adjacent` is the default.
+
+**Adjacent merge, `calls` edges only** (the only relation that ever helped — see attribution below):
+
+| group | recall@3 | recall@5 | recall@10 | MRR |
+|---|---|---|---|---|
+| caller (n=8) | 0.125 → **0.625** | 0.375 → **0.750** | 0.625 → **0.875** | 0.145 → 0.282 |
+| structural (n=13) | 0.769 → 0.846 | 0.769 → 0.846 | 0.846 → 0.846 | 0.626 → 0.666 |
+| definition (n=6) | 0.500 → 0.500 | 0.500 → 0.500 | **0.833 → 0.500** | 0.282 → 0.252 |
+| all (n=27) | 0.519 → 0.704 | 0.593 → 0.741 | 0.778 → 0.778 | 0.407 → 0.460 |
+
+**Rescue:** of 6 questions where cosine put the gold outside top-10, adjacent+calls pulled **4 into the top-10** — a full miss → rank 2, miss → 3, 16 → 3, 26 → 3, 65 → 14. The mechanism does the thing.
+
+**Findings:**
+
+- **The signal is real and it is the call graph specifically.** Every single improvement (7/7) came through `calls` edges. `contains`/`method`/`implements`/`imports_from`/`inherits` produced zero wins and only added displacement noise — restricting to `calls` cut regressions 9 → 6 and lifted overall MRR (+0.019 → +0.053). The useful structural signal for retrieval is "who calls whom," not the rest.
+- **Big wins exactly where cosine fails.** On the caller set (the population that matters) recall@3 went 5× (0.125 → 0.625) and recall@5 doubled. This is the spike's hypothesis, confirmed.
+- **Real cost: displacement of easy mid-rank answers.** Adjacent insertion pushes a rank-6–12 gold down when neighbors of higher-ranked seeds are inserted ahead of it. Definition questions (gold mid-rank, unrelated to call structure) regressed: recall@10 0.833 → 0.500. So unconditional global expansion is *not* a clean win at every k.
+
+**Verdict: confirmed, with a gate required.** Call-graph expansion, merged rank-adjacent, is a strong retrieval signal for structural/caller/trace questions and recovers answers cosine misses entirely. But applied unconditionally it harms lookups where the embedding already had the right chunk. Net recall@3/@5 are clearly up; recall@10 is flat because the caller gains and definition losses cancel. The open problem is **when to expand** — not whether the signal exists.
+
+**Next levers (not yet done):**
+- Bound displacement: only insert neighbors after the top-1–2 seeds (a rank-9 gold can't be shoved past by neighbors of rank-5 seeds), and/or cap neighbors-per-seed tighter.
+- A gate for *whether* to expand. Note the project's no-heuristics rule: prefer expanding always but bounding displacement, over sniffing "is this a structural question."
+- Only then consider wiring expansion into `DynamicRecallOrchestrator` Phase 1. Until the recall@10 regression on easy queries is closed, it should not go on by default.
 
 ## File inventory
 

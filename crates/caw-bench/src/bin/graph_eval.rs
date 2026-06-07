@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 use caw_core::{EmbeddingProvider, ScoredStub, StubId, StubStore, VectorIndex};
 use caw_index::graph_edges::{
     byte_offset_of_line, line_start_offsets, plan_expansion, stub_for_byte, ExpansionConfig,
-    GraphEdgeStore,
+    GraphEdgeStore, PlannedNeighbor,
 };
 use caw_index::{CandleEmbeddingProvider, HnswVectorIndex, SqliteStubStore};
 use clap::Parser;
@@ -45,9 +45,15 @@ struct Args {
     #[arg(long, default_value = "crates")]
     source_root: PathBuf,
 
-    /// Number of semantic seeds retrieved per query.
+    /// Depth of the baseline semantic ranking. Gold rank is measured within
+    /// this pool; beyond it counts as a miss. Larger = a truer deep rank.
+    #[arg(long, default_value_t = 100)]
+    pool: usize,
+
+    /// How many of the top semantic hits feed expansion as seeds. Neighbors are
+    /// only reachable from these, so this bounds what expansion can rescue.
     #[arg(long, default_value_t = 30)]
-    top_k: usize,
+    seed_k: usize,
 
     /// Edge relations to expand along.
     #[arg(long, default_value = DEFAULT_RELATIONS)]
@@ -61,8 +67,16 @@ struct Args {
     #[arg(long, default_value_t = 8)]
     max_neighbors: usize,
 
+    /// Merge policy for admitted neighbors:
+    /// `adjacent` inserts each neighbor immediately after the seed that pulled
+    /// it in (a caller lands next to its callee's definition);
+    /// `discounted` re-ranks everything by score (neighbor = seed*discount),
+    /// which can only push neighbors below the pool.
+    #[arg(long, default_value = "adjacent")]
+    merge: String,
+
     /// Recall@k cutoffs to report (comma-separated).
-    #[arg(long, default_value = "1,5,10")]
+    #[arg(long, default_value = "1,3,5,10,20,50")]
     recall_k: String,
 }
 
@@ -161,16 +175,16 @@ fn main() -> Result<()> {
             }
         }
 
-        // --- baseline: semantic top-k ---
+        // --- baseline: deep semantic ranking ---
         let qe = embedder.embed_query(vec![q.question.as_str()])?;
         let query_embedding = qe.into_iter().next().context("no query embedding")?;
-        let hits = index.search(&query_embedding, args.top_k);
+        let hits = index.search(&query_embedding, args.pool);
         let base_ranked: Vec<String> = hits.iter().map(|(id, _)| id.0.clone()).collect();
         let base_rank = first_rank(&base_ranked, &gold);
 
-        // --- expansion: admit graph neighbors of the seeds ---
-        let mut seeds = Vec::with_capacity(hits.len());
-        for (id, score) in &hits {
+        // --- expansion: admit graph neighbors of the top seed_k seeds ---
+        let mut seeds = Vec::with_capacity(args.seed_k.min(hits.len()));
+        for (id, score) in hits.iter().take(args.seed_k) {
             if let Ok(stub) = store.get_stub(id) {
                 seeds.push(ScoredStub {
                     stub,
@@ -182,18 +196,14 @@ fn main() -> Result<()> {
         let neighbors = edges.neighbors(&seed_ids, &cfg.relations)?;
         let planned = plan_expansion(&seeds, &neighbors, &cfg);
 
-        // Merge seeds + admitted neighbors by score, descending.
-        let mut merged: Vec<(String, f32)> =
-            hits.iter().map(|(id, s)| (id.0.clone(), *s)).collect();
         let via_by_id: HashMap<&str, &str> = planned
             .iter()
             .map(|p| (p.id.0.as_str(), p.via_relation.as_str()))
             .collect();
-        for p in &planned {
-            merged.push((p.id.0.clone(), p.score));
-        }
-        merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let exp_ranked: Vec<String> = merged.into_iter().map(|(id, _)| id).collect();
+        let exp_ranked = match args.merge.as_str() {
+            "discounted" => merge_discounted(&hits, &planned),
+            _ => merge_adjacent(&base_ranked, &planned),
+        };
         let exp_rank = first_rank(&exp_ranked, &gold);
 
         // Attribute an improvement to the relation that admitted the gold stub.
@@ -230,6 +240,47 @@ fn first_rank(ranked: &[String], gold: &HashSet<String>) -> Option<usize> {
     ranked.iter().position(|id| gold.contains(id)).map(|p| p + 1)
 }
 
+/// Insert each admitted neighbor immediately after the seed that pulled it in,
+/// so a structurally-linked chunk inherits its seed's rank rather than a
+/// globally-discounted one. A neighbor reachable from several seeds is placed
+/// after the highest-ranked (first-seen) seed.
+fn merge_adjacent(base_ranked: &[String], planned: &[PlannedNeighbor]) -> Vec<String> {
+    let mut by_seed: HashMap<&str, Vec<&PlannedNeighbor>> = HashMap::new();
+    for p in planned {
+        by_seed.entry(p.via_seed.0.as_str()).or_default().push(p);
+    }
+    for v in by_seed.values_mut() {
+        v.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    }
+    let mut placed: HashSet<String> = HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for id in base_ranked {
+        if placed.insert(id.clone()) {
+            out.push(id.clone());
+        }
+        if let Some(ns) = by_seed.get(id.as_str()) {
+            for n in ns {
+                if placed.insert(n.id.0.clone()) {
+                    out.push(n.id.0.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Re-rank pool + admitted neighbors purely by score. Because a neighbor scores
+/// `seed * discount`, this can only place neighbors below the pool — kept for
+/// comparison against `adjacent`.
+fn merge_discounted(hits: &[(StubId, f32)], planned: &[PlannedNeighbor]) -> Vec<String> {
+    let mut merged: Vec<(String, f32)> = hits.iter().map(|(id, s)| (id.0.clone(), *s)).collect();
+    for p in planned {
+        merged.push((p.id.0.clone(), p.score));
+    }
+    merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    merged.into_iter().map(|(id, _)| id).collect()
+}
+
 fn recall_at(rank: Option<usize>, k: usize) -> bool {
     matches!(rank, Some(r) if r <= k)
 }
@@ -263,18 +314,17 @@ fn report(outcomes: &[Outcome], recall_ks: &[usize]) {
         );
     }
 
-    // Aggregates overall and per type.
-    let groups: [(&str, Vec<&Outcome>); 3] = [
-        ("all", outcomes.iter().collect()),
-        (
-            "structural",
-            outcomes.iter().filter(|o| o.qtype == "structural").collect(),
-        ),
-        (
-            "definition",
-            outcomes.iter().filter(|o| o.qtype == "definition").collect(),
-        ),
-    ];
+    // Aggregates overall and per distinct type (in first-seen order).
+    let mut types: Vec<&str> = Vec::new();
+    for o in outcomes {
+        if !types.contains(&o.qtype.as_str()) {
+            types.push(o.qtype.as_str());
+        }
+    }
+    let mut groups: Vec<(&str, Vec<&Outcome>)> = vec![("all", outcomes.iter().collect())];
+    for t in types {
+        groups.push((t, outcomes.iter().filter(|o| o.qtype == t).collect()));
+    }
 
     println!("\n## aggregates\n");
     for (name, group) in &groups {
@@ -321,6 +371,38 @@ fn report(outcomes: &[Outcome], recall_ks: &[usize]) {
                 er - br
             );
         }
+    }
+
+    // Rescue: of the questions cosine fails (gold not in top-10), how many does
+    // expansion lift into the top-10? This is the population expansion targets;
+    // the aggregate above is diluted by questions cosine already nails.
+    const RESCUE_CUTOFF: usize = 10;
+    let failed: Vec<&Outcome> = outcomes
+        .iter()
+        .filter(|o| !recall_at(o.base_rank, RESCUE_CUTOFF))
+        .collect();
+    let rescued = failed
+        .iter()
+        .filter(|o| recall_at(o.exp_rank, RESCUE_CUTOFF))
+        .count();
+    println!("\n## rescue (gold outside baseline top-{RESCUE_CUTOFF})\n");
+    println!(
+        "  cosine-failed: {}  rescued-into-top-{}: {}",
+        failed.len(),
+        RESCUE_CUTOFF,
+        rescued
+    );
+    for o in &failed {
+        let b = o.base_rank.map_or("miss".into(), |r| r.to_string());
+        let e = o.exp_rank.map_or("miss".into(), |r| r.to_string());
+        println!(
+            "    {:<34} {:<10} base={:<5} exp={:<5} via={}",
+            o.id,
+            o.qtype,
+            b,
+            e,
+            o.via_relation.as_deref().unwrap_or("")
+        );
     }
 
     // Edge-kind attribution among improvements.

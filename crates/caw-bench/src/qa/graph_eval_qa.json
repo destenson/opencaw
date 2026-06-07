@@ -191,6 +191,90 @@
       "expected": [
         {"path": "caw-index/src/storage/sqlite_store.rs", "symbol": "journal_mode pragma", "line": 58}
       ]
+    },
+    {
+      "id": "c01_callers_strip_fake_recall",
+      "type": "caller",
+      "question": "Which functions call strip_fake_recall_blocks?",
+      "reference_answer": "The complete() methods of the OpenAI-compatible, Ollama, Groq, Anthropic, and llama.cpp adapters. Gold is the caller chunks, which do not name the helper's purpose.",
+      "expected": [
+        {"path": "caw-adapters/src/openai_compatible.rs", "symbol": "complete", "line": 316},
+        {"path": "caw-adapters/src/ollama.rs", "symbol": "complete", "line": 271},
+        {"path": "caw-adapters/src/groq.rs", "symbol": "complete", "line": 151},
+        {"path": "caw-adapters/src/anthropic.rs", "symbol": "complete", "line": 147},
+        {"path": "caw-adapters/src/llama_cpp.rs", "symbol": "complete", "line": 192}
+      ]
+    },
+    {
+      "id": "c02_callers_truncate_at_chat_boundary",
+      "type": "caller",
+      "question": "Which functions call truncate_at_chat_boundary?",
+      "reference_answer": "The llama.cpp, Ollama, and OpenAI-compatible adapters call it on raw model output.",
+      "expected": [
+        {"path": "caw-adapters/src/llama_cpp.rs", "symbol": "complete", "line": 173},
+        {"path": "caw-adapters/src/ollama.rs", "symbol": "complete", "line": 262},
+        {"path": "caw-adapters/src/openai_compatible.rs", "symbol": "complete", "line": 314}
+      ]
+    },
+    {
+      "id": "c03_callers_split_thinking",
+      "type": "caller",
+      "question": "Which functions call split_thinking?",
+      "reference_answer": "The Ollama and llama.cpp adapters split the model's thinking trace from its answer.",
+      "expected": [
+        {"path": "caw-adapters/src/ollama.rs", "symbol": "complete", "line": 263},
+        {"path": "caw-adapters/src/llama_cpp.rs", "symbol": "complete", "line": 174}
+      ]
+    },
+    {
+      "id": "c04_callers_candidate_list_fragment",
+      "type": "caller",
+      "question": "Which code constructs a candidate_list_fragment?",
+      "reference_answer": "A caw-core search path and the dynamic orchestrator's initial retrieval build it when the ambiguity gate fires.",
+      "expected": [
+        {"path": "caw-core/src/lib.rs", "symbol": "candidate_list_fragment call", "line": 1505},
+        {"path": "caw-orchestrator/src/dynamic.rs", "symbol": "candidate_list_fragment call", "line": 520}
+      ]
+    },
+    {
+      "id": "c05_callers_tokenize_terms",
+      "type": "caller",
+      "question": "Which functions call tokenize_terms?",
+      "reference_answer": "The provenance ledger and the dynamic orchestrator's overlap check tokenize text with it.",
+      "expected": [
+        {"path": "caw-core/src/provenance.rs", "symbol": "tokenize_terms call", "line": 49},
+        {"path": "caw-orchestrator/src/dynamic.rs", "symbol": "tokenize_terms call", "line": 1488}
+      ]
+    },
+    {
+      "id": "c06_callers_floor_char_boundary",
+      "type": "caller",
+      "question": "Which functions call floor_char_boundary?",
+      "reference_answer": "The chunker and the tree-sitter outline builder both snap byte offsets to char boundaries with it.",
+      "expected": [
+        {"path": "caw-ingest/src/chunking.rs", "symbol": "floor_char_boundary call", "line": 413},
+        {"path": "caw-ingest/src/tree_sitter_outline.rs", "symbol": "floor_char_boundary call", "line": 141}
+      ]
+    },
+    {
+      "id": "c07_callers_ensure_ort_dylib_path",
+      "type": "caller",
+      "question": "Which functions call ensure_ort_dylib_path?",
+      "reference_answer": "The fastembed and onnx embedding providers call it before loading onnxruntime.",
+      "expected": [
+        {"path": "caw-index/src/embeddings/fastembed_provider.rs", "symbol": "ensure_ort_dylib_path call", "line": 63},
+        {"path": "caw-index/src/embeddings/onnx_provider.rs", "symbol": "ensure_ort_dylib_path call", "line": 323}
+      ]
+    },
+    {
+      "id": "c08_callers_build_in_memory_prebuilt",
+      "type": "caller",
+      "question": "Which code calls build_in_memory_prebuilt?",
+      "reference_answer": "The coop bench binary and the main bench entrypoint build an in-memory index with it.",
+      "expected": [
+        {"path": "caw-bench/src/bin/coop.rs", "symbol": "build_in_memory_prebuilt call", "line": 380},
+        {"path": "caw-bench/src/main.rs", "symbol": "build_in_memory_prebuilt call", "line": 196}
+      ]
     }
   ]
 }
