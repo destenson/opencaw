@@ -5,6 +5,16 @@
 //! forward. The sweep evidence says most of the measured opencaw gain
 //! comes from multi-pass + reasoning, but v0 proves the UX: zero tool
 //! calls, automatic context.
+//!
+//! Alongside the `/v1/chat/completions` proxy route there is one
+//! non-OpenAI route, `/v1/retrieve`, that runs the identical retrieval
+//! and returns the ranked candidates as JSON — scores, paths, token
+//! cost, and whether each survived the token-budget clamp — without
+//! forwarding to any model. It exists so the operator can inspect what
+//! retrieval actually produced for a query (was a relevant stub ranked
+//! out, or clamped out?) instead of inferring it from a model answer.
+//! This is a deliberate deviation from a strictly OpenAI-only surface,
+//! confined to a read-only diagnostic that never mutates request flow.
 
 use std::sync::Mutex;
 
@@ -25,7 +35,9 @@ use caw_index::{BM25Index, CandleEmbeddingProvider, FlatVectorIndex, HnswVectorI
 
 /// Which in-memory vector index backs the server's retrieval path.
 /// Chosen once at startup via `--retriever` and fixed for the life of
-/// the process — the public HTTP surface stays pure OpenAI.
+/// the process. The proxy route (`/v1/chat/completions`) stays a pure
+/// OpenAI passthrough; the only non-OpenAI surface is the read-only
+/// `/v1/retrieve` diagnostic, which reports the same retrieval as JSON.
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum RetrieverKind {
     /// Brute-force cosine over all embeddings. Zero warmup cost, O(n·d)
@@ -86,6 +98,11 @@ pub struct AppState {
     /// fuses its scores with the cosine candidates. `None` leaves the
     /// pure-cosine path untouched.
     pub bm25: Option<Mutex<BM25Index>>,
+    /// Which retriever was selected at startup. Stored only so the
+    /// `/v1/retrieve` diagnostic route can report it back; the retrieval
+    /// path itself dispatches on the presence of `bm25` and the concrete
+    /// `index` type, not on this field.
+    pub retriever: RetrieverKind,
     /// Base URL of the upstream chat-completions server, e.g.
     /// `http://localhost:11434/v1` for Ollama. The `/chat/completions`
     /// suffix is appended by the handler.
@@ -105,6 +122,7 @@ pub struct AppState {
 pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/retrieve", post(retrieve))
         .with_state(state)
 }
 
@@ -245,6 +263,7 @@ pub fn build_state(
         store: Mutex::new(store),
         index: Mutex::new(index),
         bm25,
+        retriever,
         upstream_base,
         max_candidates,
         max_workspace_tokens,
@@ -294,6 +313,86 @@ async fn chat_completions(
     forward(&state, req_json, &headers).await
 }
 
+/// Read-only diagnostic: run the identical retrieval the proxy would run
+/// for a query and return the ranked candidates as JSON, without touching
+/// any upstream model. Accepts either `{"query": "..."}` or an OpenAI-style
+/// `{"messages": [...]}` body (the last user message is used), so the same
+/// request shape works against both routes.
+///
+/// The response exposes what the proxy's DEBUG log otherwise buries: every
+/// candidate's fused score, path, token cost, and disposition (admitted /
+/// clamped / budget_full / content_miss), plus the body of each admitted
+/// fragment — i.e. exactly the text that would have been injected.
+async fn retrieve(
+    State(state): State<Arc<AppState>>,
+    body: axum::extract::Json<Value>,
+) -> Response {
+    let req = body.0;
+    let query = req
+        .get("query")
+        .and_then(|q| q.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| extract_last_user_content(&req));
+
+    let query = match query {
+        Some(q) if !q.trim().is_empty() => q,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "expected a non-empty `query` string or OpenAI `messages` with a user turn",
+            )
+                .into_response();
+        }
+    };
+
+    let candidates = match retrieve_scored(&state, &query) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("retrieve diagnostic failed: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("retrieval error: {e}"))
+                .into_response();
+        }
+    };
+
+    let admitted_tokens: usize = candidates
+        .iter()
+        .filter(|c| c.disposition == Disposition::Admitted)
+        .filter_map(|c| c.tokens)
+        .sum();
+    let admitted_count = candidates
+        .iter()
+        .filter(|c| c.disposition == Disposition::Admitted)
+        .count();
+
+    let rows: Vec<Value> = candidates
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "rank": c.rank,
+                "path": c.path,
+                "stub_id": c.stub_id.0,
+                "score": c.score,
+                "tokens": c.tokens,
+                "disposition": c.disposition.as_str(),
+                "content": c.content,
+            })
+        })
+        .collect();
+
+    let payload = serde_json::json!({
+        "query": query,
+        "retriever": format!("{:?}", state.retriever),
+        "max_candidates": state.max_candidates,
+        "max_workspace_tokens": state.max_workspace_tokens,
+        "candidate_count": candidates.len(),
+        "admitted_count": admitted_count,
+        "admitted_tokens": admitted_tokens,
+        "candidates": rows,
+    });
+
+    axum::Json(payload).into_response()
+}
+
 /// Pull out the last message whose role is "user". OpenAI-style messages
 /// are `{"role": "...", "content": "..."}`. Returns None if there's no
 /// user message or the content isn't a string (vision/multipart is out
@@ -309,10 +408,74 @@ fn extract_last_user_content(req: &Value) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Embed the query, hit the HNSW index for the top K, then materialize
-/// each stub's byte range into a RecallFragment. Clamps total tokens to
-/// `max_workspace_tokens` in order.
-fn retrieve_fragments(state: &AppState, query: &str) -> Result<Vec<RecallFragment>> {
+/// What retrieval decided to do with one ranked candidate. The proxy
+/// injects exactly the `Admitted` ones, in rank order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disposition {
+    /// Read and fit within the remaining token budget — injected.
+    Admitted,
+    /// Read, but its body would overflow `max_workspace_tokens`. The
+    /// proxy stops admitting at the first such candidate (greedy prefix),
+    /// so this marks where the budget ran out.
+    Clamped,
+    /// Ranked, but never read because an earlier candidate already hit the
+    /// budget. Listed so the operator sees it was a near-miss on rank.
+    BudgetFull,
+    /// The stub's body could not be read (almost always a corpus-root
+    /// mismatch). Skipped without consuming budget.
+    ContentMiss,
+}
+
+impl Disposition {
+    fn as_str(self) -> &'static str {
+        match self {
+            Disposition::Admitted => "admitted",
+            Disposition::Clamped => "clamped",
+            Disposition::BudgetFull => "budget_full",
+            Disposition::ContentMiss => "content_miss",
+        }
+    }
+}
+
+/// One ranked candidate plus retrieval's decision about it. This is the
+/// single source of truth for what the proxy injects: `retrieve_fragments`
+/// is just the `Admitted` rows projected into `RecallFragment`.
+pub struct ScoredCandidate {
+    pub rank: usize,
+    pub stub_id: StubId,
+    pub path: String,
+    pub score: f32,
+    /// Body token cost, or `None` for `BudgetFull` candidates the proxy
+    /// never read.
+    pub tokens: Option<usize>,
+    pub mtime_unix_secs: u64,
+    pub disposition: Disposition,
+    /// The exact body that would be injected; `Some` only when `Admitted`.
+    pub content: Option<String>,
+}
+
+impl ScoredCandidate {
+    fn into_fragment(self) -> Option<RecallFragment> {
+        match (self.disposition, self.content, self.tokens) {
+            (Disposition::Admitted, Some(content), Some(tokens)) => Some(RecallFragment {
+                stub_id: self.stub_id,
+                content,
+                locator: Locator {
+                    source: self.path,
+                    locator: "full".to_string(),
+                },
+                tokens,
+                mtime_unix_secs: self.mtime_unix_secs,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// Embed the query, search the vector index (fused with BM25 under Hybrid),
+/// and return the ranked `(stub, score)` candidates — the input to both the
+/// proxy's injection clamp and the `/v1/retrieve` diagnostic.
+fn rank_candidates(state: &AppState, query: &str) -> Result<Vec<(StubId, f32)>> {
     let embeddings = {
         let mut embedder = state
             .embedder
@@ -361,54 +524,130 @@ fn retrieve_fragments(state: &AppState, query: &str) -> Result<Vec<RecallFragmen
     };
 
     // Diagnostic: the full ranked candidate list with (fused) scores, before
-    // the token-budget clamp below decides which survive into the workspace.
-    // Lets you see whether a relevant stub was ranked out vs. clamped out.
+    // the token-budget clamp decides which survive into the workspace. Lets
+    // you see whether a relevant stub was ranked out vs. clamped out.
     if tracing::enabled!(tracing::Level::DEBUG) {
         for (rank, (id, score)) in hits.iter().enumerate() {
             debug!("candidate #{rank} score={score:.4} {}", id.0);
         }
     }
 
+    Ok(hits)
+}
+
+/// Materialize the ranked candidates into per-candidate dispositions,
+/// applying the same greedy token-budget clamp the proxy uses to decide
+/// what to inject. The `Admitted` rows, in order, are exactly the
+/// fragments `retrieve_fragments` returns; the rest are retained with
+/// their scores so the diagnostic route can show what was ranked but not
+/// injected, and why.
+fn retrieve_scored(state: &AppState, query: &str) -> Result<Vec<ScoredCandidate>> {
+    let hits = rank_candidates(state, query)?;
+    let candidate_count = hits.len();
+
     let store = state
         .store
         .lock()
         .map_err(|_| anyhow::anyhow!("store mutex poisoned"))?;
 
-    let mut fragments = Vec::with_capacity(hits.len());
+    let mut out = Vec::with_capacity(candidate_count);
     let mut used_tokens = 0usize;
-    let candidate_count = hits.len();
+    let mut admitted = 0usize;
     let mut content_misses = 0usize;
-    for (stub_id, _score) in hits {
+    // Set once the budget is hit: subsequent candidates are listed as
+    // BudgetFull without reading their bodies, mirroring the proxy's
+    // greedy-prefix `break`.
+    let mut budget_exhausted = false;
+
+    for (rank, (stub_id, score)) in hits.into_iter().enumerate() {
+        // Metadata (incl. path/mtime) is cheap and wanted for every row,
+        // including ones whose body we won't read.
         let stub = match store.get_stub(&stub_id) {
             Ok(s) => s,
-            Err(_) => continue,
+            Err(e) => {
+                content_misses += 1;
+                warn!("get_stub({}) failed: {e}", stub_id.0);
+                out.push(ScoredCandidate {
+                    rank,
+                    path: stub_id.0.clone(),
+                    score,
+                    tokens: None,
+                    mtime_unix_secs: 0,
+                    disposition: Disposition::ContentMiss,
+                    content: None,
+                    stub_id,
+                });
+                continue;
+            }
         };
+
+        if budget_exhausted {
+            out.push(ScoredCandidate {
+                rank,
+                path: stub.path,
+                score,
+                tokens: None,
+                mtime_unix_secs: stub.mtime_unix_secs,
+                disposition: Disposition::BudgetFull,
+                content: None,
+                stub_id,
+            });
+            continue;
+        }
+
         let content = match store.get_content(&stub_id) {
             Ok(c) => c,
             Err(e) => {
                 content_misses += 1;
                 warn!("get_content({}) failed: {e}", stub_id.0);
+                out.push(ScoredCandidate {
+                    rank,
+                    path: stub.path,
+                    score,
+                    tokens: None,
+                    mtime_unix_secs: stub.mtime_unix_secs,
+                    disposition: Disposition::ContentMiss,
+                    content: None,
+                    stub_id,
+                });
                 continue;
             }
         };
+
         let tokens = count_tokens_cl100k(&content);
-        if used_tokens + tokens > state.max_workspace_tokens && !fragments.is_empty() {
+        if used_tokens + tokens > state.max_workspace_tokens && admitted > 0 {
             // At least one fragment always gets through so a pathologically
             // large top-1 doesn't silently produce a zero-fragment response.
-            break;
+            // The first over-budget candidate is the clamp boundary; from
+            // here on we stop reading bodies.
+            budget_exhausted = true;
+            out.push(ScoredCandidate {
+                rank,
+                path: stub.path,
+                score,
+                tokens: Some(tokens),
+                mtime_unix_secs: stub.mtime_unix_secs,
+                disposition: Disposition::Clamped,
+                content: None,
+                stub_id,
+            });
+            continue;
         }
-        fragments.push(RecallFragment {
-            stub_id,
-            content,
-            locator: Locator {
-                source: stub.path,
-                locator: "full".to_string(),
-            },
-            tokens,
-            mtime_unix_secs: stub.mtime_unix_secs,
-        });
+
         used_tokens += tokens;
+        admitted += 1;
+        out.push(ScoredCandidate {
+            rank,
+            path: stub.path,
+            score,
+            tokens: Some(tokens),
+            mtime_unix_secs: stub.mtime_unix_secs,
+            disposition: Disposition::Admitted,
+            content: Some(content),
+            stub_id,
+        });
     }
+
     // If we had candidates but every body read missed, the workspace is empty
     // for a fetch-side reason (almost always a corpus-root mismatch), not
     // because nothing matched the query. Surface that as one aggregate error
@@ -419,7 +658,17 @@ fn retrieve_fragments(state: &AppState, query: &str) -> Result<Vec<RecallFragmen
              Check that --corpus-root matches the directory the index was built against."
         );
     }
-    Ok(fragments)
+
+    Ok(out)
+}
+
+/// The fragments the proxy injects: the `Admitted` candidates, in rank
+/// order, projected into `RecallFragment`.
+fn retrieve_fragments(state: &AppState, query: &str) -> Result<Vec<RecallFragment>> {
+    Ok(retrieve_scored(state, query)?
+        .into_iter()
+        .filter_map(ScoredCandidate::into_fragment)
+        .collect())
 }
 
 /// Fuse cosine and BM25 candidate lists into a single ranking. Each side's

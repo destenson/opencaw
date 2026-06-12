@@ -70,6 +70,14 @@ Prior session responses (from earlier sessions, not the current one) are compres
 
 The intent classifier exists to adapt retrieval to query type. An inventory query ("how many todos are left?") requires document-level coverage of TODO.md; similarity search will return the single most-matching chunk, which is never sufficient to answer a count. A status query needs the overview documents. An explanation query needs documentation in full-content mode, not outline-only. Classification that doesn't change behavior is waste.
 
+### caw-server exposes a read-only retrieval diagnostic route
+
+`caw-server` was originally intended as a strictly OpenAI-compatible surface (only `/v1/chat/completions`), so that any OpenAI client could point at it unmodified. We added one deliberate exception: `/v1/retrieve`, a read-only route that runs the identical retrieval and returns the ranked candidates as JSON (per-candidate fused score, path, token cost, and disposition: admitted / clamped / budget_full / content_miss), without forwarding to any model.
+
+Rationale: the proxy's only window into retrieval quality was a DEBUG log line and the downstream model answer. When an answer looks wrong you cannot tell from that whether the relevant chunk was ranked out of the candidate pool or ranked in but clamped out by the token budget — the two have opposite fixes. The diagnostic route surfaces that distinction directly. It is read-only, never mutates request flow, and reuses the same `rank_candidates` + clamp logic the chat path uses (via a shared `retrieve_scored`), so what it reports is exactly what the proxy would inject — not a parallel reimplementation that could drift. The `caw-dev` skill's `retrieve.sh` consumes it.
+
+This is a conscious deviation from "pure OpenAI surface," made on explicit request, and scoped to diagnostics. It does not open the door to adding orchestrator/probe/multi-pass endpoints to the proxy — that engine stays in the CLI.
+
 ---
 
 ## Implementation principles

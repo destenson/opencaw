@@ -45,7 +45,16 @@ All scripts live in `scripts/` and are self-locating (they find the repo root vi
 
    With no `question` arg it runs the whole shared query pool (`scripts/queries.txt`), one request per question, and prints each answer with its `augmented with N fragments (T tokens)` line — so one run exercises retrieval across several subsystems instead of the same chunk every time. Pass a `question` to run just that one. A small model naming a project-specific symbol/path it could not otherwise know confirms the full path works.
 
-4. **Prove it adds value** (optional) — proxy vs. straight to the upstream:
+4. **Inspect the retrieval itself** — see the ranked candidates, not just the model answer:
+
+   ```bash
+   docs/skills/caw-dev/scripts/retrieve.sh "which struct owns the multi-pass recall loop?"
+   #                                        <query> [port] [--full]
+   ```
+
+   Hits the proxy's read-only `/v1/retrieve` route (same retrieval as the chat path, no model call) and prints the full ranked list: fused score, path, token cost, and disposition for each candidate — `admitted` (injected), `clamped` (read but over budget, where the token clamp stopped), `budget_full` (ranked below the clamp, never read), or `content_miss` (unreadable body, usually a corpus-root mismatch). This is how you tell whether a relevant chunk was **ranked out** of the pool or **clamped out** by `--max-tokens` — a distinction smoke.sh can't show. Pass `--full` to also dump the body of each admitted fragment (the exact text that would be injected).
+
+5. **Prove it adds value** (optional) — proxy vs. straight to the upstream:
 
    ```bash
    docs/skills/caw-dev/scripts/ab-test.sh   # [port] [upstream] [model] [question]
@@ -53,7 +62,7 @@ All scripts live in `scripts/` and are self-locating (they find the repo root vi
 
    Same default: with no `question` it runs an A/B pair for every question in `scripts/queries.txt`; pass one to A/B just that question. Prints both answers and the injection-proof log line. The direct answer can't name project-specific symbols; the proxied one can.
 
-5. **Stop** when done:
+6. **Stop** when done:
 
    ```bash
    docs/skills/caw-dev/scripts/stop.sh   # [port], default 8090
@@ -120,6 +129,7 @@ For the full reasoning behind each gotcha, file/line references, the host's GPU 
 - **`scripts/serve.sh`** — start the proxy (backgrounded, debug logging, GPU pinned).
 - **`scripts/queries.txt`** — shared default query pool (one per line) used by `smoke.sh`, `ab-test.sh`, and `test-cli.sh` when no query is passed. Add lines here to broaden coverage for all three.
 - **`scripts/smoke.sh`** — send test requests (whole pool by default) and verify injection.
+- **`scripts/retrieve.sh`** — inspect retrieval directly via `/v1/retrieve`: ranked candidates with scores, token cost, and admitted/clamped/budget_full/content_miss disposition (no model call). `--full` dumps admitted bodies.
 - **`scripts/ab-test.sh`** — proxy vs. direct-upstream A/B (whole pool by default) to prove context changes the answer.
 - **`scripts/stop.sh`** — stop a running proxy.
 - **`scripts/test-cli.sh`** — drive the caw-cli recall engine non-interactively, local-only config (LLM consolidation OFF).
