@@ -33,6 +33,14 @@ use caw_ingest::{DocumentId, IngestionPipeline, SourceDocument};
 use clap::ValueEnum;
 use walkdir::WalkDir;
 
+/// Char-budget for one GPU sub-batch, measured as `count x widest_text_chars`.
+/// Bounds the padded attention work so short chunks batch wide (throughput) and
+/// long chunks batch narrow (no OOM), replacing the fixed sub-batch count. At
+/// ~120k this is up to ~48 of the longest (2.5k-char) chunks or several hundred
+/// short ones. Tune up while VRAM has headroom; the candle embedder errors
+/// loudly on OOM rather than corrupting, so raising it is safe to probe.
+const EMBED_PADDED_CHAR_BUDGET: usize = 120_000;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "caw-bench-build-index",
@@ -64,16 +72,11 @@ struct Cli {
     #[arg(long, default_value_t = 1024)]
     channel_capacity: usize,
 
-    /// GPU sub-batch size. The consumer accumulates `batch_size` stubs,
-    /// sorts them by text length, and dispatches them to the embedder in
-    /// chunks of `sub_batch_size`. Bucketing by length cuts padding waste:
-    /// short texts pad to a short max, long texts to a longer max, instead
-    /// of everything padding to the batch-wide max token count.
-    ///
-    /// Default is deliberately large: candle's per-op sync overhead means
-    /// the total embed time is dominated by launching ops, not by their
-    /// actual work. A sub-batch of 256 takes roughly the same wall time as
-    /// a sub-batch of 64, so 4x more stubs per call ≈ 4x throughput.
+    /// Upper bound on GPU sub-batch count. The consumer accumulates `batch_size`
+    /// stubs, sorts them by text length, then forms sub-batches by a char budget
+    /// (`EMBED_PADDED_CHAR_BUDGET`) so short texts batch wide and long texts batch
+    /// narrow without padding waste or OOM. This value only caps how wide a
+    /// sub-batch of very short texts may get; the budget is the primary limiter.
     #[arg(long, default_value_t = 256)]
     sub_batch_size: usize,
 
@@ -618,10 +621,31 @@ fn flush_batch(
         .collect();
     indexed.sort_by_key(|(_, t)| t.len());
 
-    let sub = sub_batch_size.max(1);
+    let cap = sub_batch_size.max(1);
     // Per-stub embedding, indexed by original buf position.
     let mut embeddings_by_idx: Vec<Option<Vec<f32>>> = (0..n).map(|_| None).collect();
-    for chunk in indexed.chunks(sub) {
+    // Token-budget sub-batching over the length-sorted texts. A fixed sub-batch
+    // COUNT is the wrong unit: BGE attention grows with (batch x seq_len), so a
+    // count safe for 512-token chunks wastes the GPU on short ones, while a count
+    // tuned for short ones OOMs on long ones — which is why build-index.sh used
+    // to force a tiny count. Instead, extend a sub-batch until adding the next
+    // (necessarily widest, since `indexed` is sorted ascending) text would push
+    // `count x widest_chars` past EMBED_PADDED_CHAR_BUDGET, or past `cap`. Short
+    // chunks then batch hundreds wide; long chunks batch a few dozen.
+    let mut start = 0;
+    while start < indexed.len() {
+        let mut end = start;
+        while end < indexed.len() {
+            let new_size = end - start + 1;
+            let new_widest = indexed[end].1.len();
+            if new_size > 1
+                && (new_size > cap || new_size * new_widest > EMBED_PADDED_CHAR_BUDGET)
+            {
+                break; // adding indexed[end] would exceed the budget
+            }
+            end += 1;
+        }
+        let chunk = &indexed[start..end];
         let refs: Vec<&str> = chunk.iter().map(|(_, t)| t.as_str()).collect();
         let t_emb = Instant::now();
         let vecs = embedder
@@ -638,6 +662,7 @@ fn flush_batch(
         for ((orig_idx, _), v) in chunk.iter().zip(vecs.into_iter()) {
             embeddings_by_idx[*orig_idx] = Some(v);
         }
+        start = end;
     }
 
     let items: Vec<(Stub, Vec<f32>)> = buf

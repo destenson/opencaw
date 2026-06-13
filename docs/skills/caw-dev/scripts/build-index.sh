@@ -4,16 +4,19 @@
 # Usage: build-index.sh <corpus-dir> <out.sqlite> [batch-size] [sub-batch-size]
 #   corpus-dir       directory whose files form the corpus (single root)
 #   out.sqlite       output index path (parent dirs created as needed)
-#   batch-size       default 32  (small on purpose — see below)
-#   sub-batch-size   default 8
+#   batch-size       default 2048 (sort window; bigger = better length bucketing)
+#   sub-batch-size   default 256  (cap on sub-batch width; see below)
 #
 # Two non-obvious choices baked in:
 #  - GPU selection: pinned to the freest GPU via pick-gpu.sh, because the
 #    candle embedder dies on OOM rather than shrinking. (The embedder also
 #    accepts CAW_EMBED_DEVICE=cuda:N for explicit selection without masking.)
-#  - Tiny batches: BGE attention memory scales as batch x seq^2. The bench
-#    default sub-batch of 256 OOMs even with 14 GB free on long chunks. The
-#    source tree is small, so throughput is irrelevant; correctness isn't.
+#  - Adaptive sub-batching: the builder sorts each batch by text length and
+#    forms GPU sub-batches by a char budget (EMBED_PADDED_CHAR_BUDGET), so short
+#    chunks batch hundreds wide while long chunks batch a few dozen — high
+#    throughput without OOM. No need to force a tiny fixed count anymore; a large
+#    batch-size just widens the sort window. sub-batch-size only caps the width
+#    for floods of very short texts.
 #
 # corpus-dir / corpus-root contract: stub paths are stored RELATIVE to
 # <corpus-dir>. At serve time, caw-server resolves them against its
@@ -28,8 +31,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 CORPUS="${1:?usage: build-index.sh <corpus-dir> <out.sqlite> [batch] [sub-batch]}"
 OUT="${2:?usage: build-index.sh <corpus-dir> <out.sqlite> [batch] [sub-batch]}"
-BATCH="${3:-32}"
-SUB_BATCH="${4:-8}"
+BATCH="${3:-2048}"
+SUB_BATCH="${4:-256}"
 
 GPU="$(bash "$SCRIPT_DIR/pick-gpu.sh")"
 if [ -n "$GPU" ]; then

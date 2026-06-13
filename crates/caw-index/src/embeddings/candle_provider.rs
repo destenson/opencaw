@@ -6,6 +6,9 @@ use hf_hub::api::sync::Api;
 use tokenizers::Tokenizer;
 use tracing::{debug, info};
 
+// F32: candle's prebuilt CUDA kernels in this build expose only F32 symbols —
+// F16/BF16 forward fails with CUDA_ERROR_NOT_FOUND (missing kernel), so reduced
+// precision is not available here without recompiling candle-kernels from source.
 const DTYPE: DType = DType::F32;
 
 /// BGE / most BERT-family models have 512 position embeddings. Sequences
