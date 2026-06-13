@@ -424,6 +424,12 @@ pub enum Disposition {
     /// The stub's body could not be read (almost always a corpus-root
     /// mismatch). Skipped without consuming budget.
     ContentMiss,
+    /// A higher-ranked chunk from the same source file was already admitted.
+    /// `format_workspace` renders only the first chunk per source, so admitting
+    /// a second would spend token budget on content that is never injected.
+    /// Skipped without consuming budget — mirrors the orchestrator's
+    /// `load_fragments` source dedup.
+    DuplicateSource,
 }
 
 impl Disposition {
@@ -433,6 +439,7 @@ impl Disposition {
             Disposition::Clamped => "clamped",
             Disposition::BudgetFull => "budget_full",
             Disposition::ContentMiss => "content_miss",
+            Disposition::DuplicateSource => "duplicate_source",
         }
     }
 }
@@ -554,6 +561,9 @@ fn retrieve_scored(state: &AppState, query: &str) -> Result<Vec<ScoredCandidate>
     let mut used_tokens = 0usize;
     let mut admitted = 0usize;
     let mut content_misses = 0usize;
+    // Sources already injected. The renderer shows one chunk per source, so a
+    // later chunk from an admitted source is dropped before it can charge budget.
+    let mut admitted_sources: std::collections::HashSet<String> = std::collections::HashSet::new();
     // Set once the budget is hit: subsequent candidates are listed as
     // BudgetFull without reading their bodies, mirroring the proxy's
     // greedy-prefix `break`.
@@ -580,6 +590,24 @@ fn retrieve_scored(state: &AppState, query: &str) -> Result<Vec<ScoredCandidate>
                 continue;
             }
         };
+
+        // The renderer injects only the first chunk per source. A later chunk
+        // from an already-admitted source would consume budget for content that
+        // is never shown, pushing distinct sources into BudgetFull. Drop it here
+        // — same rule the orchestrator's load_fragments applies at admission.
+        if admitted_sources.contains(&stub.path) {
+            out.push(ScoredCandidate {
+                rank,
+                path: stub.path,
+                score,
+                tokens: None,
+                mtime_unix_secs: stub.mtime_unix_secs,
+                disposition: Disposition::DuplicateSource,
+                content: None,
+                stub_id,
+            });
+            continue;
+        }
 
         if budget_exhausted {
             out.push(ScoredCandidate {
@@ -636,6 +664,7 @@ fn retrieve_scored(state: &AppState, query: &str) -> Result<Vec<ScoredCandidate>
 
         used_tokens += tokens;
         admitted += 1;
+        admitted_sources.insert(stub.path.clone());
         out.push(ScoredCandidate {
             rank,
             path: stub.path,

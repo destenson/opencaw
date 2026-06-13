@@ -1039,6 +1039,16 @@ fn workspace_guidance(
 
     let mut lines = Vec::new();
 
+    // Baseline grounding preference, present whenever a workspace is rendered.
+    // Stated as a preference, not exclusivity: when the recalled context is thin
+    // or off-topic the model may still draw on its own knowledge, but it must not
+    // invent specifics the context doesn't support. Addresses the observed
+    // failure where a vague query retrieves the right files yet the model answers
+    // from generic priors and confabulates details around them.
+    lines.push(
+        "- Prefer the recalled context when it bears on the question, and cite the source file. If the context does not cover the question, say so plainly rather than inventing specifics.".to_string(),
+    );
+
     if has_candidate_list {
         lines.push(
             "- Blocks from `search-candidates:file-list` are candidate metadata only. Use them to decide what to load, not as evidence for factual claims.".to_string(),
