@@ -387,3 +387,41 @@ hypotheses, not scheduled work.
 `plan_expansion` remains called only by `caw-bench-graph-eval`; nothing in the live
 path was changed. The cosine-vs-hybrid bench arm is kept as the artifact that produced
 this decision so the question isn't re-litigated from the cosine number alone.
+
+### Identifier-aware BM25 tokenization — shipped (2026-06-13)
+
+The BM25 tokenizer lowercased *before* splitting on non-alphanumeric, so `snake_case`
+split but `camelCase`/`PascalCase` did not: `DynamicRecallOrchestrator` stayed one
+token, and a paraphrased query ("which struct owns the recall loop") shared no lexical
+token with it — a both-retrievers-miss generator. Fixed in `caw-index/src/bm25.rs`:
+split identifiers at camelCase and letter↔digit boundaries before lowercasing, keep the
+joined form for exact matches, emit the subwords. Default-on; the proxy rebuilds BM25
+in-memory from bodies so it lands with no reindex.
+
+Measured lift to the **hybrid baseline** (`--baseline hybrid`, n=27): MRR 0.488→0.525,
+recall@3 0.630→0.704, definition recall@3 0.500→0.667, structural recall@3 0.769→0.846.
+
+### Both-miss diagnosis — what's left after the tokenizer fix (2026-06-13)
+
+`caw-bench-graph-eval --diagnose` decomposes each gold ranked past the cutoff into
+cosine-rank / BM25-rank / query↔gold token overlap / gold-text size. On the hybrid
+baseline it surfaced two distinct mechanisms, neither of which graph expansion would
+fix:
+
+1. **The hybrid fusion buries single-half hits — the hybrid is worse than BM25 alone
+   for them.** `fuse_hybrid` min-max normalizes each list and always divides by the
+   full `0.6+0.4` weight, so a keyword-only hit is capped at `0.4×score` while a
+   mediocre chunk present in *both* lists outscores it. Result: BM25 ranks
+   `split_thinking` #4 and `count_tokens` #15, but they fuse to #13 and #31. This is a
+   real fusion bug with known fixes (divide by the weight of the lists an item actually
+   appears in; or rank-based RRF). Untested — the `--diagnose` instrument is now in
+   place to measure a fix.
+2. **Stale/unreadable bodies fall out of the lexical index.** BM25 build skipped 114 of
+   3174 stubs (unreadable bodies — here, index/corpus drift against a prebuilt index).
+   The default-hysteresis-load/unload chunks are among them, so those numeric-constant
+   definition queries have no lexical fallback and ride on cosine alone (which buries
+   them at 12/9). Partly an artifact of testing an old index against current source, but
+   the structural point stands: a stub absent from BM25 is invisible to the lexical half.
+
+Caveat throughout: n=27, single golden set authored alongside the graph feature. Treat
+the per-mechanism direction as the signal, not the decimals.
