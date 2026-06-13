@@ -263,9 +263,46 @@ Run against `graphify-eval-index.sqlite` (748-chunk code index, BGE/Candle CUDA)
 
 **Cosine alone is weak as a top-1 retriever on this single-domain code corpus:**
 `recall@1 = 0.222` overall, `0.000` for both definition and caller queries.
-The model rarely gets the answer chunk in the first slot — consistent with the
-ungrounded answers in `honest.log`/`perf-fast.log`, where a small model (llama3.2:3b)
-fell back to generic textbook text despite fragments being injected.
+The model rarely gets the answer chunk in the *first* slot, though the right
+chunk is usually in the admitted pool.
+
+### Grounding coin-flip resolved (2026-06-13): not a retrieval miss, not raw model incapacity
+
+The `honest.log`/`perf-fast.log` generic-textbook eviction answers (FIFO/LRU,
+"evicting query intents") looked like a retrieval or model failure. Direct
+isolation says otherwise:
+
+- **Retrieval surfaces the right chunks.** `/v1/retrieve` on "What triggers
+  eviction…" admits `consolidation.rs` at rank 0 (0.78) and `dynamic.rs` at
+  ranks 1/2/5 — the eviction loop and the on-eviction consolidation. Not ranked out.
+- **Both models ground when context is injected and the query is precise.**
+  Same proxy injection (7 fragments), `llama3.2:3b` and `mistral-small3.2:24b`
+  both produced grounded answers citing `record_eviction`, `decayed_score`, and
+  the literal `"Evicted (relevance decayed to {:.2})"` note format. The 24b model
+  additionally (correctly) flagged that the precise threshold chunk wasn't in the
+  injected snippets.
+- **The CLI recall engine grounds too**, with the same precise phrasing.
+
+The driver is **query framing + budget clamp**, in two parts:
+1. **Vague conceptual phrasing retrieves diffusely and invites confabulation.**
+   "how does eviction work in CAW?" (the `honest.log` phrasing) retrieves the real
+   `synthesize_eviction_note` signature but the small model wraps it in invented
+   conceptual glue ("affective scores", "bias warnings"). The precise pool phrasing
+   ("What triggers eviction *of a fragment from the workspace*…") grounds cleanly.
+   Nothing in the prompt biases the model toward the injected context over its prior.
+2. **The most precise chunk is clamped out by budget, not ranked out.** The
+   hysteresis-constant `dynamic.rs` chunks ranked but landed `budget_full` below
+   the 2000-token clamp. Raising `--max-tokens` or adding per-file diversity would
+   admit them.
+
+Actionable consequences: (a) progressive disclosure / a "prefer the provided
+context" framing for vague queries matters more than reranking; (b) the token-budget
+clamp deserves a diversity pass so one file (`dynamic.rs`) doesn't take 3 of 7 slots
+while the threshold chunk waits at `budget_full`.
+
+Aside: the proxy index (`caw-bench-build-index`, 3190 stubs over crates) and the CLI
+index (837 stubs over the same crates) chunk differently, so the two surfaces retrieve
+differently for the same query — worth unifying or at least documenting.
 
 **Graph expansion is a clear net win for structural/caller queries, neutral-to-negative for definitions:**
 
