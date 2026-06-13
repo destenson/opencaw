@@ -295,10 +295,29 @@ The driver is **query framing + budget clamp**, in two parts:
    the 2000-token clamp. Raising `--max-tokens` or adding per-file diversity would
    admit them.
 
-Actionable consequences: (a) progressive disclosure / a "prefer the provided
-context" framing for vague queries matters more than reranking; (b) the token-budget
-clamp deserves a diversity pass so one file (`dynamic.rs`) doesn't take 3 of 7 slots
-while the threshold chunk waits at `budget_full`.
+Actionable consequences — status after the 2026-06-13 fixes:
+
+- **(a) Grounding framing — DONE.** `caw-core::workspace_guidance` now always emits a
+  baseline hint ("prefer the recalled context… if it does not cover the question, say
+  so rather than inventing specifics"). Applies to every surface that renders a
+  workspace (proxy + orchestrator/CLI). Verified: the vague "how does eviction work in
+  CAW?" query, which previously produced generic FIFO/LRU text (`honest.log`) and later
+  confabulated "affective scores", now grounds in `dynamic.rs`/`consolidation.rs` and
+  honestly hedges on the thresholds it can't see.
+- **(b) Budget waste from duplicate sources — DONE (proxy).** The proxy's clamp counted
+  tokens per stub while `format_workspace` renders only the first chunk per source, so a
+  multi-chunk file (`dynamic.rs`) burned budget for content never injected. The clamp now
+  drops same-source duplicates (new `Disposition::DuplicateSource`), mirroring the
+  orchestrator's existing `load_fragments` dedup. Measured on the eviction query: distinct
+  admitted sources rose 5 → 7 at the same 2000-token ceiling (`runner.rs`, `README.md`
+  promoted from `budget_full`). The library orchestrator already deduped at admission, so
+  no library change was needed.
+- **DEFERRED — surfacing a lower-ranked chunk of an already-admitted file.** The precise
+  hysteresis-threshold chunk is itself a lower-ranked `dynamic.rs` chunk; first-per-source
+  rendering still collapses it to a note, and showing it risks reintroducing the
+  `dynamic.rs`-flooding bug (B1). This is the "insertion order / admission" open question
+  in DECISIONS.md and needs a controlled comparison, not a unilateral change. Evidence for
+  needing it is thin (precise queries already ground across every path/model).
 
 Aside: the proxy index (`caw-bench-build-index`, 3190 stubs over crates) and the CLI
 index (837 stubs over the same crates) chunk differently, so the two surfaces retrieve
