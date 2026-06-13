@@ -20,11 +20,19 @@ use caw_index::graph_edges::{
     byte_offset_of_line, line_start_offsets, plan_expansion, stub_for_byte, ExpansionConfig,
     GraphEdgeStore, PlannedNeighbor,
 };
-use caw_index::{CandleEmbeddingProvider, HnswVectorIndex, SqliteStubStore};
+use caw_index::{BM25Index, CandleEmbeddingProvider, HnswVectorIndex, SqliteStubStore};
 use clap::Parser;
 use serde::Deserialize;
 
 const DEFAULT_RELATIONS: &str = "calls,imports_from,implements,inherits,method,contains";
+
+// Mirror caw-server's hybrid fusion weights (crates/caw-server/src/lib.rs) so the
+// `hybrid` baseline here matches what the live proxy actually ranks with. The
+// cosine-only baseline answers "is the graph orthogonal to embeddings"; the
+// hybrid baseline answers the shippable question "does expansion still help once
+// BM25 already rescues symbol-name queries".
+const HYBRID_SEMANTIC_WEIGHT: f32 = 0.6;
+const HYBRID_KEYWORD_WEIGHT: f32 = 0.4;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -44,6 +52,14 @@ struct Args {
     /// live under this), used to turn gold lines into byte offsets.
     #[arg(long, default_value = "crates")]
     source_root: PathBuf,
+
+    /// Baseline retriever the expansion is measured against:
+    /// `cosine` is semantic-only (isolates the graph's orthogonality to
+    /// embeddings); `hybrid` is BM25 fused with cosine at the proxy's 0.6/0.4
+    /// weights (the shippable question — does expansion still help once the
+    /// lexical half already rescues symbol-name queries).
+    #[arg(long, default_value = "cosine")]
+    baseline: String,
 
     /// Depth of the baseline semantic ranking. Gold rank is measured within
     /// this pool; beyond it counts as a miss. Larger = a truer deep rank.
@@ -122,14 +138,47 @@ fn main() -> Result<()> {
     // --- load retrieval stack ---
     let mut embedder = CandleEmbeddingProvider::bge_small().context("init bge-small (candle)")?;
     let dim = embedder.dimension();
+    // Resolve bodies under the same root as the gold paths (and as the proxy's
+    // corpus-root) so the hybrid baseline's BM25 can read content; read-only so a
+    // transient miss never marks a stub stale in this prebuilt index.
     let store = SqliteStubStore::new(&args.index.to_string_lossy(), dim)
-        .with_context(|| format!("open index {}", args.index.display()))?;
+        .with_context(|| format!("open index {}", args.index.display()))?
+        .with_corpus_root(args.source_root.clone())
+        .with_read_only(true);
     let all = store.all_embeddings().context("read embeddings")?;
     anyhow::ensure!(!all.is_empty(), "index {} is empty", args.index.display());
     let mut index = HnswVectorIndex::new();
     for (id, emb) in &all {
         index.add(id.clone(), emb.clone());
     }
+
+    let hybrid = match args.baseline.as_str() {
+        "cosine" => false,
+        "hybrid" => true,
+        other => anyhow::bail!("unknown --baseline '{other}' (expected cosine|hybrid)"),
+    };
+    // Build the lexical index only for the hybrid baseline, on the same
+    // `path + summary + body` text caw-server's build_state indexes, so the
+    // fused ranking here matches the proxy's.
+    let bm25 = if hybrid {
+        let mut bm = BM25Index::new();
+        let mut missing = 0usize;
+        for (id, _emb) in &all {
+            let (stub, body) = match (store.get_stub(id), store.get_content(id)) {
+                (Ok(s), Ok(b)) => (s, b),
+                _ => {
+                    missing += 1;
+                    continue;
+                }
+            };
+            bm.add(id.clone(), &format!("{} {} {}", stub.path, stub.summary, body));
+        }
+        eprintln!("hybrid baseline: BM25 over {} docs ({missing} skipped)", bm.len());
+        Some(bm)
+    } else {
+        None
+    };
+
     let edges = GraphEdgeStore::open(&args.index)?;
     eprintln!(
         "loaded {} stubs, {} stub edges",
@@ -175,10 +224,17 @@ fn main() -> Result<()> {
             }
         }
 
-        // --- baseline: deep semantic ranking ---
+        // --- baseline: deep ranking (cosine, or hybrid fused with BM25) ---
         let qe = embedder.embed_query(vec![q.question.as_str()])?;
         let query_embedding = qe.into_iter().next().context("no query embedding")?;
-        let hits = index.search(&query_embedding, args.pool);
+        let semantic_hits = index.search(&query_embedding, args.pool);
+        let hits = match &bm25 {
+            Some(bm) => {
+                let bm25_hits = bm.search(&q.question, args.pool);
+                fuse_hybrid(&semantic_hits, &bm25_hits, args.pool)
+            }
+            None => semantic_hits,
+        };
         let base_ranked: Vec<String> = hits.iter().map(|(id, _)| id.0.clone()).collect();
         let base_rank = first_rank(&base_ranked, &gold);
 
@@ -224,6 +280,7 @@ fn main() -> Result<()> {
         });
     }
 
+    println!("\nbaseline retriever: {}", args.baseline);
     report(&outcomes, &recall_ks);
     Ok(())
 }
@@ -238,6 +295,38 @@ fn split_csv(s: &str) -> Vec<String> {
 /// 1-indexed position of the first id in `ranked` that is a gold id.
 fn first_rank(ranked: &[String], gold: &HashSet<String>) -> Option<usize> {
     ranked.iter().position(|id| gold.contains(id)).map(|p| p + 1)
+}
+
+/// Min-max normalize each list, weight, sum, and re-rank — a verbatim port of
+/// caw-server's `fuse_hybrid` so the hybrid baseline matches the live proxy.
+fn fuse_hybrid(
+    semantic: &[(StubId, f32)],
+    bm25: &[(StubId, f32)],
+    top_k: usize,
+) -> Vec<(StubId, f32)> {
+    let mut combined: HashMap<StubId, f32> = HashMap::new();
+    for (list, weight) in [
+        (semantic, HYBRID_SEMANTIC_WEIGHT),
+        (bm25, HYBRID_KEYWORD_WEIGHT),
+    ] {
+        if list.is_empty() {
+            continue;
+        }
+        let max = list.iter().map(|(_, s)| *s).fold(0.0f32, f32::max);
+        let min = list.iter().map(|(_, s)| *s).fold(f32::MAX, f32::min);
+        let range = (max - min).max(f32::EPSILON);
+        for (id, score) in list {
+            *combined.entry(id.clone()).or_default() += ((score - min) / range) * weight;
+        }
+    }
+    let total_weight = HYBRID_SEMANTIC_WEIGHT + HYBRID_KEYWORD_WEIGHT;
+    let mut fused: Vec<(StubId, f32)> = combined
+        .into_iter()
+        .map(|(id, score)| (id, score / total_weight))
+        .collect();
+    fused.sort_by(|a, b| b.1.total_cmp(&a.1));
+    fused.truncate(top_k);
+    fused
 }
 
 /// Insert each admitted neighbor immediately after the seed that pulled it in,

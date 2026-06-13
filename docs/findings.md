@@ -341,16 +341,49 @@ differently for the same query — worth unifying or at least documenting.
 `recall@1` is unchanged everywhere — expansion reranks the pool, it never promotes
 into the top slot.
 
-Caveats: n=27, single index, golden set authored alongside the feature. The
-definition-query regression (expansion pulls callers/callees that displace the
-defining chunk) is the most actionable negative — expansion should likely be
-gated by intent (skip or down-weight for `definition` queries).
+Caveats: n=27, single index, golden set authored alongside the feature.
 
-**The measured win is unshipped.** `plan_expansion` is called only in
-`caw-bench/src/bin/graph_eval.rs` (and its own unit tests) — not in the
-orchestrator, CLI, or `caw-server` retrieval path. `caw-graph-ingest` writes the
-`stub_edge` sidecar; only the bench binary reads it. So the live system (CLI
-recall loop, proxy) still retrieves with cosine + BM25 alone and behaves like the
-baseline column above. Wiring `plan_expansion` into the live retriever
-(intent-gated to skip `definition` queries) is the concrete next step, not a
-finding — it's a measured improvement sitting behind a bench harness.
+### Correction (2026-06-13): the lift is against the wrong baseline — it does not survive hybrid
+
+The table above is **cosine-only baseline vs. cosine+expansion**. The live retriever
+(proxy and CLI) is **hybrid** (BM25 fused with cosine). `caw-bench-graph-eval` now
+takes `--baseline hybrid` (BM25 built on the proxy's `path+summary+body` text, fused
+at the proxy's 0.6/0.4 weights). Re-measured against the baseline the system actually
+uses:
+
+| baseline | merge | MRR (all) | recall@3 (all) | caller recall@3 | verdict |
+|---|---|---|---|---|---|
+| cosine | adjacent | 0.407 → 0.437 | 0.519 → 0.667 | 0.125 → 0.500 | lift (but wrong baseline) |
+| **hybrid** | adjacent | 0.488 → 0.432 | 0.630 → 0.407 | 0.500 → 0.125 | **net loss** |
+| **hybrid** | discounted | 0.488 → 0.496 | 0.630 → 0.630 | 0.500 → 0.500 | ~neutral (+0.037 @5–@50) |
+
+Two things changed the picture:
+1. **BM25 already captures the rescue.** The hybrid baseline alone lifts caller
+   recall@3 from 0.125 to 0.500 — i.e. BM25 finds the symbol-name caller queries that
+   cosine missed and graph expansion was rescuing. The graph and BM25 are largely
+   redundant for this golden set (whose questions are natural-language paraphrases).
+2. **`merge_adjacent` is hostile to a strong baseline.** It inserts every planned
+   neighbor right after its seed regardless of the neighbor's score; when gold is
+   already at rank 2–3 (via BM25), up to `max_neighbors` chunks get shoved into the
+   top band and push gold out of recall@3/@5. That mechanism — not "graph edges are
+   useless" — is the −0.222. `merge_discounted` (add neighbors at `seed*0.5*weight`
+   and let the existing sort place them) avoids it: it never displaces a high-ranked
+   gold, and gives a small deep-recall bump (@5–@20 +0.037) with no definition or
+   caller regression.
+
+**Recommendation: do not wire expansion into the live retriever now.** Against the
+hybrid baseline the system actually uses, the only non-harmful policy tested
+(`discounted`) is marginally positive at ranks 5–20 — below the ~7 fragments the proxy
+injects — and does not justify the shipping cost (a `caw-graph-ingest` step in the
+build path, the `graphify-out/graph.json` dependency, and edge plumbing through
+`AppState`). The earlier "intent-gated definition skip" plan is moot: discounted merge
+shows no definition regression, and the proxy has no intent classifier to gate on.
+
+**Door left open (untested):** expansion gated to *weak-baseline* queries (where gold
+is deep and BM25 also misses — the population the cosine win came from), or a merge
+that only admits a neighbor when it would land inside the injected top-k. Both are
+hypotheses, not scheduled work.
+
+`plan_expansion` remains called only by `caw-bench-graph-eval`; nothing in the live
+path was changed. The cosine-vs-hybrid bench arm is kept as the artifact that produced
+this decision so the question isn't re-litigated from the cosine number alone.
