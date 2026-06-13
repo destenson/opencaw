@@ -1,0 +1,1104 @@
+{
+  "questions": [
+    {
+      "id": "sysdoc_001_python3_openshot_changelog",
+      "type": "changelog",
+      "question": "Which libopenshot version was released on December 16, 2025?",
+      "expected": [
+        {
+          "path": "python3-openshot/changelog",
+          "line": 17
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_002_aspnetcore_targeting_pack_8_0_changelog_",
+      "type": "changelog",
+      "question": "Which CVE in the changelog describes a denial-of-service vulnerability affecting SignalR's stateful reconnect buffer?",
+      "expected": [
+        {
+          "path": "aspnetcore-targeting-pack-8.0/changelog.Debian",
+          "line": 6
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_003_alsa_ucm_conf_changelog_debian",
+      "type": "changelog",
+      "question": "According to the changelog, what should amd-soundwire.conf be in version 1.2.10-1ubuntu5.7?",
+      "expected": [
+        {
+          "path": "alsa-ucm-conf/changelog.Debian",
+          "line": 52
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_004_initramfs_tools_bin_copyright",
+      "type": "copyright",
+      "question": "Who debianized the initramfs-tools package, and when did this occur?",
+      "expected": [
+        {
+          "path": "initramfs-tools-bin/copyright",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_005_software_properties_common_changelog",
+      "type": "changelog",
+      "question": "In mintsources version 2.3.2, what geoIP service was adopted?",
+      "expected": [
+        {
+          "path": "software-properties-common/changelog",
+          "line": 66
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_006_yt_dlp_readme_txt",
+      "type": "readme",
+      "question": "What JavaScript runtime is enabled by default in yt-dlp?",
+      "expected": [
+        {
+          "path": "yt-dlp/README.txt",
+          "line": 473
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_007_kitty_html_generated_launch_txt",
+      "type": "doc",
+      "question": "When using the kitty launch command, what special placeholder will be replaced by the current selection?",
+      "expected": [
+        {
+          "path": "kitty/html/generated/launch.txt",
+          "line": 674
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_008_libuuid1_changelog_debian",
+      "type": "changelog",
+      "question": "What is the purpose of the 'su --pty' capability hardening mentioned in the March 6, 2026 changelog entry?",
+      "expected": [
+        {
+          "path": "libuuid1/changelog.Debian",
+          "line": 4
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_009_xserver_xephyr_changelog_debian",
+      "type": "changelog",
+      "question": "In which file does the CVE-2025-62231 patch address the value overflow vulnerability in the Xkb extension XkbSetCompatMap()?",
+      "expected": [
+        {
+          "path": "xserver-xephyr/changelog.Debian",
+          "line": 13
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_010_libnvidia_extra_580_copyright",
+      "type": "copyright",
+      "question": "What is the maximum total liability NVIDIA accepts under this driver license agreement?",
+      "expected": [
+        {
+          "path": "libnvidia-extra-580/copyright",
+          "line": 425
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_011_libmalcontent_0_0_copyright",
+      "type": "copyright",
+      "question": "Who holds the copyright for the Debian packaging files in the malcontent package?",
+      "expected": [
+        {
+          "path": "libmalcontent-0-0/copyright",
+          "line": 17
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_012_librados2_changelog_debian",
+      "type": "changelog",
+      "question": "What CVE number was assigned to the denial of service vulnerability involving the HTTP_X_AMZ_COPY_SOURCE header?",
+      "expected": [
+        {
+          "path": "librados2/changelog.Debian",
+          "line": 8
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_013_linux_headers_6_8_0_88_generic_changelog",
+      "type": "changelog",
+      "question": "Under what configuration option were halt paravirt calls moved to fix the TDX module build failure?",
+      "expected": [
+        {
+          "path": "linux-headers-6.8.0-88-generic/changelog.Debian",
+          "line": 23
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_014_libgps30t64_changelog_debian",
+      "type": "changelog",
+      "question": "In which file within the drivers directory is the skyview buffer overrun vulnerability fixed according to the CVE-2025-67268 patch?",
+      "expected": [
+        {
+          "path": "libgps30t64/changelog.Debian",
+          "line": 4
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_015_udev_readme_debian",
+      "type": "readme",
+      "question": "What will happen if udev rules reference users or groups from LDAP or NIS without proper nsswitch.conf configuration?",
+      "expected": [
+        {
+          "path": "udev/README.Debian",
+          "line": 140
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_016_qemu_system_common_system_riscv_shakti_c",
+      "type": "doc",
+      "question": "What version of OpenSBI is specified in the Shakti C boot examples provided in the documentation?",
+      "expected": [
+        {
+          "path": "qemu-system-common/system/riscv/shakti-c.txt",
+          "line": 109
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_017_gnupg_faq",
+      "type": "doc",
+      "question": "Where can you retrieve the GnuPG FAQ in plain text format?",
+      "expected": [
+        {
+          "path": "gnupg/FAQ",
+          "line": 10
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_018_distro_info_data_changelog",
+      "type": "changelog",
+      "question": "What technical change was made to the up-to-date tool in distro-info-data 0.60ubuntu0.1?",
+      "expected": [
+        {
+          "path": "distro-info-data/changelog",
+          "line": 39
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_019_xreader_dbg_changelog",
+      "type": "changelog",
+      "question": "What security vulnerabilities were patched in xreader 3.8.5?",
+      "expected": [
+        {
+          "path": "xreader-dbg/changelog",
+          "line": 140
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_020_libjavascriptcoregtk_6_0_1_changelog_deb",
+      "type": "changelog",
+      "question": "In the 2.50.3 release, what two patches were dropped from the debian/patches directory?",
+      "expected": [
+        {
+          "path": "libjavascriptcoregtk-6.0-1/changelog.Debian",
+          "line": 13
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_021_xapp_ora_thumbnailer_changelog",
+      "type": "changelog",
+      "question": "Which version of xapp-thumbnailers added support for Panasonic RW2 camera format?",
+      "expected": [
+        {
+          "path": "xapp-ora-thumbnailer/changelog",
+          "line": 62
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_022_coreutils_readme_debian",
+      "type": "readme",
+      "question": "What command should be used to access coreutils documentation at a command prompt?",
+      "expected": [
+        {
+          "path": "coreutils/README.Debian",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_023_tecla_changelog_debian",
+      "type": "changelog",
+      "question": "What function does tecla 46.0-1ubuntu0.1 use to improve accessibility of the keyboard layout popup?",
+      "expected": [
+        {
+          "path": "tecla/changelog.Debian",
+          "line": 4
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_024_dpkg_spec_frontend_api_txt",
+      "type": "doc",
+      "question": "What environment variable must a frontend set when invoking dpkg to prevent dpkg from acquiring the frontend lock?",
+      "expected": [
+        {
+          "path": "dpkg/spec/frontend-api.txt",
+          "line": 21
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_025_libgphoto2_6_camlibs_readme_905c",
+      "type": "readme",
+      "question": "What is the length of the footer that is added to raw files downloaded from these digigr8 cameras?",
+      "expected": [
+        {
+          "path": "libgphoto2-6/camlibs/README.905C",
+          "line": 182
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_026_xreader_copyright",
+      "type": "copyright",
+      "question": "What license is applied to the afmparse files in backend/dvi/mdvi-lib/?",
+      "expected": [
+        {
+          "path": "xreader/copyright",
+          "line": 333
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_027_libboost_iostreams1_83_0_changelog_debia",
+      "type": "changelog",
+      "question": "What Debian bug number was closed by renaming libraries for the 64-bit time_t transition in boost 1.83.0-2.1?",
+      "expected": [
+        {
+          "path": "libboost-iostreams1.83.0/changelog.Debian",
+          "line": 38
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_028_openssh_client_readme_debian",
+      "type": "readme",
+      "question": "In Debian, what package contains the xauth program needed for OpenSSH X11 forwarding?",
+      "expected": [
+        {
+          "path": "openssh-client/README.Debian",
+          "line": 57
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_029_usbmuxd_changelog_debian",
+      "type": "changelog",
+      "question": "Why was the usbmuxd installation script changed from a postinst to a preinst in version 1.1.1-5~exp3ubuntu1?",
+      "expected": [
+        {
+          "path": "usbmuxd/changelog.Debian",
+          "line": 20
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_030_wayland_protocols_changelog_debian",
+      "type": "changelog",
+      "question": "Why were tests disabled in the ubuntu0.24.04.1 backport of wayland-protocols version 1.45-1?",
+      "expected": [
+        {
+          "path": "wayland-protocols/changelog.Debian",
+          "line": 4
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_031_kitty_html_sources_kittens_custom_rst_tx",
+      "type": "doc",
+      "question": "When passing arguments to kittens through kitty.conf, which special argument gets replaced by the currently selected text in the active window?",
+      "expected": [
+        {
+          "path": "kitty/html/_sources/kittens/custom.rst.txt",
+          "line": 87
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_032_libjxl0_7_changelog_debian",
+      "type": "changelog",
+      "question": "Which CVE identifier refers to the stack buffer overflow vulnerability in jpeg-xl's modular encoding tree height checking?",
+      "expected": [
+        {
+          "path": "libjxl0.7/changelog.Debian",
+          "line": 16
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_033_libboost1_83_dev_changelog_debian",
+      "type": "changelog",
+      "question": "In boost1.83 version 1.83.0-2, what was the purpose of commit [57f5db0]?",
+      "expected": [
+        {
+          "path": "libboost1.83-dev/changelog.Debian",
+          "line": 52
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_034_gnupg_utils_news_debian",
+      "type": "news",
+      "question": "What should users do with their ~/.gnupg/options file after upgrading to gnupg2 2.2.27-2?",
+      "expected": [
+        {
+          "path": "gnupg-utils/NEWS.Debian",
+          "line": 3
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_035_inetutils_telnet_changelog_debian",
+      "type": "changelog",
+      "question": "What issue did the CVE-2026-24061-1.patch address in the security update for inetutils 2:2.5-3ubuntu4.1?",
+      "expected": [
+        {
+          "path": "inetutils-telnet/changelog.Debian",
+          "line": 4
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_036_kitty_html_sources_pipe_rst_txt",
+      "type": "doc",
+      "question": "In kitty, what suffix can be added to an input placeholder to insert carriage returns at line wrap locations?",
+      "expected": [
+        {
+          "path": "kitty/html/_sources/pipe.rst.txt",
+          "line": 97
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_037_libsoup_3_0_0_changelog_debian",
+      "type": "changelog",
+      "question": "Which CVE vulnerability was fixed by removing the Proxy-Authorization header on cross-origin redirects?",
+      "expected": [
+        {
+          "path": "libsoup-3.0-0/changelog.Debian",
+          "line": 12
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_038_libcusparselt0_cuda_12_copyright",
+      "type": "copyright",
+      "question": "According to the cuSPARSELt supplement, what types of files from the SDK are distributable as part of an application?",
+      "expected": [
+        {
+          "path": "libcusparselt0-cuda-12/copyright",
+          "line": 161
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_039_libfreetype6_changelog_debian",
+      "type": "changelog",
+      "question": "What specific integer overflow vulnerability was fixed in the CVE-2023-2004 patch for FreeType?",
+      "expected": [
+        {
+          "path": "libfreetype6/changelog.Debian",
+          "line": 79
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_040_libcufft_dev_13_0_copyright",
+      "type": "copyright",
+      "question": "Which county and state have exclusive jurisdiction over disputes arising from the NVIDIA CUDA license agreement?",
+      "expected": [
+        {
+          "path": "libcufft-dev-13-0/copyright",
+          "line": 462
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_041_libsframe1_changelog_debian",
+      "type": "changelog",
+      "question": "What are the two prerequisite patches required before applying the patch for z17 CPU name support in binutils?",
+      "expected": [
+        {
+          "path": "libsframe1/changelog.Debian",
+          "line": 15
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_042_mint_artwork_changelog",
+      "type": "changelog",
+      "question": "In version 1.8.0, what icon theme did Qt5 settings switch to as the default?",
+      "expected": [
+        {
+          "path": "mint-artwork/changelog",
+          "line": 83
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_043_python3_openshot_copyright",
+      "type": "copyright",
+      "question": "What company holds the copyright for the Decklink input and output files in libopenshot?",
+      "expected": [
+        {
+          "path": "python3-openshot/copyright",
+          "line": 26
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_044_xserver_common_changelog_debian",
+      "type": "changelog",
+      "question": "In which file was the use-after-free vulnerability in XPresentNotify structures creation fixed in xorg-server version 2:21.1.12-1ubuntu1.5?",
+      "expected": [
+        {
+          "path": "xserver-common/changelog.Debian",
+          "line": 4
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_045_qemu_system_common_system_arm_xscale_txt",
+      "type": "doc",
+      "question": "Which Sharp Zaurus PDA model lacks an on-chip OHCI USB controller?",
+      "expected": [
+        {
+          "path": "qemu-system-common/system/arm/xscale.txt",
+          "line": 81
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_046_vim_tiny_changelog_debian",
+      "type": "changelog",
+      "question": "Which CVE in the March 2026 Vim security update addressed a buffer underflow issue?",
+      "expected": [
+        {
+          "path": "vim-tiny/changelog.Debian",
+          "line": 28
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_047_xserver_xorg_legacy_changelog_debian",
+      "type": "changelog",
+      "question": "According to the changelog, which function in the X Record extension was found to contain an integer overflow vulnerability that required a patch in version 2:21.1.12-1ubuntu1.4?",
+      "expected": [
+        {
+          "path": "xserver-xorg-legacy/changelog.Debian",
+          "line": 38
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_048_gnome_keyring_pkcs11_changelog_debian",
+      "type": "changelog",
+      "question": "What issue did the gnome-keyring package update address in version 46.1-2ubuntu0.2?",
+      "expected": [
+        {
+          "path": "gnome-keyring-pkcs11/changelog.Debian",
+          "line": 3
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_049_libgtop_2_0_11_changelog_debian",
+      "type": "changelog",
+      "question": "What is the Ubuntu Launchpad bug number for the lscpu model name gathering feature added to libgtop2?",
+      "expected": [
+        {
+          "path": "libgtop-2.0-11/changelog.Debian",
+          "line": 5
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_050_lintian_api_html_lintian_data_authority_",
+      "type": "doc",
+      "question": "Who is the original author of the Lintian::Data::Authority::FilesystemHierarchy module?",
+      "expected": [
+        {
+          "path": "lintian/api.html/Lintian/Data/Authority/FilesystemHierarchy.txt",
+          "line": 30
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_051_gir1_2_adw_1_changelog_debian",
+      "type": "changelog",
+      "question": "What CVE was addressed through a no-change rebuild in libadwaita-1 version 1.5.0-1ubuntu2?",
+      "expected": [
+        {
+          "path": "gir1.2-adw-1/changelog.Debian",
+          "line": 25
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_052_firmware_sof_signed_copyright",
+      "type": "copyright",
+      "question": "What must the SOF firmware binaries be to be useful and functional with most hardware?",
+      "expected": [
+        {
+          "path": "firmware-sof-signed/copyright",
+          "line": 13
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_053_gcc_11_base_readme_debian_amd64",
+      "type": "readme",
+      "question": "Which processor architecture ports lack maintenance in Debian for the GCC toolchain?",
+      "expected": [
+        {
+          "path": "gcc-11-base/README.Debian.amd64",
+          "line": 23
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_054_kpartx_changelog_debian",
+      "type": "changelog",
+      "question": "What version of multipath-tools added support for HPE MSA gen7 arrays?",
+      "expected": [
+        {
+          "path": "kpartx/changelog.Debian",
+          "line": 3
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_055_libyaml_libyaml_perl_news_debian",
+      "type": "news",
+      "question": "What default value does YAML::XS 0.81 set for $YAML::XS::LoadBlessed?",
+      "expected": [
+        {
+          "path": "libyaml-libyaml-perl/NEWS.Debian",
+          "line": 3
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_056_qemu_system_common_system_virtio_net_fai",
+      "type": "doc",
+      "question": "What parameter is used on the vfio-pci device to link it with a virtio-net standby device?",
+      "expected": [
+        {
+          "path": "qemu-system-common/system/virtio-net-failover.txt",
+          "line": 95
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_057_libinput10_copyright",
+      "type": "copyright",
+      "question": "What license applies to the file include/linux/input.h?",
+      "expected": [
+        {
+          "path": "libinput10/copyright",
+          "line": 19
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_058_linux_headers_6_8_0_100_copyright",
+      "type": "copyright",
+      "question": "On Ubuntu Linux systems, where is the complete text of the GNU General Public License v2 located?",
+      "expected": [
+        {
+          "path": "linux-headers-6.8.0-100/copyright",
+          "line": 28
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_059_libgnutls30t64_changelog_debian",
+      "type": "changelog",
+      "question": "What specific buffer overflow issue did CVE-2025-32990 address in the certtool utility?",
+      "expected": [
+        {
+          "path": "libgnutls30t64/changelog.Debian",
+          "line": 27
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_060_intel_media_va_driver_changelog_debian",
+      "type": "changelog",
+      "question": "Which Intel GPU model received hardware encode/decode fixes in version 24.1.0+dfsg1-1ubuntu0.1?",
+      "expected": [
+        {
+          "path": "intel-media-va-driver/changelog.Debian",
+          "line": 10
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_061_libgs_common_changelog_debian",
+      "type": "changelog",
+      "question": "Which CVE addresses buffer overflow vulnerability in TTF font name handling in ghostscript?",
+      "expected": [
+        {
+          "path": "libgs-common/changelog.Debian",
+          "line": 54
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_062_libglib2_0_0t64_copyright",
+      "type": "copyright",
+      "question": "Why does the GLib Debian package exclude Unicode data files rather than using the Debian unicode-data package as a source?",
+      "expected": [
+        {
+          "path": "libglib2.0-0t64/copyright",
+          "line": 6
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_063_qemu_system_common_system_target_rx_txt",
+      "type": "doc",
+      "question": "What is the size of the on-chip ROM in the R5F562N8 MCU emulated by QEMU?",
+      "expected": [
+        {
+          "path": "qemu-system-common/system/target-rx.txt",
+          "line": 70
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_064_libyaml_libyaml_perl_changelog_debian",
+      "type": "changelog",
+      "question": "What modification was made to lib/YAML/XS.pm in version 0.89+ds-1ubuntu0.24.04.1 to fix CVE-2025-40908?",
+      "expected": [
+        {
+          "path": "libyaml-libyaml-perl/changelog.Debian",
+          "line": 4
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_065_lintian_api_html_lintian_output_markdown",
+      "type": "doc",
+      "question": "What is the email address of the original author of Lintian::Output::Markdown?",
+      "expected": [
+        {
+          "path": "lintian/api.html/Lintian/Output/Markdown.txt",
+          "line": 24
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_066_linux_image_generic_changelog_debian",
+      "type": "changelog",
+      "question": "What changes related to the ivsc driver were made in version 6.8.0-32.32?",
+      "expected": [
+        {
+          "path": "linux-image-generic/changelog.Debian",
+          "line": 331
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_067_libjavascriptcoregtk_4_1_0_news_debian",
+      "type": "news",
+      "question": "What was the end of life date for the last important user of the NPAPI?",
+      "expected": [
+        {
+          "path": "libjavascriptcoregtk-4.1-0/NEWS.Debian",
+          "line": 7
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_068_libwebkit2gtk_4_1_0_news",
+      "type": "news",
+      "question": "Which version re-enabled WebGL2 after it was accidentally disabled?",
+      "expected": [
+        {
+          "path": "libwebkit2gtk-4.1-0/NEWS",
+          "line": 444
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_069_libpciaccess0_changelog_debian",
+      "type": "changelog",
+      "question": "What issue caused libpciaccess version 0.17-3ubuntu0.24.04.2 to revert to an earlier version?",
+      "expected": [
+        {
+          "path": "libpciaccess0/changelog.Debian",
+          "line": 3
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_070_wireless_regdb_changelog_debian",
+      "type": "changelog",
+      "question": "What Python-related patch was added in the wireless-regdb 2020.11.20-0ubuntu1 release?",
+      "expected": [
+        {
+          "path": "wireless-regdb/changelog.Debian",
+          "line": 74
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_071_gnome_calendar_changelog_debian",
+      "type": "changelog",
+      "question": "In version 45.1-1, what specific issue with event loading was fixed?",
+      "expected": [
+        {
+          "path": "gnome-calendar/changelog.Debian",
+          "line": 69
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_072_libglib2_0_0t64_changelog_debian",
+      "type": "changelog",
+      "question": "In which file was the size_t type used to prevent integer overflow in the output_marks length handling, according to the CVE-2026-1489 patches?",
+      "expected": [
+        {
+          "path": "libglib2.0-0t64/changelog.Debian",
+          "line": 14
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_073_linux_headers_6_8_0_106_changelog_debian",
+      "type": "changelog",
+      "question": "What new Intel processor family was added to the thunderbolt subsystem support in the upstream stable patchset for kernel 6.8.0-103?",
+      "expected": [
+        {
+          "path": "linux-headers-6.8.0-106/changelog.Debian",
+          "line": 108
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_074_qemu_system_common_system_arm_realview_t",
+      "type": "doc",
+      "question": "What kernel configuration must be enabled on the PB-A8 RealView board?",
+      "expected": [
+        {
+          "path": "qemu-system-common/system/arm/realview.txt",
+          "line": 77
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_075_eject_copyright",
+      "type": "copyright",
+      "question": "What is the email address listed as the upstream contact for the util-linux project?",
+      "expected": [
+        {
+          "path": "eject/copyright",
+          "line": 3
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_076_openvpn_changelog_debian",
+      "type": "changelog",
+      "question": "What issue related to the --persist-tun option was fixed in OpenVPN 2.6.19?",
+      "expected": [
+        {
+          "path": "openvpn/changelog.Debian",
+          "line": 14
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_077_slick_greeter_copyright",
+      "type": "copyright",
+      "question": "Which license applies to the translation files (po/*.po) in slick-greeter according to its copyright file?",
+      "expected": [
+        {
+          "path": "slick-greeter/copyright",
+          "line": 13
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_078_libgs10_news_debian",
+      "type": "news",
+      "question": "What command-line option enables the file access control capability in ghostscript?",
+      "expected": [
+        {
+          "path": "libgs10/NEWS.Debian",
+          "line": 3
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_079_python3_pip_changelog_debian",
+      "type": "changelog",
+      "question": "What header was added to DEFAULT_REMOVE_HEADERS_ON_REDIRECT in the patch for CVE-2024-37891?",
+      "expected": [
+        {
+          "path": "python3-pip/changelog.Debian",
+          "line": 33
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_080_bluez_obexd_changelog_debian",
+      "type": "changelog",
+      "question": "What patch was added in bluez version 5.72-0ubuntu5.3 to fix connection issues after resuming from suspend on NVIDIA systems?",
+      "expected": [
+        {
+          "path": "bluez-obexd/changelog.Debian",
+          "line": 21
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_081_mint_l_theme_changelog",
+      "type": "changelog",
+      "question": "Which Cinnamon component had incomplete styling removed in version 1.9.9?",
+      "expected": [
+        {
+          "path": "mint-l-theme/changelog",
+          "line": 71
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_082_lintian_api_html_lintian_tutorial_txt",
+      "type": "doc",
+      "question": "How much time does the Lintian Tutorial estimate is needed to get started with lintian?",
+      "expected": [
+        {
+          "path": "lintian/api.html/Lintian/Tutorial.txt",
+          "line": 10
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_083_gnome_keyring_readme_debian",
+      "type": "readme",
+      "question": "What encryption cipher does GNOME keyring use to encrypt passwords stored on disk?",
+      "expected": [
+        {
+          "path": "gnome-keyring/README.Debian",
+          "line": 7
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_084_libopenblas0_pthread_changelog_debian",
+      "type": "changelog",
+      "question": "What security vulnerability was the LAPACK dependency requirement designed to incorporate when OpenBLAS version 0.3.19+ds-1 was released?",
+      "expected": [
+        {
+          "path": "libopenblas0-pthread/changelog.Debian",
+          "line": 167
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_085_gvfs_fuse_changelog_debian",
+      "type": "changelog",
+      "question": "According to the changelog, which files were modified to prevent arbitrary FTP command injection attacks in version 1.54.4-0ubuntu1~24.04.2?",
+      "expected": [
+        {
+          "path": "gvfs-fuse/changelog.Debian",
+          "line": 9
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_086_libcups2t64_changelog_debian",
+      "type": "changelog",
+      "question": "What is the LaunchPad bug number for the issue where the CUPS scheduler would exit if no valid Listen or Port directive was found?",
+      "expected": [
+        {
+          "path": "libcups2t64/changelog.Debian",
+          "line": 63
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_087_libprotobuf_lite32t64_changelog_debian",
+      "type": "changelog",
+      "question": "What was the specific method in Google's protobuf that had a max_recursion_depth bypass vulnerability in the February 2026 security update?",
+      "expected": [
+        {
+          "path": "libprotobuf-lite32t64/changelog.Debian",
+          "line": 3
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_088_libgphoto2_6_camlibs_readme_jl2005bcd_co",
+      "type": "readme",
+      "question": "What is the block size used for storing image data in JL2005C cameras?",
+      "expected": [
+        {
+          "path": "libgphoto2-6/camlibs/README.jl2005bcd-compression",
+          "line": 134
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_089_xvfb_changelog_debian",
+      "type": "changelog",
+      "question": "Which source file was modified to fix the use-after-free vulnerability in XPresentNotify structures creation?",
+      "expected": [
+        {
+          "path": "xvfb/changelog.Debian",
+          "line": 4
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_090_sudo_changelog_debian",
+      "type": "changelog",
+      "question": "What was the security fix applied for CVE-2025-32462?",
+      "expected": [
+        {
+          "path": "sudo/changelog.Debian",
+          "line": 16
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_091_mint_mirrors_changelog",
+      "type": "changelog",
+      "question": "For which Linux Mint release was mint-mirrors version 1.2.5 packaged?",
+      "expected": [
+        {
+          "path": "mint-mirrors/changelog",
+          "line": 25
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_092_libnvjpeg_13_0_copyright",
+      "type": "copyright",
+      "question": "According to the agreement, what is one example of a Critical Application for which the CUDA SDK has not been tested or certified?",
+      "expected": [
+        {
+          "path": "libnvjpeg-13-0/copyright",
+          "line": 304
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_093_dhcpcd_base_copyright",
+      "type": "copyright",
+      "question": "Who wrote the MD5 message-digest implementation code included in dhcpcd?",
+      "expected": [
+        {
+          "path": "dhcpcd-base/copyright",
+          "line": 50
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_094_apache2_bin_changelog_debian",
+      "type": "changelog",
+      "question": "Which source file was patched to fix CVE-2025-65082, the CGI environment variable override vulnerability in Apache2?",
+      "expected": [
+        {
+          "path": "apache2-bin/changelog.Debian",
+          "line": 22
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_095_dotnet_apphost_pack_8_0_changelog_debian",
+      "type": "changelog",
+      "question": "Which CVE identifier is associated with the vulnerability involving predictable paths for MSBuild's temporary directories on Linux?",
+      "expected": [
+        {
+          "path": "dotnet-apphost-pack-8.0/changelog.Debian",
+          "line": 55
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_096_libgtop2_common_changelog_debian",
+      "type": "changelog",
+      "question": "What patch was added in libgtop2 version 2.41.3-1ubuntu0.24.04.1?",
+      "expected": [
+        {
+          "path": "libgtop2-common/changelog.Debian",
+          "line": 5
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_097_xapp_symbolic_icons_copyright",
+      "type": "copyright",
+      "question": "What license applies to the icon files derived from the Adwaita Icon Theme?",
+      "expected": [
+        {
+          "path": "xapp-symbolic-icons/copyright",
+          "line": 102
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_098_libruby3_2_changelog_debian",
+      "type": "changelog",
+      "question": "What CVE number addresses the code execution vulnerability in RDoc that was fixed in Ruby 3.2?",
+      "expected": [
+        {
+          "path": "libruby3.2/changelog.Debian",
+          "line": 119
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_099_gir1_2_glib_2_0_copyright",
+      "type": "copyright",
+      "question": "Why does GLib exclude Unicode data files from its source distribution instead of using the Debian unicode-data package?",
+      "expected": [
+        {
+          "path": "gir1.2-glib-2.0/copyright",
+          "line": 5
+        }
+      ]
+    },
+    {
+      "id": "sysdoc_100_lintian_api_html_lintian_screen_txt",
+      "type": "doc",
+      "question": "Who originally wrote Lintian::Screen and what email address is associated with them?",
+      "expected": [
+        {
+          "path": "lintian/api.html/Lintian/Screen.txt",
+          "line": 25
+        }
+      ]
+    }
+  ]
+}
