@@ -453,3 +453,66 @@ fusion variants is eval-set size, not the variant — which is the same gap `sco
 already flags ("sweep runs against enough seeds"). Single-half burial is a known, accepted
 cost; the door is open for a real fusion change once a larger, independent eval set exists.
 Nothing in `caw-server` was touched — the experiment ran entirely in the bench mirror.
+
+## Independent eval set — sysdoc, n=100 chunk-level (2026-06-13)
+
+To escape the n=27 overfit, built an independent golden set on a different corpus and
+question style: 100 quote-anchored Q&A over Linux/Debian system docs (`opencaw-corpora`),
+converted to chunk-level `path+line` gold (`scripts/sysdoc-qa-to-chunk.py` →
+`crates/caw-bench/src/qa/sysdoc_chunk_qa.json`), measured against a curated 2,600-doc
+haystack (`scripts/curate-subset-medium.py`, index `target/caw-dev/subset-medium.sqlite`,
+43k stubs). Content is post-training-cutoff (Dec 2025 / 2026 CVEs) so the answer model
+can't have memorized it. Types: changelog 56, copyright 17, doc 14, readme 8, news 5.
+
+### Headline: hybrid ≫ cosine, validated at n=100
+
+| baseline | MRR | recall@1 | recall@3 | recall@5 | recall@10 |
+|---|---|---|---|---|---|
+| cosine | 0.344 | 0.270 | 0.390 | 0.410 | 0.480 |
+| hybrid | 0.525 | 0.380 | 0.600 | 0.690 | 0.840 |
+
+BM25's contribution is even larger here than on the n=27 crates set — these answers are
+exact tokens (CVE IDs, version strings, package names) that embeddings blur but lexical
+match nails. recall@10 0.48→0.84 is the clearest single number: the hybrid-is-the-right-
+baseline decision holds on a 3.7× larger, independent corpus.
+
+Per type (hybrid): **changelogs are the hard category** — recall@1 0.286 vs doc 0.571 /
+readme 0.500. A changelog answer is one line among many near-identical version entries
+across many package changelogs; that's the genuinely hard discrimination problem.
+
+### Fusion re-adjudication — the n=27 verdict flips on this corpus
+
+The n=27 set said "keep `divide_total`, present_weight is catastrophic (MRR 0.525→0.330)."
+On n=100 it reverses. `caw-bench-graph-eval --fusion all` (builds BM25 once, embeds each
+query once, evaluates all three modes on identical inputs — so the per-mode *delta* is
+apples-to-apples):
+
+| fusion | MRR | recall@1 | recall@3 | recall@5 | recall@10 |
+|---|---|---|---|---|---|
+| divide_total (incumbent) | 0.52–0.53 | 0.38 | 0.61 | 0.71 | 0.84 |
+| **present_weight** | **0.57–0.58** | 0.42 | 0.67 | 0.76 | 0.80 |
+| rrf (k=60) | 0.46 | 0.36 | 0.49 | 0.61 | 0.61 |
+
+present_weight (divide each item by the weight of the lists it actually appears in, so a
+strong single-half hit isn't capped) wins the **top ranks**: MRR +0.045, recall@1 +0.04,
+recall@3 +0.06, recall@5 +0.05 — at the cost of recall@10 (−0.04). Deltas stable across
+repetitions and 5–6× the GPU-nondeterminism noise floor (~±0.008 MRR; a sort tiebreak was
+added for ties but cuBLAS reductions still aren't bit-reproducible, so identical runs
+wobble ~0.01 in the absolutes — read the within-run deltas, not the third decimal).
+
+Why the flip: n=27 was hand-authored *paraphrase* questions over code where BM25 added
+little, so removing the agreement reward only hurt. n=100 is quote-anchored *fact-lookup*
+whose answers **are** exact tokens — the most BM25-favorable style — where many golds are
+BM25-strong / cosine-absent, exactly the population present_weight rescues. Corpus and
+question-style changed together, so the honest claim is narrow: **present_weight helps
+lexical-exact-answer workloads.** Whether live traffic looks like that is open.
+
+### Not shipped to caw-server — it's a surface-dependent trade, the user's call
+
+present_weight is a top-rank-vs-deep-rank trade (wins ≤5, loses ≥10). The **proxy injects
+top-k (~7 fragments)** so it would benefit; the **CLI/orchestrator runs multi-pass with
+deeper budgets** so it might be hurt. Different surfaces want different answers, and the
+sign already flipped between corpora — so this is a deployment decision, not a unilateral
+fusion swap. `caw-server::fuse_hybrid` is unchanged; the three modes live behind
+`graph_eval --fusion` for continued measurement. Tuning a 4th variant on n=100 would be
+the same overfit-to-one-set trap refused on n=27, from the other side.

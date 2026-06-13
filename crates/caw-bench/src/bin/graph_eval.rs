@@ -35,6 +35,8 @@ const DEFAULT_RELATIONS: &str = "calls,imports_from,implements,inherits,method,c
 // BM25 already rescues symbol-name queries".
 const HYBRID_SEMANTIC_WEIGHT: f32 = 0.6;
 const HYBRID_KEYWORD_WEIGHT: f32 = 0.4;
+/// RRF rank-bias constant (standard default). Used only by `--fusion rrf`.
+const RRF_K: f32 = 60.0;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -62,6 +64,14 @@ struct Args {
     /// lexical half already rescues symbol-name queries).
     #[arg(long, default_value = "cosine")]
     baseline: String,
+
+    /// Hybrid fusion strategy (only meaningful with `--baseline hybrid`):
+    /// `divide_total` is the incumbent (min-max weighted sum / total weight);
+    /// `present_weight` divides by the weight of the lists an item appears in
+    /// (rescues single-half hits but drops the agreement reward);
+    /// `rrf` is reciprocal-rank fusion (rank-based, discards score magnitude).
+    #[arg(long, default_value = "divide_total")]
+    fusion: String,
 
     /// Depth of the baseline semantic ranking. Gold rank is measured within
     /// this pool; beyond it counts as a miss. Larger = a truer deep rank.
@@ -230,7 +240,20 @@ fn main() -> Result<()> {
     // cache of path -> stub geometry so each gold file is read/queried once
     let mut geom_cache: HashMap<String, Vec<u64>> = HashMap::new();
 
-    let mut outcomes = Vec::new();
+    // `--fusion all` evaluates every fusion mode from a single BM25 build and a
+    // single query embedding per question — the expensive parts (reading and
+    // tokenizing 43k bodies, GPU embedding) happen once, not once per mode.
+    let modes: Vec<String> = if args.baseline == "hybrid" && args.fusion == "all" {
+        vec![
+            "divide_total".into(),
+            "present_weight".into(),
+            "rrf".into(),
+        ]
+    } else {
+        vec![args.fusion.clone()]
+    };
+
+    let mut outcomes_by_mode: Vec<Vec<Outcome>> = modes.iter().map(|_| Vec::new()).collect();
     let mut miss_diags: Vec<MissDiag> = Vec::new();
     for q in &gold_file.questions {
         // Resolve gold stub ids from (path, line).
@@ -255,7 +278,7 @@ fn main() -> Result<()> {
             }
         }
 
-        // --- baseline: deep ranking (cosine, or hybrid fused with BM25) ---
+        // Shared per-question work: embed the query and search each retriever once.
         let qe = embedder.embed_query(vec![q.question.as_str()])?;
         let query_embedding = qe.into_iter().next().context("no query embedding")?;
         let semantic_hits = index.search(&query_embedding, args.pool);
@@ -263,69 +286,75 @@ fn main() -> Result<()> {
             Some(bm) => bm.search(&q.question, args.pool),
             None => Vec::new(),
         };
-        let hits = if bm25.is_some() {
-            fuse_hybrid(&semantic_hits, &bm25_hits, args.pool)
-        } else {
-            semantic_hits.clone()
-        };
-        let base_ranked: Vec<String> = hits.iter().map(|(id, _)| id.0.clone()).collect();
-        let base_rank = first_rank(&base_ranked, &gold);
 
-        if args.diagnose && base_rank.map_or(true, |r| r > args.miss_cutoff) {
-            miss_diags.push(diagnose_miss(
-                q,
-                &gold,
-                base_rank,
-                &semantic_hits,
-                &bm25_hits,
-                &store,
-            ));
-        }
+        for (mi, mode) in modes.iter().enumerate() {
+            let hits = if bm25.is_some() {
+                fuse_hybrid(&semantic_hits, &bm25_hits, args.pool, mode)
+            } else {
+                semantic_hits.clone()
+            };
+            let base_ranked: Vec<String> = hits.iter().map(|(id, _)| id.0.clone()).collect();
+            let base_rank = first_rank(&base_ranked, &gold);
 
-        // --- expansion: admit graph neighbors of the top seed_k seeds ---
-        let mut seeds = Vec::with_capacity(args.seed_k.min(hits.len()));
-        for (id, score) in hits.iter().take(args.seed_k) {
-            if let Ok(stub) = store.get_stub(id) {
-                seeds.push(ScoredStub {
-                    stub,
-                    score: *score,
-                });
+            // Diagnosis is fusion-independent in its decomposition; emit it once,
+            // keyed off the primary (first) mode.
+            if args.diagnose && mi == 0 && base_rank.map_or(true, |r| r > args.miss_cutoff) {
+                miss_diags.push(diagnose_miss(
+                    q,
+                    &gold,
+                    base_rank,
+                    &semantic_hits,
+                    &bm25_hits,
+                    &store,
+                ));
             }
+
+            // --- expansion: admit graph neighbors of the top seed_k seeds ---
+            let mut seeds = Vec::with_capacity(args.seed_k.min(hits.len()));
+            for (id, score) in hits.iter().take(args.seed_k) {
+                if let Ok(stub) = store.get_stub(id) {
+                    seeds.push(ScoredStub {
+                        stub,
+                        score: *score,
+                    });
+                }
+            }
+            let seed_ids: Vec<StubId> = seeds.iter().map(|s| s.stub.id.clone()).collect();
+            let neighbors = edges.neighbors(&seed_ids, &cfg.relations)?;
+            let planned = plan_expansion(&seeds, &neighbors, &cfg);
+
+            let via_by_id: HashMap<&str, &str> = planned
+                .iter()
+                .map(|p| (p.id.0.as_str(), p.via_relation.as_str()))
+                .collect();
+            let exp_ranked = match args.merge.as_str() {
+                "discounted" => merge_discounted(&hits, &planned),
+                _ => merge_adjacent(&base_ranked, &planned),
+            };
+            let exp_rank = first_rank(&exp_ranked, &gold);
+
+            let via_relation = match (base_rank, exp_rank) {
+                (b, Some(er)) if b.map_or(true, |br| er < br) => exp_ranked
+                    .get(er - 1)
+                    .and_then(|id| via_by_id.get(id.as_str()))
+                    .map(|s| s.to_string()),
+                _ => None,
+            };
+
+            outcomes_by_mode[mi].push(Outcome {
+                id: q.id.clone(),
+                qtype: q.qtype.clone(),
+                base_rank,
+                exp_rank,
+                via_relation,
+            });
         }
-        let seed_ids: Vec<StubId> = seeds.iter().map(|s| s.stub.id.clone()).collect();
-        let neighbors = edges.neighbors(&seed_ids, &cfg.relations)?;
-        let planned = plan_expansion(&seeds, &neighbors, &cfg);
-
-        let via_by_id: HashMap<&str, &str> = planned
-            .iter()
-            .map(|p| (p.id.0.as_str(), p.via_relation.as_str()))
-            .collect();
-        let exp_ranked = match args.merge.as_str() {
-            "discounted" => merge_discounted(&hits, &planned),
-            _ => merge_adjacent(&base_ranked, &planned),
-        };
-        let exp_rank = first_rank(&exp_ranked, &gold);
-
-        // Attribute an improvement to the relation that admitted the gold stub.
-        let via_relation = match (base_rank, exp_rank) {
-            (b, Some(er)) if b.map_or(true, |br| er < br) => exp_ranked
-                .get(er - 1)
-                .and_then(|id| via_by_id.get(id.as_str()))
-                .map(|s| s.to_string()),
-            _ => None,
-        };
-
-        outcomes.push(Outcome {
-            id: q.id.clone(),
-            qtype: q.qtype.clone(),
-            base_rank,
-            exp_rank,
-            via_relation,
-        });
     }
 
-    println!("\nbaseline retriever: {}", args.baseline);
-    report(&outcomes, &recall_ks);
+    for (mi, mode) in modes.iter().enumerate() {
+        println!("\nbaseline retriever: {} (fusion: {})", args.baseline, mode);
+        report(&outcomes_by_mode[mi], &recall_ks);
+    }
     if args.diagnose {
         print_miss_diagnosis(&miss_diags, args.miss_cutoff);
     }
@@ -456,14 +485,42 @@ fn print_miss_diagnosis(diags: &[MissDiag], cutoff: usize) {
     }
 }
 
-/// Min-max normalize each list, weight, sum, and re-rank — a verbatim port of
-/// caw-server's `fuse_hybrid` so the hybrid baseline matches the live proxy.
+/// Fuse the semantic and lexical rankings. `divide_total` mirrors caw-server's
+/// live `fuse_hybrid` (the incumbent); `present_weight` and `rrf` are the two
+/// alternatives we are re-adjudicating on the larger independent set.
 fn fuse_hybrid(
     semantic: &[(StubId, f32)],
     bm25: &[(StubId, f32)],
     top_k: usize,
+    mode: &str,
 ) -> Vec<(StubId, f32)> {
     let mut combined: HashMap<StubId, f32> = HashMap::new();
+
+    if mode == "rrf" {
+        // Rank-based: weight / (RRF_K + rank), summed over the lists an item is
+        // in. Discards score magnitude entirely.
+        for (list, weight) in [
+            (semantic, HYBRID_SEMANTIC_WEIGHT),
+            (bm25, HYBRID_KEYWORD_WEIGHT),
+        ] {
+            for (rank, (id, _)) in list.iter().enumerate() {
+                *combined.entry(id.clone()).or_default() += weight / (RRF_K + (rank + 1) as f32);
+            }
+        }
+        let mut fused: Vec<(StubId, f32)> = combined.into_iter().collect();
+        // Deterministic: score desc, then stub_id asc, so equal-score ties don't
+        // ride on HashMap iteration order (which made identical runs wobble ~0.01).
+        fused.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0 .0.cmp(&b.0 .0)));
+        fused.truncate(top_k);
+        return fused;
+    }
+
+    // Min-max normalized weighted sum. The divisor distinguishes the modes:
+    // `divide_total` always divides by the full weight (so a single-half hit is
+    // capped at its own weight — the agreement reward); `present_weight` divides
+    // by the weight of the lists the item actually appears in (rescues single-half
+    // hits but discards that reward).
+    let mut present: HashMap<StubId, f32> = HashMap::new();
     for (list, weight) in [
         (semantic, HYBRID_SEMANTIC_WEIGHT),
         (bm25, HYBRID_KEYWORD_WEIGHT),
@@ -476,12 +533,23 @@ fn fuse_hybrid(
         let range = (max - min).max(f32::EPSILON);
         for (id, score) in list {
             *combined.entry(id.clone()).or_default() += ((score - min) / range) * weight;
+            *present.entry(id.clone()).or_default() += weight;
         }
     }
     let total_weight = HYBRID_SEMANTIC_WEIGHT + HYBRID_KEYWORD_WEIGHT;
     let mut fused: Vec<(StubId, f32)> = combined
         .into_iter()
-        .map(|(id, score)| (id, score / total_weight))
+        .map(|(id, score)| {
+            let denom = match mode {
+                "present_weight" => present
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(total_weight)
+                    .max(f32::EPSILON),
+                _ => total_weight, // divide_total (incumbent)
+            };
+            (id, score / denom)
+        })
         .collect();
     fused.sort_by(|a, b| b.1.total_cmp(&a.1));
     fused.truncate(top_k);
