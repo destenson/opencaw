@@ -27,6 +27,11 @@ cleanup.
 
 ## Bugs — Still Open
 
+> **Reconciliation 2026-06-13.** This list predates the May–June fixes and is partly stale. Verified against current code this pass:
+> - **B3 (`.caw` not skipped during indexing) — resolved in the ingest path.** `caw-ingest/src/lib.rs::should_skip` returns `true` for any path component starting with `.caw` (and a session-log filter); `build_index.rs::should_skip` has the same guard.
+> - **Session-history compression (B7/B10 root cause) — implemented.** `caw-orchestrator/src/session.rs` compresses prior assistant turns to ≤`MAX_PRIOR_ASSISTANT_CHARS` (300 chars, ~50 tokens) via `compress_assistant` before in-memory embedding; the 0.25 history-budget cap is also live (`dynamic.rs`). The "B7 fix specified but not implemented" persistent-issue entries below are obsolete.
+> - **B0/B1/B2 (session-log truncation, path corruption, missing first turn) — NOT re-verified this pass.** They date to the degenerate-output era; many adjacent bugs (B15–B22) were fixed since. Re-run the CLI recall loop and inspect a fresh session log before carrying these forward as real.
+
 ### B0: First user turn sometimes missing from session log (high)
 
 Session log shows turn 2 as the first entry; the prompt file for turn 1 exists.
@@ -247,3 +252,49 @@ low-level implementation. This should be a permanent fixture in the QA file set.
   content-loading, not ranking
 - Answer quality is high when retrieved context matches the query (loops
   0011–0012 positive findings)
+
+---
+
+## Measured Retrieval Quality — `caw-bench-graph-eval` (2026-06-13)
+
+Run against `graphify-eval-index.sqlite` (748-chunk code index, BGE/Candle CUDA),
+27 golden questions (13 structural, 6 definition, 8 caller). Baseline = semantic
+(cosine) only; treatment = cosine seeds + graph-edge neighbor expansion.
+
+**Cosine alone is weak as a top-1 retriever on this single-domain code corpus:**
+`recall@1 = 0.222` overall, `0.000` for both definition and caller queries.
+The model rarely gets the answer chunk in the first slot — consistent with the
+ungrounded answers in `honest.log`/`perf-fast.log`, where a small model (llama3.2:3b)
+fell back to generic textbook text despite fragments being injected.
+
+**Graph expansion is a clear net win for structural/caller queries, neutral-to-negative for definitions:**
+
+| metric | cosine | +graph | Δ |
+|---|---|---|---|
+| MRR (all) | 0.407 | 0.433 | +0.025 |
+| recall@3 (all) | 0.519 | 0.667 | +0.148 |
+| recall@5 (all) | 0.593 | 0.704 | +0.111 |
+| recall@20 (all) | 0.852 | 1.000 | +0.148 |
+| recall@3 (caller) | 0.125 | 0.500 | +0.375 |
+| MRR (caller) | 0.145 | 0.274 | +0.128 |
+| recall@10 (definition) | 0.833 | 0.500 | **−0.333** |
+| recall@10 (all) | 0.778 | 0.741 | −0.037 |
+
+4 of 6 cosine-failed golds were rescued into top-10, all via `calls` edges
+(`split_thinking`, `count_tokens`, `ensure_ort_dylib_path`, `truncate_at_chat_boundary`).
+`recall@1` is unchanged everywhere — expansion reranks the pool, it never promotes
+into the top slot.
+
+Caveats: n=27, single index, golden set authored alongside the feature. The
+definition-query regression (expansion pulls callers/callees that displace the
+defining chunk) is the most actionable negative — expansion should likely be
+gated by intent (skip or down-weight for `definition` queries).
+
+**The measured win is unshipped.** `plan_expansion` is called only in
+`caw-bench/src/bin/graph_eval.rs` (and its own unit tests) — not in the
+orchestrator, CLI, or `caw-server` retrieval path. `caw-graph-ingest` writes the
+`stub_edge` sidecar; only the bench binary reads it. So the live system (CLI
+recall loop, proxy) still retrieves with cosine + BM25 alone and behaves like the
+baseline column above. Wiring `plan_expansion` into the live retriever
+(intent-gated to skip `definition` queries) is the concrete next step, not a
+finding — it's a measured improvement sitting behind a bench harness.
