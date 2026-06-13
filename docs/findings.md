@@ -92,26 +92,27 @@ loop 0011.
 
 ---
 
+## Retrieval Quality — Fixed
+
+### Embedding text is stub metadata, not chunk content — FIXED
+
+`SemanticRetriever::insert` now embeds chunk content as the primary signal
+(`path + summary + content`), falling back to metadata-only when content is
+empty. The CLI ingest path (`embed_and_insert_batch`) embeds `path + chunk_content`
+directly and bypasses the retriever's insert entirely for batched ingest.
+The `_content` parameter discard is gone. First identified loop 0001, fixed
+alongside the HNSW perf work (commit `d29c679`).
+
+### Outline symbols double-counted in embedding string — FIXED
+
+The CLI ingest path embeds `path + chunk_content` with no outline appended;
+`SemanticRetriever::insert` uses `path + summary + content` with no separate
+`outline.join()`. The duplication that crowded out tokens in BGE-small's
+512-token context is gone. Fixed in `d29c679`.
+
+---
+
 ## Retrieval Quality — Persistent Issues
-
-### Embedding text is stub metadata, not chunk content
-
-`SemanticRetriever::insert` discards the chunk content and embeds only
-`path + summary + outline`. Semantic similarity is therefore symbol-name
-matching, not behavioral/semantic matching. A query like "how does session
-eviction decide what to drop?" can only match by symbol name, not intent. The
-`_content: String` parameter in `SemanticRetriever::insert`
-(caw-index/src/lib.rs:175) is discarded. By contrast, the BM25 path does use
-content — the two halves of the hybrid retriever are inconsistent. First
-identified in loop 0001, confirmed in 0002.
-
-### Outline symbols double-counted in embedding string
-
-Symbol names appear in the summary string (which embeds them via
-`position_summary`) and again in `outline.join(" ")` appended at embed time.
-BGE-small has a 512-token context; this duplication crowds out path and other
-tokens with no information gain. Every code chunk with outline entries is
-affected.
 
 ### Documentation stubs served in outline-only mode for explanation queries
 
