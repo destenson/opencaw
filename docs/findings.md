@@ -408,14 +408,12 @@ cosine-rank / BM25-rank / query↔gold token overlap / gold-text size. On the hy
 baseline it surfaced two distinct mechanisms, neither of which graph expansion would
 fix:
 
-1. **The hybrid fusion buries single-half hits — the hybrid is worse than BM25 alone
-   for them.** `fuse_hybrid` min-max normalizes each list and always divides by the
-   full `0.6+0.4` weight, so a keyword-only hit is capped at `0.4×score` while a
-   mediocre chunk present in *both* lists outscores it. Result: BM25 ranks
-   `split_thinking` #4 and `count_tokens` #15, but they fuse to #13 and #31. This is a
-   real fusion bug with known fixes (divide by the weight of the lists an item actually
-   appears in; or rank-based RRF). Untested — the `--diagnose` instrument is now in
-   place to measure a fix.
+1. **The hybrid fusion buries single-half hits — but the "fix" is worse (see below).**
+   `fuse_hybrid` min-max normalizes each list and always divides by the full `0.6+0.4`
+   weight, so a keyword-only hit is capped at `0.4×score` while a mediocre chunk present
+   in *both* lists outscores it. Result: BM25 ranks `split_thinking` #4 and `count_tokens`
+   #15, but they fuse to #13 and #31. This looked like a bug; measuring two standard fixes
+   showed it is the **price of a net-beneficial agreement reward**, not a defect.
 2. **Stale/unreadable bodies fall out of the lexical index.** BM25 build skipped 114 of
    3174 stubs (unreadable bodies — here, index/corpus drift against a prebuilt index).
    The default-hysteresis-load/unload chunks are among them, so those numeric-constant
@@ -425,3 +423,33 @@ fix:
 
 Caveat throughout: n=27, single golden set authored alongside the graph feature. Treat
 the per-mechanism direction as the signal, not the decimals.
+
+### Fusion experiment — negative result, incumbent retained (2026-06-13)
+
+Tried two standard fusions to rescue the single-half burial, measured on the hybrid
+baseline (n=27, `caw-bench-graph-eval --baseline hybrid`):
+
+| fusion | MRR (all) | recall@3 (all) | verdict |
+|---|---|---|---|
+| divide-by-total (incumbent) | ~0.51–0.53 | 0.704 | retained |
+| present-weight (÷ weight of lists present) | 0.330 | 0.444 | decisively worse |
+| RRF (k=60) | 0.492 | 0.667 | inconclusive-to-worse, not k-swept |
+
+- **present-weight** (divide each item by the weight of the lists it actually appears in)
+  is decisively worse: removing the per-item total-weight divisor discards the *agreement
+  reward* — items both retrievers rank get a summed bonus — and the top floods with
+  single-list items that min-max normalization inflates. The diagnosed "burial" is the
+  cost of that reward, and the reward is worth more than the ~2 golds it buries.
+- **RRF k=60** is inconclusive-to-slightly-worse. Two reasons it underperforms here:
+  embedding-cosine *magnitude* is informative on this corpus and RRF throws it away
+  (rank-only); and k=60 is tuned for fusing thousand-item web lists — for a 100-item pool
+  where top-10 is what matters it's too flat (which is why definition queries, leaning on
+  cosine rank, regressed). A fair-k RRF was **not** swept: at n=27 a few-point win would be
+  inside the noise floor (the HashMap tie-order wobble alone is ±~0.01 MRR), i.e.
+  overfitting to a self-authored set.
+
+**Decision: keep the incumbent divide-by-total fusion.** The real blocker to adjudicating
+fusion variants is eval-set size, not the variant — which is the same gap `scope.md`
+already flags ("sweep runs against enough seeds"). Single-half burial is a known, accepted
+cost; the door is open for a real fusion change once a larger, independent eval set exists.
+Nothing in `caw-server` was touched — the experiment ran entirely in the bench mirror.
