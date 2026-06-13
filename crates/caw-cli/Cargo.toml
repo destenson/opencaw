@@ -3,6 +3,9 @@ name = "caw-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# caw-cli is the recall engine; caw-graph-ingest is a one-shot sidecar tool.
+# Without this, adding the second binary made `cargo run -p caw-cli` ambiguous.
+default-run = "caw-cli"
 
 [features]
 llama = ["caw-adapters/llama"]
