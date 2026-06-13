@@ -45,7 +45,7 @@ pub use embeddings::candle_provider::{CandleEmbeddingProvider, EmbedDevice};
 #[cfg(feature = "onnx")]
 pub use embeddings::onnx_provider::{OnnxEmbeddingProvider, OnnxVariant};
 
-pub use bm25::BM25Index;
+pub use bm25::{tokenize as bm25_tokenize, BM25Index};
 pub use embeddings::api_provider::ApiEmbeddingProvider;
 
 #[cfg(feature = "sqlite")]

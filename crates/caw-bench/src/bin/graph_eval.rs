@@ -20,7 +20,9 @@ use caw_index::graph_edges::{
     byte_offset_of_line, line_start_offsets, plan_expansion, stub_for_byte, ExpansionConfig,
     GraphEdgeStore, PlannedNeighbor,
 };
-use caw_index::{BM25Index, CandleEmbeddingProvider, HnswVectorIndex, SqliteStubStore};
+use caw_index::{
+    bm25_tokenize, BM25Index, CandleEmbeddingProvider, HnswVectorIndex, SqliteStubStore,
+};
 use clap::Parser;
 use serde::Deserialize;
 
@@ -94,6 +96,34 @@ struct Args {
     /// Recall@k cutoffs to report (comma-separated).
     #[arg(long, default_value = "1,3,5,10,20,50")]
     recall_k: String,
+
+    /// Emit a per-question decomposition of every baseline miss: where cosine
+    /// ranked the gold, where BM25 ranked it, how many query tokens overlap the
+    /// gold's indexed text, and whether that text is impoverished. Tells apart a
+    /// register mismatch (zero overlap), a fusion problem (one half found it), a
+    /// thin-stub problem (empty summary), and a ranking bug (overlap but buried).
+    #[arg(long)]
+    diagnose: bool,
+
+    /// A gold is a "miss" for the diagnosis when its baseline rank exceeds this.
+    #[arg(long, default_value_t = 10)]
+    miss_cutoff: usize,
+}
+
+/// Why one missed gold stub was not retrieved, decomposed across the two halves
+/// of the hybrid retriever plus the gold's own indexed-text quality.
+struct MissDiag {
+    qid: String,
+    qtype: String,
+    gold_path: String,
+    hybrid_rank: Option<usize>,
+    cosine_rank: Option<usize>,
+    bm25_rank: Option<usize>,
+    query_token_count: usize,
+    overlap_count: usize,
+    shared_sample: Vec<String>,
+    summary_len: usize,
+    body_token_count: usize,
 }
 
 #[derive(Deserialize)]
@@ -201,6 +231,7 @@ fn main() -> Result<()> {
     let mut geom_cache: HashMap<String, Vec<u64>> = HashMap::new();
 
     let mut outcomes = Vec::new();
+    let mut miss_diags: Vec<MissDiag> = Vec::new();
     for q in &gold_file.questions {
         // Resolve gold stub ids from (path, line).
         let mut gold: HashSet<String> = HashSet::new();
@@ -228,15 +259,28 @@ fn main() -> Result<()> {
         let qe = embedder.embed_query(vec![q.question.as_str()])?;
         let query_embedding = qe.into_iter().next().context("no query embedding")?;
         let semantic_hits = index.search(&query_embedding, args.pool);
-        let hits = match &bm25 {
-            Some(bm) => {
-                let bm25_hits = bm.search(&q.question, args.pool);
-                fuse_hybrid(&semantic_hits, &bm25_hits, args.pool)
-            }
-            None => semantic_hits,
+        let bm25_hits: Vec<(StubId, f32)> = match &bm25 {
+            Some(bm) => bm.search(&q.question, args.pool),
+            None => Vec::new(),
+        };
+        let hits = if bm25.is_some() {
+            fuse_hybrid(&semantic_hits, &bm25_hits, args.pool)
+        } else {
+            semantic_hits.clone()
         };
         let base_ranked: Vec<String> = hits.iter().map(|(id, _)| id.0.clone()).collect();
         let base_rank = first_rank(&base_ranked, &gold);
+
+        if args.diagnose && base_rank.map_or(true, |r| r > args.miss_cutoff) {
+            miss_diags.push(diagnose_miss(
+                q,
+                &gold,
+                base_rank,
+                &semantic_hits,
+                &bm25_hits,
+                &store,
+            ));
+        }
 
         // --- expansion: admit graph neighbors of the top seed_k seeds ---
         let mut seeds = Vec::with_capacity(args.seed_k.min(hits.len()));
@@ -282,6 +326,9 @@ fn main() -> Result<()> {
 
     println!("\nbaseline retriever: {}", args.baseline);
     report(&outcomes, &recall_ks);
+    if args.diagnose {
+        print_miss_diagnosis(&miss_diags, args.miss_cutoff);
+    }
     Ok(())
 }
 
@@ -295,6 +342,118 @@ fn split_csv(s: &str) -> Vec<String> {
 /// 1-indexed position of the first id in `ranked` that is a gold id.
 fn first_rank(ranked: &[String], gold: &HashSet<String>) -> Option<usize> {
     ranked.iter().position(|id| gold.contains(id)).map(|p| p + 1)
+}
+
+/// 1-indexed rank of the first gold stub in a `(StubId, score)` list.
+fn rank_of_gold(hits: &[(StubId, f32)], gold: &HashSet<String>) -> Option<usize> {
+    hits.iter()
+        .position(|(id, _)| gold.contains(&id.0))
+        .map(|p| p + 1)
+}
+
+/// Decompose one baseline miss. Characterizes the gold chunk that best overlaps
+/// the query lexically (the most findable one): if even that shares no tokens,
+/// the miss is a genuine query↔code register mismatch, not just a low rank.
+fn diagnose_miss(
+    q: &Question,
+    gold: &HashSet<String>,
+    hybrid_rank: Option<usize>,
+    semantic_hits: &[(StubId, f32)],
+    bm25_hits: &[(StubId, f32)],
+    store: &SqliteStubStore,
+) -> MissDiag {
+    let query_tokens: HashSet<String> = bm25_tokenize(&q.question).into_iter().collect();
+
+    let mut gold_path = String::new();
+    let mut overlap_count = 0usize;
+    let mut shared_sample: Vec<String> = Vec::new();
+    let mut summary_len = 0usize;
+    let mut body_token_count = 0usize;
+    let mut best_overlap: Option<usize> = None;
+    for gid in gold {
+        let id = StubId(gid.clone());
+        let (stub, body) = match (store.get_stub(&id), store.get_content(&id)) {
+            (Ok(s), Ok(b)) => (s, b),
+            _ => continue,
+        };
+        let body_tokens = bm25_tokenize(&body);
+        let doc_text = format!("{} {} {}", stub.path, stub.summary, body);
+        let doc_set: HashSet<String> = bm25_tokenize(&doc_text).into_iter().collect();
+        let mut shared: Vec<String> = query_tokens.intersection(&doc_set).cloned().collect();
+        shared.sort();
+        if best_overlap.is_none_or(|b| shared.len() > b) {
+            best_overlap = Some(shared.len());
+            overlap_count = shared.len();
+            shared_sample = shared.into_iter().take(8).collect();
+            summary_len = stub.summary.trim().len();
+            body_token_count = body_tokens.len();
+            gold_path = stub.path;
+        }
+    }
+
+    MissDiag {
+        qid: q.id.clone(),
+        qtype: q.qtype.clone(),
+        gold_path,
+        hybrid_rank,
+        cosine_rank: rank_of_gold(semantic_hits, gold),
+        bm25_rank: rank_of_gold(bm25_hits, gold),
+        query_token_count: query_tokens.len(),
+        overlap_count,
+        shared_sample,
+        summary_len,
+        body_token_count,
+    }
+}
+
+/// One-line cause label per the decomposition. The half-found cases are the
+/// actionable fusion bugs; zero-overlap is the register dead-end that motivated
+/// query/document expansion; "buried" with overlap is a scoring problem.
+fn miss_cause(d: &MissDiag, cutoff: usize) -> &'static str {
+    let found = |r: Option<usize>| r.is_some_and(|r| r <= cutoff);
+    if d.summary_len < 15 && d.overlap_count == 0 {
+        "thin stub + register dead-end"
+    } else if found(d.cosine_rank) && found(d.bm25_rank) {
+        "both halves found it — fusion drowned it"
+    } else if found(d.bm25_rank) {
+        "BM25 found it — cosine + fusion buried it"
+    } else if found(d.cosine_rank) {
+        "cosine found it — BM25 + fusion buried it"
+    } else if d.overlap_count == 0 {
+        "register dead-end (no shared tokens)"
+    } else {
+        "findable but buried (ranking/scoring)"
+    }
+}
+
+fn print_miss_diagnosis(diags: &[MissDiag], cutoff: usize) {
+    println!("\n## both-miss diagnosis (baseline rank > {cutoff})\n");
+    if diags.is_empty() {
+        println!("  no misses past the cutoff.");
+        return;
+    }
+    for d in diags {
+        let fmt = |r: Option<usize>| r.map_or("miss".to_string(), |r| r.to_string());
+        println!(
+            "{:<34} {:<11} gold={}",
+            d.qid, d.qtype, d.gold_path
+        );
+        println!(
+            "    rank: hybrid={:<5} cosine={:<5} bm25={:<5}   cause: {}",
+            fmt(d.hybrid_rank),
+            fmt(d.cosine_rank),
+            fmt(d.bm25_rank),
+            miss_cause(d, cutoff),
+        );
+        println!(
+            "    overlap: {}/{} query tokens   gold-text: summary={}c body={}tok   shared={:?}",
+            d.overlap_count,
+            d.query_token_count,
+            d.summary_len,
+            d.body_token_count,
+            d.shared_sample,
+        );
+    }
 }
 
 /// Min-max normalize each list, weight, sum, and re-rank — a verbatim port of

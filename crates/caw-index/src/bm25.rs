@@ -88,6 +88,8 @@ impl Default for BM25Index {
 }
 
 /// Tokenize for lexical matching, splitting identifiers into their subwords.
+/// Public so retrieval diagnostics can measure query↔document token overlap with
+/// the exact tokenization BM25 indexes and queries with.
 ///
 /// Natural-language queries don't contain the identifier they're asking about:
 /// "which struct owns the recall loop" shares no token with a chunk whose only
@@ -100,7 +102,7 @@ impl Default for BM25Index {
 /// separator. We split on those boundaries *before* lowercasing (lowercasing
 /// first would erase them) and also keep the whole joined token, so an exact
 /// identifier in a query still scores its chunk.
-fn tokenize(text: &str) -> Vec<String> {
+pub fn tokenize(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for raw in text.split(|c: char| !c.is_alphanumeric()) {
         if raw.is_empty() {
