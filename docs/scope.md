@@ -4,6 +4,8 @@
 
 A **Rust library** for context-as-workspace management in LLM applications. Embeddable in any application that constructs LLM prompts. The core value proposition: thinking-trace-driven recall with eviction, consolidation, and context curation — not another RAG wrapper.
 
+v0.1 ships publicly only when it's genuinely useful and adoptable without friction — ergonomics, docs, and error handling are release-blocking.
+
 ## v0.1 deliverables
 
 ### Must have (blocks usefulness)
@@ -19,7 +21,8 @@ A **Rust library** for context-as-workspace management in LLM applications. Embe
 - [x] Adaptive chunking for large files: `caw-ingest/src/chunking.rs`. Token-threshold splitting with structural boundaries for code and markdown.
 - [x] Degradation monitoring and tiered fallback: `caw-orchestrator/src/degradation.rs`. Always active — not opt-in. `with_degradation_monitor()` is called unconditionally.
 - [ ] Provenance conflict detection beyond topic overlap: still only Jaccard. Contradicting assertions and inconsistent numbers are undetected.
-- [ ] Serious thought into how to use as middleware/proxy that can support any compatible 3rd-party client. This is a separate engineering problem from the core library, but it should influence design decisions in v0.1 to avoid painting ourselves into a corner.
+- [ ] **Async library surface** (`async` Cargo feature, default-on): an additive async facade over the existing sync traits — it adds an `async fn` orchestrator API, it does not replace or flip the sync traits under the flag. caw-core and caw-orchestrator pull no runtime today, so the feature is a real choice: leave it off to embed the recall engine without tokio, turn it on for the async API. Mechanism is the `spawn_blocking` bridge over the sync `run_turn`. Active v0.1 work, not deferred.
+- [ ] **Middleware / proxy that runs the orchestrator** (any OpenAI-compatible 3rd-party client): an `--orchestrate` mode in caw-server where the upstream model becomes the orchestrator's `ModelAdapter` (via `OpenAiCompatibleAdapter`) and the server drives the multi-pass recall loop, instead of the single-shot retrieve→inject→forward path. Buffered response for v0 (one SSE chunk when `stream:true`); the existing single-shot path stays the default so v0 doesn't regress. Active v0.1 work. Targets clients that accept a custom OpenAI base URL (Codex, Cursor, aider); Claude Code's Anthropic protocol needs a separate translation shim, still future.
 
 ### Nice to have (polish)
 - [x] Probe rate limiting for models that thrash: `ProbeRateLimiter` in the degradation module.
@@ -31,13 +34,13 @@ A **Rust library** for context-as-workspace management in LLM applications. Embe
 These are future goals documented in the design doc. Some have placeholder stubs in the codebase to preserve structural intent; these stubs compile but return errors immediately. Don't delete them, but don't invest v0.1 effort in making them functional.
 
 ### Deployment targets beyond library
-- **Middleware / proxy**: Transparent LLM API interception. Requires async refactoring, session state over HTTP, concurrent requests. Separate engineering problem from the core framework.
+- **Transparent API interception across protocols**: An always-on proxy that intercepts arbitrary client traffic, including non-OpenAI protocols (notably Claude Code's Anthropic protocol, which needs a translation shim). The OpenAI-compatible orchestrator proxy is in v0.1 scope (see "Should have"); cross-protocol interception is the part that remains future.
 - **Engine plugins** (vLLM, Ollama native, etc.): Deep integration for mid-token recall. Requires the framework to stabilize first.
-- **Server** (caw-server): Functional OpenAI-compatible retrieval-augmentation proxy. Retrieves context, augments the last user message, forwards to an upstream model server with streaming passthrough. Uses Candle + CUDA for embeddings. Current limitations: synchronous, Candle-only embedder, no multi-pass orchestration. This is a working v0 implementation, not scaffold.
+- **Server** (caw-server): Functional OpenAI-compatible retrieval-augmentation proxy. The single-shot retrieve→inject→forward path retrieves context, augments the last user message, and forwards with streaming passthrough; it stays the default. The orchestrator-backed `--orchestrate` mode (multi-pass recall) is active v0.1 work — see "Should have". Uses Candle + CUDA for embeddings.
 
-### Async and streaming
-- **Async trait refactoring**: Only needed for middleware/server. Sync traits are simpler for library consumers.
-- **Streaming mid-token recall**: Multi-pass orchestration is the v0.1 approach. True streaming requires async adapter traits and engine cooperation.
+### Streaming mid-token recall (deferred — design unsettled, not an async-readiness gate)
+- Async itself is **not** deferred — the `async` feature and the orchestrator-backed proxy are active v0.1 work (see "Should have").
+- What remains future is **token-streaming with mid-stream recall**: the `generate_passive` KV-injection path, where recall fires every N tokens and injects into the live KV cache without restarting generation. This is staged because the passive-injection design is unsettled and only an adapter that owns its sampling loop (e.g. `LlamaCppAdapter`) can implement it — an HTTP upstream can't. Multi-pass orchestration (stop-and-restart on new admissions) remains the approach everywhere else. Track this on its own design, gated on settling passive injection, not on async readiness.
 
 ### Additional backends (implemented but feature-gated)
 All three compile and function when their Cargo feature is enabled. None are on
