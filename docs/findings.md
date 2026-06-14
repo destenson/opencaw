@@ -889,3 +889,17 @@ proven part.
 A `caw-bench-graph-eval --diagnose` rerun of the recorded sysdoc n=100 (hybrid recall@10 = 0.84, 2026-06-13) returned **0.37** on the same `subset-medium.sqlite`. Golds resolved fine (no "no stub covers" warnings), so it was a genuine retrieval drop, not a harness fault. Bisected to the index, not the corpus or the eval code: **16,867 of 43,232 stubs were flagged `stale=1`** (including the gold chunks, e.g. `python3-openshot/changelog#chunk0/1/2`) by a since-fixed bug that marked stubs stale on a transient content-read miss. `all_embeddings()` (and the read-only eval path) excludes stale stubs, so ~39% of the corpus — gold chunks among it — never loaded into the HNSW index or BM25, and could not be retrieved.
 
 Repair without rebuilding (the corpus content was never touched): `UPDATE stubs SET stale=0 WHERE stale=1`. After it, the same diagnosis returns **recall@10 0.850 / MRR 0.543** (changelog recall@10 0.125 → 0.839), matching the recorded baseline. The `with_read_only(true)` guard in `graph_eval` already prevents *new* eval runs from re-poisoning the flags; this only cleared the already-persisted damage. Instrument: `docs/skills/caw-dev/scripts/graph-eval.sh` (new) runs this retrieval-only diagnosis with the sysdoc index/QA/source-root and GPU pinning.
+
+## The thesis sweep predates the determinism fix — re-run required before "validated" holds (2026-06-14)
+
+Surfaced during the usefulness/usability/performance assessment. The two findings below, both recorded earlier today, contradict each other and the contradiction was not previously reconciled:
+
+- The headline thesis result ("Full-file expansion — at-scale result", sysdoc recall_on 0.156 vs off 0.029; opencaw 0.232 vs 0.156) was recorded at commit `60c7170`, **2026-06-14 11:21**.
+- The retrieval-determinism fix (deterministic tie-break in hybrid fusion + BM25, commit `76180fc`) was made **2026-06-14 13:54** — ~2.5 hours *later* — and its own finding states the pre-fix pipeline injected **different fragments for 5/10 items run-to-run**, that this "corrupts every answer-score measurement", and that re-measuring against the quality bar is "meaningful" only "once determinism is verified".
+
+By the project's own standard, then, the numbers that currently underwrite "thesis validated" were measured on a pipeline since declared non-meaningful for answer-score, and have not been re-confirmed. What survives and what doesn't:
+
+- **The direction is mechanistically robust.** Full-file expansion fires only in `recall_on`'s refinement loop (the model must name a file in its reasoning), so recall_on loads the full named file and recall_off structurally cannot — the *sign* of the on/off gap does not depend on retrieval tie-order.
+- **The magnitudes and per-item counts are exactly what the bug scrambles.** The 5.4× gap, "9 improved / 0 regressed", and "items ≥0.5 went 0→6" are per-item answer scores driven by which fragments were injected — the quantity the determinism bug was shown to flip. These are unconfirmed until re-run.
+
+Consequence for "what to work next": the cheapest high-value step is **one confirmatory re-run of the headline sweep on the now-deterministic pipeline** (~25–30 min for an n=40 both-modes sysdoc + n=30 opencaw run via `docs/skills/caw-dev/scripts/bench.sh`), not the gen-phase perf work. The TODO's "gen-perf is the prerequisite for #1" logic applies to repeating a sweep across *many* seeds; it does not apply to a single clean confirmation, which is the gating question for the usefulness verdict and needs the loop only once.
