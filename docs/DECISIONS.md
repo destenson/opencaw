@@ -114,6 +114,8 @@ These are specific values and constraints that follow from the architectural dec
 
 **Minimum content filter:** stubs with `summary.trim().len() < 15` are excluded from retrieval. `token_estimate` reflects file size, not how much content the stub actually contributes — don't use it as a content-quality proxy.
 
+**Per-source chunk cap: 3 (was 1).** A multi-chunk document holds different answers in different chunks; a hard one-chunk-per-source rule silently drops the answer-bearing chunk whenever a higher-scoring chunk of the same file is admitted first. Measured: on the sysdoc n=40 answer-quality sweep, ~40% of items (16/40) were losable purely to this — the gold file was loaded but the wrong chunk was injected, and the model honestly reported the answer wasn't present. The cap is now a per-source *count* (`DynamicRecallConfig::max_chunks_per_source`, mirrored by `caw-server::MAX_CHUNKS_PER_SOURCE`), not a ban. Enforced at three coordinated surfaces that previously all assumed one-per-source: the orchestrator's `load_fragments` admission, the proxy's clamp (`Disposition::DuplicateSource` now means "exceeded the cap", not "any duplicate"), and `CompletionRequest::format_workspace`, which no longer collapses to the first chunk per source + a `[+N more]` note but renders every admitted chunk (per-source limiting is the producer's job, not the renderer's). The value trades against the original flooding failure (B1 — a 100+ chunk file flooding the workspace): 3 surfaces the answer chunk of a normal changelog while bounding a pathological file; the token budget remains the hard ceiling. Starting value pending the post-fix re-run; configurable.
+
 ---
 
 ## Open questions

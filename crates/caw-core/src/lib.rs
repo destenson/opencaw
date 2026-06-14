@@ -952,65 +952,36 @@ impl CompletionRequest {
             return String::new();
         }
 
-        // First pass: collect extra locators for each source beyond the first
-        // occurrence, preserving the iteration order of first appearances.
-        let mut extra_locators: std::collections::HashMap<&str, Vec<&str>> =
-            std::collections::HashMap::new();
-        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for f in &self.workspace_fragments {
-            let src = f.locator.source.as_str();
-            if !seen.insert(src) {
-                extra_locators.entry(src).or_default().push(f.locator.locator.as_str());
-            }
-        }
-
-        // Second pass: render the first fragment from each source with a compact
-        // note about any additional sections; skip the rest entirely.
-        let mut rendered: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        // Render every admitted fragment verbatim. Per-source limiting is the
+        // producer's responsibility (the orchestrator's admission cap and the
+        // proxy's clamp both bound chunks-per-source); the renderer no longer
+        // collapses multiple chunks of one file, because different chunks of a
+        // multi-chunk document answer different questions — collapsing to the
+        // top-scoring chunk silently drops the answer-bearing one.
         let fragments: Vec<String> = self
             .workspace_fragments
             .iter()
-            .filter_map(|f| {
-                let source = f.locator.source.as_str();
-                if !rendered.insert(source) {
-                    return None;
-                }
+            .map(|f| {
                 // "full" is the default and adds no information; omit it.
                 let source_ref = if f.locator.locator == "full" {
-                    source.to_string()
+                    f.locator.source.clone()
                 } else {
-                    format!("{}:{}", source, f.locator.locator)
+                    format!("{}:{}", f.locator.source, f.locator.locator)
                 };
-                let extras_note = match extra_locators.get(source) {
-                    Some(locs) if !locs.is_empty() => {
-                        let meaningful: Vec<&&str> =
-                            locs.iter().filter(|l| **l != "full").collect();
-                        if meaningful.is_empty() {
-                            format!("\n[+{} more section(s) from this file]", locs.len())
-                        } else {
-                            format!(
-                                "\n[+{} more section(s) from this file: {}]",
-                                locs.len(),
-                                meaningful.iter().map(|l| **l).collect::<Vec<_>>().join(", ")
-                            )
-                        }
-                    }
-                    _ => String::new(),
-                };
-                Some(match format {
+                match format {
                     ProvenanceFormat::Xml => format!(
                         "<recalled from=\"{source_ref}\">\n\
-                         {content}{extras_note}\n\
+                         {content}\n\
                          </recalled>",
                         content = f.content,
                     ),
                     ProvenanceFormat::Bracketed => format!(
                         "[recalled from {source_ref}]\n\
-                         {content}{extras_note}\n\
+                         {content}\n\
                          [end recall]",
                         content = f.content,
                     ),
-                })
+                }
             })
             .collect();
 
@@ -1660,7 +1631,12 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_source_fragments_are_collapsed_to_extras_note() {
+    fn every_admitted_chunk_is_rendered_including_same_source() {
+        // The renderer no longer collapses multiple chunks of one file: each
+        // chunk of a multi-chunk document can hold a different answer, so all
+        // admitted fragments are rendered verbatim. Per-source limiting is the
+        // producer's job (orchestrator admission / proxy clamp), not the
+        // renderer's.
         let request = CompletionRequest {
             system: String::new(),
             user: String::new(),
@@ -1675,17 +1651,16 @@ mod tests {
 
         let formatted = request.format_workspace(ProvenanceFormat::Bracketed);
 
-        // Primary fragment from lib.rs is present.
+        // All three lib.rs chunks render as full blocks with their content.
         assert!(formatted.contains("[recalled from lib.rs:1-40]"));
         assert!(formatted.contains("fn foo() {}"));
-        // Secondary fragments from lib.rs are not rendered as full blocks.
-        assert!(!formatted.contains("[recalled from lib.rs:80-120]"));
-        assert!(!formatted.contains("fn baz() {}"));
-        assert!(!formatted.contains("[recalled from lib.rs:200-240]"));
-        assert!(!formatted.contains("fn qux() {}"));
-        // The extras note is appended to the primary block.
-        assert!(formatted.contains("+2 more section(s) from this file: 80-120, 200-240"));
-        // The sole other.rs fragment is shown normally, without the ":full" noise.
+        assert!(formatted.contains("[recalled from lib.rs:80-120]"));
+        assert!(formatted.contains("fn baz() {}"));
+        assert!(formatted.contains("[recalled from lib.rs:200-240]"));
+        assert!(formatted.contains("fn qux() {}"));
+        // The old collapse-to-note behavior is gone.
+        assert!(!formatted.contains("more section(s) from this file"));
+        // A "full" locator still renders without the ":full" noise.
         assert!(formatted.contains("[recalled from other.rs]"));
         assert!(!formatted.contains("[recalled from other.rs:full]"));
         assert!(formatted.contains("fn bar() {}"));

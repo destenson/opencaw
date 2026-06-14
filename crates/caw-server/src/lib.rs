@@ -424,13 +424,20 @@ pub enum Disposition {
     /// The stub's body could not be read (almost always a corpus-root
     /// mismatch). Skipped without consuming budget.
     ContentMiss,
-    /// A higher-ranked chunk from the same source file was already admitted.
-    /// `format_workspace` renders only the first chunk per source, so admitting
-    /// a second would spend token budget on content that is never injected.
-    /// Skipped without consuming budget — mirrors the orchestrator's
-    /// `load_fragments` source dedup.
+    /// `MAX_CHUNKS_PER_SOURCE` chunks from this source file were already
+    /// admitted. Up to the cap is allowed (different chunks of a multi-chunk
+    /// document carry different answers); beyond it, further chunks are skipped
+    /// without consuming budget — mirrors the orchestrator's per-source cap.
     DuplicateSource,
 }
+
+/// Maximum chunks admitted from a single source file. Mirrors the orchestrator's
+/// `DynamicRecallConfig::max_chunks_per_source` default so the proxy and the CLI
+/// engine inject the same per-source breadth. A one-per-source cap silently drops
+/// the answer-bearing chunk of a multi-chunk document (long changelogs, READMEs)
+/// when a higher-scoring chunk of the same file is admitted first; the budget
+/// remains the hard ceiling.
+const MAX_CHUNKS_PER_SOURCE: usize = 3;
 
 impl Disposition {
     fn as_str(self) -> &'static str {
@@ -561,9 +568,11 @@ fn retrieve_scored(state: &AppState, query: &str) -> Result<Vec<ScoredCandidate>
     let mut used_tokens = 0usize;
     let mut admitted = 0usize;
     let mut content_misses = 0usize;
-    // Sources already injected. The renderer shows one chunk per source, so a
-    // later chunk from an admitted source is dropped before it can charge budget.
-    let mut admitted_sources: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Chunks already injected per source. Up to MAX_CHUNKS_PER_SOURCE are
+    // admitted; further chunks of the same file are dropped before charging
+    // budget (the renderer now injects every admitted chunk).
+    let mut admitted_source_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     // Set once the budget is hit: subsequent candidates are listed as
     // BudgetFull without reading their bodies, mirroring the proxy's
     // greedy-prefix `break`.
@@ -591,11 +600,11 @@ fn retrieve_scored(state: &AppState, query: &str) -> Result<Vec<ScoredCandidate>
             }
         };
 
-        // The renderer injects only the first chunk per source. A later chunk
-        // from an already-admitted source would consume budget for content that
-        // is never shown, pushing distinct sources into BudgetFull. Drop it here
-        // — same rule the orchestrator's load_fragments applies at admission.
-        if admitted_sources.contains(&stub.path) {
+        // Allow up to MAX_CHUNKS_PER_SOURCE chunks per file; beyond the cap a
+        // further chunk would crowd out distinct sources for diminishing return,
+        // so drop it here without charging budget — same per-source cap the
+        // orchestrator's load_fragments applies at admission.
+        if admitted_source_counts.get(&stub.path).copied().unwrap_or(0) >= MAX_CHUNKS_PER_SOURCE {
             out.push(ScoredCandidate {
                 rank,
                 path: stub.path,
@@ -664,7 +673,7 @@ fn retrieve_scored(state: &AppState, query: &str) -> Result<Vec<ScoredCandidate>
 
         used_tokens += tokens;
         admitted += 1;
-        admitted_sources.insert(stub.path.clone());
+        *admitted_source_counts.entry(stub.path.clone()).or_insert(0) += 1;
         out.push(ScoredCandidate {
             rank,
             path: stub.path,

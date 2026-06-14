@@ -75,9 +75,11 @@ pub struct DynamicRecallOrchestrator<R, E, V, P, M, S = ()> {
     pub adapter: M,
     pub loaded: Vec<RecallFragment>,
     pub loaded_ids: HashSet<StubId>,
-    /// Source paths of currently loaded fragments. Prevents admitting
-    /// multiple chunks from the same file — one per source is enough.
-    loaded_sources: HashSet<String>,
+    /// Count of currently loaded fragments per source path. Bounds how many
+    /// chunks of the same file are admitted at once (`max_chunks_per_source`)
+    /// without forbidding the second chunk outright — different chunks of a
+    /// multi-chunk document carry different answers.
+    loaded_source_counts: HashMap<String, usize>,
     /// Per-fragment relevance scores. Decay each reasoning step;
     /// refreshed when the model's output re-engages with the fragment.
     relevance_scores: HashMap<StubId, f32>,
@@ -123,6 +125,15 @@ pub struct DynamicRecallConfig {
     /// candidates than this clear the load threshold, the query is too broad
     /// for confident initial augmentation — load nothing and let probes drive.
     pub max_initial_fragments: usize,
+    /// Maximum chunks admitted from a single source file. Multi-chunk documents
+    /// (long changelogs, READMEs) hold different answers in different chunks, so
+    /// a hard one-per-source cap silently drops the answer-bearing chunk when a
+    /// higher-scoring chunk of the same file is admitted first. This allows up
+    /// to N distinct chunks per source while still bounding the flooding a very
+    /// large file (e.g. a 100+ chunk README) would otherwise cause. All admitted
+    /// chunks already cleared the load threshold; the total token budget remains
+    /// the hard ceiling.
+    pub max_chunks_per_source: usize,
     /// Whether to inject probe/annotation cooperation instructions into the
     /// system prompt. Defaults to `Auto` (capability-based). Override with
     /// calibration data from `caw-bench-coop`.
@@ -169,6 +180,7 @@ impl Default for DynamicRecallConfig {
             enable_line_reference_recall: true,
             max_loaded_fragments: 50,
             max_initial_fragments: 4,
+            max_chunks_per_source: 3,
             cooperation_mode: CooperationMode::Auto,
             convergence_min_new_tokens: 200,
             passive_injection_interval: 32,
@@ -204,7 +216,7 @@ where
             adapter,
             loaded: Vec::new(),
             loaded_ids: HashSet::new(),
-            loaded_sources: HashSet::new(),
+            loaded_source_counts: HashMap::new(),
             relevance_scores: HashMap::new(),
             config,
             store: None,
@@ -1115,7 +1127,7 @@ where
                         );
                         self.loaded_ids.insert(stub_id);
                         if source != "session history" {
-                            self.loaded_sources.insert(source.clone());
+                            *self.loaded_source_counts.entry(source.clone()).or_insert(0) += 1;
                         }
                         self.provenance.record(fragment.clone());
                         self.loaded.push(fragment);
@@ -1244,7 +1256,12 @@ where
             let fragment = self.loaded.remove(idx);
             self.loaded_ids.remove(&fragment.stub_id);
             if fragment.locator.source != "session history" {
-                self.loaded_sources.remove(&fragment.locator.source);
+                if let Some(count) = self.loaded_source_counts.get_mut(&fragment.locator.source) {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        self.loaded_source_counts.remove(&fragment.locator.source);
+                    }
+                }
             }
             debug!(path = %fragment.locator.source, "fragment evicted");
 
@@ -1421,11 +1438,16 @@ where
                 },
             };
 
-            // Skip a second chunk from a source already in the workspace.
-            // "session history" is exempt — multiple turns are distinct content.
+            // Cap how many chunks of one source are admitted at once. Different
+            // chunks of a multi-chunk document carry different answers, so this
+            // is a per-source count cap, not a one-per-source ban. "session
+            // history" is exempt — multiple turns are distinct content.
             let source = &fragment.locator.source;
-            if source != "session history" && self.loaded_sources.contains(source) {
-                debug!(source = %source, "source already loaded — skipping duplicate chunk");
+            if source != "session history"
+                && self.loaded_source_counts.get(source).copied().unwrap_or(0)
+                    >= self.config.max_chunks_per_source
+            {
+                debug!(source = %source, "per-source chunk cap reached — skipping chunk");
                 continue;
             }
 
@@ -1441,7 +1463,7 @@ where
                 self.relevance_scores.insert(stub_id.clone(), score);
                 self.loaded_ids.insert(stub_id.clone());
                 if !is_history {
-                    self.loaded_sources.insert(source.clone());
+                    *self.loaded_source_counts.entry(source.clone()).or_insert(0) += 1;
                 }
                 self.provenance.record_with_context(fragment.clone(), "", 0);
                 self.loaded.push(fragment);
@@ -1489,7 +1511,7 @@ impl<R, E, V, P: Default, M, S> DynamicRecallOrchestrator<R, E, V, P, M, S> {
     pub fn reset_session(&mut self) {
         self.loaded.clear();
         self.loaded_ids.clear();
-        self.loaded_sources.clear();
+        self.loaded_source_counts.clear();
         self.relevance_scores.clear();
         self.provenance = P::default();
     }
