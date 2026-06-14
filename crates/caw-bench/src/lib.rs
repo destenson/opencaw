@@ -9,4 +9,5 @@ pub mod report;
 pub mod runner;
 pub mod shared;
 pub mod sysdoc;
+pub mod timing;
 pub mod workload;

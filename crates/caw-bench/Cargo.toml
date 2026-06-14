@@ -3,6 +3,7 @@ name = "caw-bench"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+default-run = "caw-bench"
 
 [[bin]]
 name = "caw-bench"

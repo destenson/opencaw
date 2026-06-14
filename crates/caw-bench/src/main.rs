@@ -222,7 +222,7 @@ fn main() -> Result<()> {
         .unwrap_or_else(|| cli.judge_adapter.default_model(ModelRole::Judge))
         .to_string();
 
-    let judge_adapter = adapter_factory::build(
+    let judge_inner = adapter_factory::build(
         AdapterSpec {
             kind: cli.judge_adapter,
             model: &judge_model,
@@ -233,6 +233,11 @@ fn main() -> Result<()> {
         },
         &runtime,
     )?;
+    // One counter for the judge across the whole run; per-item judge time is
+    // the snapshot delta around each run_item call.
+    let judge_counters = caw_bench::timing::PhaseCounters::new();
+    let judge_adapter =
+        caw_bench::timing::TimingAdapter::new(judge_inner, judge_counters.clone());
 
     let modes: Vec<RecallMode> = match cli.only_mode {
         Some(m) => vec![m.into()],
@@ -282,7 +287,7 @@ fn main() -> Result<()> {
 
             // Each item gets a fresh answer adapter — the orchestrator
             // takes ownership, and we want no state carried between runs.
-            let answer_adapter = match adapter_factory::build(
+            let answer_inner = match adapter_factory::build(
                 AdapterSpec {
                     kind: cli.answer_adapter,
                     model: &answer_model,
@@ -299,22 +304,44 @@ fn main() -> Result<()> {
                     continue;
                 }
             };
+            // Fresh answer counter per item; judge counter is shared, so diff
+            // its snapshot across the call to isolate this item's judge time.
+            let answer_counters = caw_bench::timing::PhaseCounters::new();
+            let answer_adapter: Box<dyn caw_core::ModelAdapter> = Box::new(
+                caw_bench::timing::TimingAdapter::new(answer_inner, answer_counters.clone()),
+            );
+            let (_, judge_ms_before) = judge_counters.snapshot();
 
             match run_item(
                 item,
                 *mode,
                 &cfg,
                 answer_adapter,
-                judge_adapter.as_ref(),
+                &judge_adapter,
                 prebuilt.as_ref(),
             ) {
-                Ok(result) => {
+                Ok(mut result) => {
+                    let (gen_calls, gen_ms) = answer_counters.snapshot();
+                    let (_, judge_ms_after) = judge_counters.snapshot();
+                    result.gen_ms = gen_ms;
+                    result.gen_calls = gen_calls;
+                    result.judge_ms = judge_ms_after.saturating_sub(judge_ms_before);
+                    let other_ms = result
+                        .latency_ms
+                        .saturating_sub(result.gen_ms)
+                        .saturating_sub(result.judge_ms);
                     eprintln!(
-                        "  score={:.2} recall@k={:.2} ctx_eff={:.2} loaded={}",
+                        "  score={:.2} recall@k={:.2} ctx_eff={:.2} loaded={} | \
+                         {}ms = gen {}ms(x{}) + judge {}ms + other {}ms",
                         result.answer_score,
                         result.recall_at_k,
                         result.context_efficiency,
                         result.loaded_paths.len(),
+                        result.latency_ms,
+                        result.gen_ms,
+                        result.gen_calls,
+                        result.judge_ms,
+                        other_ms,
                     );
                     if let Some(writer) = trace_writer.as_mut() {
                         use std::io::Write;

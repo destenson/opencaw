@@ -213,6 +213,17 @@ pub struct ItemResult {
     pub judge_rationale: String,
     /// Wall time for this item (ms).
     pub latency_ms: u64,
+    /// Answer-model generation time (ms) within this item — the sum of all
+    /// multi-pass completions. Filled by the bench's `TimingAdapter`; 0 when
+    /// timing isn't wired (e.g. direct library callers of `run_item`).
+    #[serde(default)]
+    pub gen_ms: u64,
+    /// Number of answer-model completions for this item (multi-pass count).
+    #[serde(default)]
+    pub gen_calls: u64,
+    /// Judge-model time (ms) for this item. 0 for non-judged scoring.
+    #[serde(default)]
+    pub judge_ms: u64,
     /// Reference answer from the scoring config (JudgeAgainst only; empty
     /// for ContainsNeedle). Carried through so the trace can show what the
     /// judge was comparing against.
@@ -475,6 +486,12 @@ fn finalize_result(
         answer_score,
         judge_rationale,
         latency_ms: started.elapsed().as_millis() as u64,
+        // Phase timings are populated by the caller (main.rs) from the
+        // TimingAdapter counters after run_item returns; runner has no handle
+        // to them. Default to 0 so direct library callers still compile.
+        gen_ms: 0,
+        gen_calls: 0,
+        judge_ms: 0,
         reference_answer,
         loaded_fragments,
     })

@@ -24,6 +24,14 @@ pub struct ModeSummary {
     pub mean_context_efficiency: f32,
     pub mean_false_recall_rate: f32,
     pub mean_latency_ms: f32,
+    /// Phase breakdown of mean latency (diagnose-before-optimize). gen =
+    /// answer-model completions, judge = judge model, other = embed + retrieve
+    /// + orchestration (latency − gen − judge). `gen_calls` is the mean number
+    /// of completions per item — the multi-pass cost in `recall_on`.
+    pub mean_gen_ms: f32,
+    pub mean_gen_calls: f32,
+    pub mean_judge_ms: f32,
+    pub mean_other_ms: f32,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,6 +64,9 @@ pub struct SerializableItem {
     pub answer_score: f32,
     pub judge_rationale: String,
     pub latency_ms: u64,
+    pub gen_ms: u64,
+    pub gen_calls: u64,
+    pub judge_ms: u64,
 }
 
 impl From<&ItemResult> for SerializableItem {
@@ -78,6 +89,9 @@ impl From<&ItemResult> for SerializableItem {
             answer_score: r.answer_score,
             judge_rationale: r.judge_rationale.clone(),
             latency_ms: r.latency_ms,
+            gen_ms: r.gen_ms,
+            gen_calls: r.gen_calls,
+            judge_ms: r.judge_ms,
         }
     }
 }
@@ -118,6 +132,17 @@ fn mean_summary(mode: RecallMode, items: &[&ItemResult]) -> ModeSummary {
     let sum_eff: f32 = items.iter().map(|r| r.context_efficiency).sum();
     let sum_fr: f32 = items.iter().map(|r| r.false_recall_rate).sum();
     let sum_latency: u64 = items.iter().map(|r| r.latency_ms).sum();
+    let sum_gen_ms: u64 = items.iter().map(|r| r.gen_ms).sum();
+    let sum_gen_calls: u64 = items.iter().map(|r| r.gen_calls).sum();
+    let sum_judge_ms: u64 = items.iter().map(|r| r.judge_ms).sum();
+    let sum_other_ms: u64 = items
+        .iter()
+        .map(|r| {
+            r.latency_ms
+                .saturating_sub(r.gen_ms)
+                .saturating_sub(r.judge_ms)
+        })
+        .sum();
 
     ModeSummary {
         mode: mode.as_str().to_string(),
@@ -132,6 +157,10 @@ fn mean_summary(mode: RecallMode, items: &[&ItemResult]) -> ModeSummary {
         mean_context_efficiency: sum_eff / n,
         mean_false_recall_rate: sum_fr / n,
         mean_latency_ms: sum_latency as f32 / n,
+        mean_gen_ms: sum_gen_ms as f32 / n,
+        mean_gen_calls: sum_gen_calls as f32 / n,
+        mean_judge_ms: sum_judge_ms as f32 / n,
+        mean_other_ms: sum_other_ms as f32 / n,
     }
 }
 
@@ -185,8 +214,12 @@ pub fn format_summary(report: &BenchReport) -> String {
             summary.mean_index_pool_tokens
         ));
         out.push_str(&format!(
-            "  avg latency ms:       {:.0}\n\n",
-            summary.mean_latency_ms
+            "  avg latency ms:       {:.0}  (gen {:.0}ms x{:.1} + judge {:.0}ms + other {:.0}ms)\n\n",
+            summary.mean_latency_ms,
+            summary.mean_gen_ms,
+            summary.mean_gen_calls,
+            summary.mean_judge_ms,
+            summary.mean_other_ms,
         ));
     }
 
