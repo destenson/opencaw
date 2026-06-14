@@ -212,12 +212,22 @@ impl ModelAdapter for ClaudeCodeAdapter {
             .arg("--effort")
             .arg(&self.effort)
             .arg("--no-session-persistence")
-            // Skip project/local CLAUDE.md + settings so programmatic
-            // callers get predictable context, independent of whatever
-            // repo they happen to be invoked from.
+            // Load no settings layer at all. The three sources are
+            // user/project/local; `project` resolves against the cwd, which
+            // is pinned to /tmp below — a directory with no project settings —
+            // so nothing is loaded. This keeps programmatic output predictable
+            // and independent of the invoking repo *and* of the developer's
+            // large global ~/.claude/CLAUDE.md, which would otherwise be
+            // injected into every auxiliary call (judge, summarizer,
+            // consolidator) as pure overhead and a scoring-bias risk. Measured
+            // ~1s+ faster per call than `--setting-sources user`. Auth is
+            // unaffected — it comes from stored credentials, not settings.
             .arg("--setting-sources")
-            .arg("user")
-            .arg("--disable-slash-commands");
+            .arg("project")
+            .arg("--disable-slash-commands")
+            // Skip the Claude-in-Chrome integration handshake — unused for a
+            // headless single-shot call and a measured ~0.9s of startup.
+            .arg("--no-chrome");
 
         if let Some(budget) = self.max_budget_usd {
             cmd.arg("--max-budget-usd").arg(budget.to_string());

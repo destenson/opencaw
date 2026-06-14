@@ -735,3 +735,56 @@ way. (2) Absolute scores remain low (0.16–0.23) — a small abliterated 9B mod
 *deltas and signs* are the result, not the absolutes. (3) Single run each, n=30–40. (4) The cap
 alone (without expansion) still mildly hurts fact-lookup vs one-per-source; expansion is what turns
 it into a large net win. (5) The eval loop is slow (~20s/item); see the perf-diagnosis TODO.
+
+## Eval-loop latency — phase decomposition and the judge fix (2026-06-14)
+
+Diagnosed the "~20s/item" before optimizing, per the perf-diagnosis TODO. Added a `TimingAdapter`
+decorator in `caw-bench` (wraps the answer and judge adapters, accumulates per-call wall time) so
+each item's `latency_ms` splits into `gen` (answer-model completions + count), `judge`, and `other`
+(embed + retrieve + orchestration). Measured n=2, recall_on, release build:
+
+| workload | latency | gen | judge | other |
+|---|---|---|---|---|
+| sysdoc (fact-lookup) | 21.2s | 7.5s ×1.0 | 8.5s | 5.2s* |
+| opencaw (synthesis)  | 24.4s | 12.7s ×2.0 | 11.3s | 0.5s |
+
+*item-1 only — the one-time in-memory HNSW build over the 43k-stub index lands inside the first
+item's clock; steady-state `other` is ~0.8s. Embedding itself is ~4ms/call (candle), a non-factor.
+
+Findings, two of which overturn the TODO's prior suspicion ordering:
+- **The multi-pass loop fires on synthesis (gen ×2.0) but not on fact-lookup (gen ×1.0).** On sysdoc
+  the refinement loop converged after the first completion (no expansion/probe admitted new tokens),
+  so the "up to 3 completions" cost the TODO feared is workload-dependent — real on opencaw, absent
+  on sysdoc.
+- **First-run CPU storm was a debug build.** instant-distance building the 43k-node HNSW unoptimized
+  pegged all cores for minutes with the GPU idle; release fixed it. (Now a standing rule: benchmark
+  release-only.) The HNSW-build cost is amortized across a sweep but would bite an interactive/proxy
+  use that rebuilds per process start — `hnsw_index.rs`'s "negligible for low thousands of documents"
+  comment no longer holds at 43k.
+
+**Judge anatomy (claude-code/haiku).** The per-item judge was ~8.5s. Decomposed by direct
+measurement (timing a trivial-prompt `claude --print` call): ~1s process spawn + ~2s CLI/network
+fixed floor + ~5.5s actual haiku inference of the judge prompt. So keeping the CLI process warm or
+batching would only remove the ~3s fixed overhead, not the ~5.5s inference — a modest win, not the
+lever first assumed. `--bare` (the ~1s minimal-harness path) drops OAuth and demands an
+`ANTHROPIC_API_KEY` (it *does* honor `apiKeyHelper` via `--settings`, but that's a billing/auth
+change). Keeping OAuth, the available knobs are narrow: added `--no-chrome` (~0.9s) and switched
+`--setting-sources user`→`project` (loads no settings layer at the pinned `/tmp` cwd, so the
+developer's large global CLAUDE.md isn't injected into every auxiliary call) — ~1–2s saved, auth
+intact. There is no individual flag for hooks/LSP/plugin-sync/auto-memory; those bundle only into
+`--bare`.
+
+**The decisive fix: groq judge (already wired, no code).** `--judge-adapter groq` already routes
+through the adapter-agnostic `judge.rs` at `llama-3.3-70b-versatile`. Measured n=2 sysdoc:
+**judge 0.45s vs 8.5s — ~19×**, with valid discriminating verdicts (scores 1.00 / 0.00, coherent
+rationales, 344–549ms each). This removes the judge as a meaningful phase (≈3% of latency) and cuts
+the sysdoc loop ~21s→~15s. Caveat: groq-70b and haiku score differently, so a groq-judged sweep is
+**not directly comparable** to the haiku-judged numbers elsewhere in this doc — switching the judge
+re-baselines absolute answer_score. Bench default judge stays claude-code/haiku for comparability;
+groq is the fast-iteration option.
+
+**What's left in the loop after the judge fix:** answer-generation (gen) dominates — single ~7.5s
+completion on fact-lookup, ~12.7s (×2) on synthesis. UX/product levers there (the judge does not
+exist in the proxy/CLI product): cap reasoning `num_predict`, or skip the refinement completion when
+the first answer is already grounded (trades against the thesis — measure quality). Plus persisting
+the HNSW for interactive startup. n=2 throughout — directional, not precise.
