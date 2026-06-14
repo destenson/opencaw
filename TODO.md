@@ -190,3 +190,20 @@ orchestrator runs at full capability unconditionally.
 - [ ] **Crate-name query boost: when query explicitly names a crate, load its most content-rich stubs first**: A query like "what can we do to improve caw-curation?" retrieved `Cargo.toml` (`[package]` only) and `lib.rs` (`mod history;` only) for caw-curation before getting to `pipeline.rs` which has actual struct definitions. The minimal stubs gave the model insufficient evidence to confirm the crate exists. When a crate name is detected in the query, score the content-rich stubs for that crate (those with a non-empty outline) above the cosine-similarity ranking. Observed in QA loop 0020 (recommendation 3).
 - [x] **Log classifier fallback and fix classifier temperature**: Fixed (2026-05-08): `classify_query_intent` now logs each individual failure with `eprintln!` showing the model name and error. When all classifiers fail, a second message logs the count and model names and states the fallback (full retrieval, no guidance). `build_intent_adapter` now passes `temperature=Some(0.0)` to `build_completion_adapter`, and the `ollama` and `other` branches of that function now apply the temperature parameter via `with_temperature`. Observed in QA loop 0020 (recommendation 5).
 - [ ] **QA harness: validate each question before sending to caw-cli**: Session 094900 sent "nice to know" as the 3rd QA question — an acknowledgment phrase rather than a query. The harness should assert each question meets a minimal validity check (length > 5 tokens, or contains at least one of: `?`, a question-word like "what"/"how"/"why"/"is"/"can", or a codebase term from a known list) before injecting it. Log and skip any question that fails. Observed in QA loop 0020 (recommendation 6).
+
+## Misc
+
+
+### GGUF
+
+There are a few gguf models in ~/models. They may be worth testing as cheaper alternatives for intent classification and relevance probing, either in the QA harness or as additional options in the CLI. They are not currently integrated into the codebase, but could be added as additional adapters for those components.
+
+There are some unsloth diffusion gemma gguf models in ~/models/unsloth that could also be tested. I have successfully loaded them with a custom `llama.cpp` in ~/src/llama.cpp that supports the Gemma architecture, but they are not currently integrated into the codebase and would require additional adapter work to use in the CLI or QA harness. [Unsloth DiffusionGemma Documentation](https://unsloth.ai/docs/models/diffusiongemma#chat-with-diffusiongemma) contains instructions for loading these models with llama.cpp, which could be adapted for our use, such as:
+
+```sh
+~/src/llama.cpp/build/bin/llama-diffusion-cli \
+  -m ~/models/unsloth/diffusiongemma-26B-A4B-it-GGUF/diffusiongemma-26B-A4B-it-Q8_0.gguf \
+  -ngl 99 -cnv -n 2048
+```
+
+There are also instructions for fine-tuning. We may want to consider fine tuning it to perform specialized tasks like intent classification or relevance probing if it proves to be a good candidate for those roles.
