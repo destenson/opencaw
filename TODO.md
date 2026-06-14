@@ -4,6 +4,10 @@ Design: [docs/design.md](docs/design.md). Scope: [docs/scope.md](docs/scope.md).
 
 The following sections are in no particular order. Do not infer that high priority items are listed first.
 
+## Logging
+
+- Convert all logging to `tracing` with structured fields, and add timestamps. Use `debug` for internal state changes and `info` for user-relevant events (e.g., "retrieved 3 fragments, evicted 2 fragments"). Add component tags to log fields to clarify which part of the system is logging (retriever, orchestrator, probe, etc.). User-facing messages are the only exception, and they should be println!() or eprintln!() so they are visible even with a restrictive log filter.
+
 ## Validation & performance
 
 - Dogfood opencaw over this repo as a coding-agent context server (drive a real agent through caw-server against the repo index). The `code-agent` `caw-bench` workload (questions = agent mid-task info needs: signatures, trait bounds, struct fields, call sites; needle + judge scoring) needs expanded QA set and run the recall-on/off sweep.
