@@ -834,3 +834,42 @@ sharp test: *can a cap that cuts mean gen_ms ≥20% avoid truncating items 1 and
 the 4096 default also implies most traces already finish well below 4096 tokens, so a cap bites only
 the long items — which are exactly the correct ones. Hypothesis: the cap cannot clear the bar on this
 workload. (Result pending the cap runs below.)
+
+### Result: cap=1024 fails the bar, and the bar can't be cleanly measured at n=10 (2026-06-14)
+
+`--num-predict 1024`, same 10 items, recall_on, groq judge:
+
+| config | mean gen_ms | mean answer_score |
+|---|---|---|
+| baseline 4096 | 16628 | 0.180 |
+| cap 1024 | 19157 | 0.100 |
+
+Against the bar: gen cut **−15.2% (gen went UP, FAIL)**, score drop **+0.080 (FAIL)**, previously-correct
+items degraded **1 (item-7, FAIL)**. But the *why* matters more than the verdict — two findings, the
+second methodological and more important:
+
+1. **num_predict=1024 is not binding, so capping there can't reduce gen.** Mean gen_ms rose rather than
+   fell, and gen_calls stayed 1.0. A token cap can only shorten or not-bind a generation; it cannot
+   lengthen one. So the traces are already mostly **under 1024 tokens**, and the 16.6s baseline gen is
+   *slow decode of a moderate-length trace*, not a long one near 4096. Implication: **gen time here is
+   decode-throughput-bound (~tokens/sec), not token-count-bound.** Capping tokens is the wrong lever;
+   the only caps that would cut ≥20% sit below the typical trace length and would truncate answers.
+   The real gen lever is faster inference (a faster/smaller answer model, or a faster serving stack
+   such as vLLM), not a shorter budget.
+2. **temp=0 Ollama is not reproducible enough for a matched-item ≤0.03 score delta at n=10 — the
+   experiment's design assumption is falsified.** Same items, same-or-higher budget, single completion,
+   yet per-item gen_ms swings up to ~3× run-to-run (item-9 5.8s→18.6s; item-1 26.5s→16.6s). The
+   "degraded" item-7 fell 0.80→0.00 **with its gen_ms essentially unchanged (19.4s→19.7s)** — it was
+   not truncated by the cap; its output simply differed between runs. The run-to-run noise is larger
+   than the treatment effect, and because the whole 0.180 mean rests on 2 sparse correct items, the
+   score flips on that noise. (Ollama at temp 0 is not bit-reproducible — server-side batching, KV
+   cache, FP nondeterminism.)
+
+**Conclusion.** The cap result is *uninterpretable as a quality verdict* at this n, and separately the
+cap is the wrong knob (gen is decode-bound, not budget-bound). Evaluating any gen-reduction change
+against the DECISIONS.md ≤0.03 bar requires controlling the nondeterminism first — many more items
+and/or multiple seeds per item, or a more deterministic backend — which is the long sweep we were
+trying to avoid. Net direction for the gen phase: stop tuning `num_predict` for speed; the lever is
+**decode throughput** (faster/smaller answer model, or vLLM/TensorRT serving) measured at an n large
+enough to see past Ollama's run noise. Directional (n=10, two runs); the non-reproducibility is the
+robust part.
