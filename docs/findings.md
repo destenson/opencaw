@@ -788,3 +788,28 @@ completion on fact-lookup, ~12.7s (×2) on synthesis. UX/product levers there (t
 exist in the proxy/CLI product): cap reasoning `num_predict`, or skip the refinement completion when
 the first answer is already grounded (trades against the thesis — measure quality). Plus persisting
 the HNSW for interactive startup. n=2 throughout — directional, not precise.
+
+### Negative result: cross-item concurrency does not speed up a sweep on this setup (2026-06-14)
+
+Before building a concurrent runner (the serial `for item { for mode }` loop is the obvious
+throughput target for sweeps), tested whether the Ollama server actually parallelizes same-model
+requests. It does not, on this single-server two-GPU setup. Quick `api/generate` curls against
+`qwen3.5:9b`, num_predict=200, model pre-warmed:
+
+- single call: 2.89s
+- 4 concurrent: 9.81s (≈3.4× single; 4× serial would be 11.6s, so only ~18% batching headroom)
+- 2 concurrent to `qwen3.5:9b`: 5.37s vs 5.92s serial (~9%)
+- 2 concurrent to `qwen3.5:9b` + `qwen3.5:9b-worker2`: 5.28s vs 6.0s serial (~12%)
+
+Two reasons it doesn't pay off: (1) the server serializes same-model requests (NUM_PARALLEL
+effectively 1 — 4-concurrent scaled ~linearly with count, not flat); (2) the `-worker2` alias did
+**not** load as a second resident instance — `api/ps` showed only one `qwen3.5:9b` (6.7GB) loaded
+throughout, so its calls resolved to the same instance and serialized. One 9B decode also leaves
+only ~18% spare GPU headroom, so even genuine continuous batching on one device would give well
+under 2×. A real ~2× would require a second resident instance pinned to the second GPU, which
+conflicts with the recorded "don't run a second Ollama / don't pin GPUs" decision.
+
+Conclusion: cross-item concurrency is **not** the sweep-throughput lever here. Optimization stays on
+per-item latency — the gen phase (the dominant cost, helps both sweep and product) and HNSW
+persistence (one-time, product-startup win) — which is where the TODO/findings plan already pointed.
+Directional (n=1 curl timings), but the ~linear 4-concurrent scaling is unambiguous.
