@@ -183,6 +183,10 @@ where
     fn insert(&mut self, stub: Stub, content: String) -> CawResult<()> {
         self.insert(stub, &content)
     }
+
+    fn chunk_ids_for_source(&self, source: &str) -> CawResult<Vec<StubId>> {
+        self.store.chunk_ids_for_source(source)
+    }
 }
 
 /// Hybrid retriever combining semantic (embedding) and keyword (BM25) search.
@@ -306,6 +310,10 @@ where
 
     fn read_range(&self, id: &StubId, range: &str) -> CawResult<RecallFragment> {
         self.semantic.read_range(id, range)
+    }
+
+    fn chunk_ids_for_source(&self, source: &str) -> CawResult<Vec<StubId>> {
+        self.semantic.chunk_ids_for_source(source)
     }
 
     fn insert(&mut self, stub: Stub, content: String) -> CawResult<()> {

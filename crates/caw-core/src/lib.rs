@@ -1161,6 +1161,15 @@ pub trait Retriever {
         let _ = (stub, content);
         Ok(())
     }
+    /// Ids of every chunk belonging to `source`, in document order. Backs
+    /// full-file expansion: when the model's reasoning explicitly names a
+    /// source, the orchestrator can admit chunks retrieval ranked too low to
+    /// reach. The default returns empty (retrievers without a backing store
+    /// simply don't support expansion); store-backed retrievers override it.
+    fn chunk_ids_for_source(&self, source: &str) -> CawResult<Vec<StubId>> {
+        let _ = source;
+        Ok(Vec::new())
+    }
 }
 
 pub trait BudgetScheduler {
@@ -1429,6 +1438,24 @@ pub trait StubStore {
     /// Iterate all stored embeddings. Used by vector index implementations
     /// to build their index from persisted data.
     fn all_embeddings(&self) -> CawResult<Vec<(StubId, Vec<f32>)>>;
+
+    /// Return the ids of every stub whose source file is `source`. Used to
+    /// expand a single retrieved chunk into the rest of its file when the
+    /// model's reasoning explicitly references that source — so the answer can
+    /// be in a chunk that retrieval ranked too low to admit. The default scans
+    /// `all_embeddings` and filters by path (correct but O(N)); a store backed
+    /// by a queryable index should override with an indexed `WHERE path = ?`.
+    fn chunk_ids_for_source(&self, source: &str) -> CawResult<Vec<StubId>> {
+        let mut ids = Vec::new();
+        for (id, _) in self.all_embeddings()? {
+            if let Ok(stub) = self.get_stub(&id) {
+                if stub.path == source {
+                    ids.push(id);
+                }
+            }
+        }
+        Ok(ids)
+    }
 
     /// Persist a consolidation note for a stub. Called on eviction and
     /// when the model emits annotations. Notes accumulate across sessions,

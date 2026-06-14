@@ -178,6 +178,12 @@ impl<S: StubStore> StubStore for ReadOnlyStore<S> {
         self.inner.lock().map_err(poisoned)?.all_embeddings()
     }
 
+    fn chunk_ids_for_source(&self, source: &str) -> CawResult<Vec<StubId>> {
+        // Delegate to the inner store so the indexed SQL path is used rather
+        // than the O(N) trait default.
+        self.inner.lock().map_err(poisoned)?.chunk_ids_for_source(source)
+    }
+
     fn save_consolidation(
         &mut self,
         _stub_id: &StubId,

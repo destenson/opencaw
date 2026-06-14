@@ -634,3 +634,68 @@ Consequences:
   the workspace_guidance grounding hint holds across the set.
 
 This does not test the thesis (sysdoc is adverse); the opencaw synthesis workload is the fair test.
+
+## Per-source cap (1→3): measured effect is workload-dependent (2026-06-13)
+
+Re-ran both sweeps after the per-source chunk-cap fix (commit dc424ad). The fix fired as
+intended — avg max-chunks-from-one-source rose 1.00→2.82, total loaded 10.7→17.4 on sysdoc —
+but the answer-quality effect splits by workload, the opposite of the sysdoc prediction:
+
+| workload | mode | pre | post | Δ | per-item (Off) |
+|---|---|---|---|---|---|
+| sysdoc (fact-lookup) | recall_on | 0.042 | 0.015 | −0.027 | improved 1 / regressed 4 / unchanged 32 |
+| sysdoc | recall_off | 0.045 | 0.028 | −0.017 | |
+| opencaw (synthesis) | recall_on | 0.148 | 0.189 | +0.041 | improved 7 / regressed 2 / unchanged 19 |
+| opencaw | recall_off | 0.115 | 0.176 | +0.061 | |
+
+**Why sysdoc regressed — the mechanism-B diagnosis was incomplete.** The earlier check confirmed
+the answer is *in the gold file* but not that it ranks in the *top-3 chunks of that file*. For
+"mintsources 2.3.2" the cap=3 now admits chunks 2/5/11 (versions 2.3.5, 2.2.9, 2.1.1) — three
+*wrong*-version chunks, not the 2.3.2 chunk, which ranks below them. So the cap loads more
+near-identical changelog noise without surfacing the answer, and the model hedges harder. The real
+fact-lookup bottleneck is chunk-level *ranking* (the answer chunk must rank top-1 of its file), not
+the per-source cap — i.e. the open "both-miss / chunking-artifact" TODO item (contextual embeddings,
+version-aware chunking), a different fix.
+
+**Why opencaw improved.** On synthesis questions the relevant chunks of a file *are* among the
+top-scoring ones, so admitting up to 3 surfaces genuinely useful additional context; 7 of 28 items
+improved. This is the thesis-relevant workload and the fix helps it.
+
+Honest read: the per-source cap is correct in principle (one-per-source was over-aggressive and
+provably drops content on synthesis), but it is **not** the fact-lookup fix it was hoped to be — it
+mildly hurts fact-lookup by dilution. n=30–40, scores low (0.02–0.19), so treat magnitudes as
+directional; the *signs* are consistent across both modes within each workload. Recall_on > recall_off
+holds on opencaw post-fix (0.189 vs 0.176), preserving the synthesis thesis signal.
+
+## Full-file expansion on explicit reference (2026-06-14)
+
+Follow-up to the per-source cap: the cap mildly hurt fact-lookup because the answer chunk
+often ranks below the top-3 chunks of its file, so cap=3 admits wrong-version chunks and
+dilutes. Per the project goal — curate context so the model needn't tool-call for on-disk
+content — added a budget-bounded full-file escalation driven by the (now-wired) thinking
+trace.
+
+Mechanism: when a reasoning step (or the answer) names a file already in the workspace by
+its path, `DynamicRecallOrchestrator::process_file_expansion` enumerates that file's chunks
+(`Retriever::chunk_ids_for_source`, an indexed `WHERE path=?` on `SqliteStubStore`, O(N)
+default elsewhere) and loads them as full bodies, exempt from the per-source cap but still
+inside the token budget. It also *upgrades* chunks already loaded as stubs (thinking-trace
+recall admits stubs) to full bodies — skipping already-loaded ids would leave the answer in
+a summary forever. The model can only name a path it was shown, so candidates are restricted
+to currently-loaded sources; matching is literal-path-occurrence (no name heuristic — a file
+named differently from its content, e.g. the mintsources entry living in
+`software-properties-common/changelog`, is out of scope).
+
+Coupled fix: the multi-pass convergence test was fragment-count based
+(`loaded.len() == loaded_before || net_new_tokens < threshold`). A stub→full upgrade is
+count-neutral, so the count clause broke the loop *before* the re-completion that would let
+the model use the upgraded bodies. Changed convergence to token-based only
+(`net_new_tokens < threshold`), which captures both new fragments and stub→full upgrades.
+
+Verified deterministically (not via the noisy full-stack sweep): the bench instrumentation
+showed expansion fires, ids match, and the gold file loads as full bodies (sysdoc_001:
+3/3 chunks full, ref present in context); a mock-level orchestrator regression test
+(`names_file_upgrades_all_chunks_to_full_bodies`) locks the upgrade behavior. Whether this
+lifts aggregate answer quality is the at-scale sweep's job — pending. Out-of-scope residuals
+seen in the smoke: the gold file never retrieved at all (ranking, mechanism A), and
+hard/ambiguous QA items where the content is present but the model mis-extracts.

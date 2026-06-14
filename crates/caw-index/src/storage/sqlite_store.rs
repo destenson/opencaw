@@ -797,6 +797,31 @@ impl StubStore for SqliteStubStore {
 
         Ok(results)
     }
+
+    fn chunk_ids_for_source(&self, source: &str) -> CawResult<Vec<StubId>> {
+        // Indexed lookup of every live chunk of one file, in document
+        // (byte) order, so an expanded file reads top-to-bottom. Excludes
+        // stale/ignored rows for the same reason `all_embeddings` does.
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id FROM stubs \
+                 WHERE path = ?1 AND stale = 0 AND ignored = 0 \
+                 ORDER BY byte_offset",
+            )
+            .map_err(|e| CawError::VectorStore(format!("Failed to prepare query: {}", e)))?;
+
+        let ids = stmt
+            .query_map([source], |row| {
+                let id: String = row.get(0)?;
+                Ok(StubId(id))
+            })
+            .map_err(|e| CawError::VectorStore(format!("Query failed: {}", e)))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(ids)
+    }
 }
 
 #[cfg(test)]

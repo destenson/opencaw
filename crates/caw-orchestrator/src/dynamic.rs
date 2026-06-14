@@ -80,6 +80,12 @@ pub struct DynamicRecallOrchestrator<R, E, V, P, M, S = ()> {
     /// without forbidding the second chunk outright — different chunks of a
     /// multi-chunk document carry different answers.
     loaded_source_counts: HashMap<String, usize>,
+    /// Sources the model explicitly referenced in its reasoning, exempt from
+    /// the per-source chunk cap so the whole file can be expanded (budget still
+    /// applies). This is the sanctioned "good reason to admit more from one
+    /// file" — the model named it, so the answer it needs may live in a chunk
+    /// retrieval ranked too low to admit under the cap.
+    cap_exempt_sources: HashSet<String>,
     /// Per-fragment relevance scores. Decay each reasoning step;
     /// refreshed when the model's output re-engages with the fragment.
     relevance_scores: HashMap<StubId, f32>,
@@ -217,6 +223,7 @@ where
             loaded: Vec::new(),
             loaded_ids: HashSet::new(),
             loaded_source_counts: HashMap::new(),
+            cap_exempt_sources: HashSet::new(),
             relevance_scores: HashMap::new(),
             config,
             store: None,
@@ -689,6 +696,16 @@ where
                             .as_deref()
                             .unwrap_or(&last_response.answer);
                         self.process_thinking_trace(trace)?;
+
+                        // If the reasoning (or the answer) names a file already
+                        // in the workspace, expand that file past the per-source
+                        // cap — the model signalled it needs that source and the
+                        // answer may be in a chunk retrieval ranked too low.
+                        let mention_text = match &last_response.thinking {
+                            Some(t) => format!("{}\n{}", t, last_response.answer),
+                            None => last_response.answer.clone(),
+                        };
+                        self.process_file_expansion(&mention_text)?;
                     }
 
                     if self.config.enable_probe_recall {
@@ -710,9 +727,13 @@ where
                 let tokens_now: usize = self.loaded.iter().map(|f| f.tokens).sum();
                 let net_new_tokens = tokens_now.saturating_sub(tokens_before);
                 let net_new_frags = self.loaded.len().saturating_sub(loaded_before);
-                if self.loaded.len() == loaded_before
-                    || net_new_tokens < self.config.convergence_min_new_tokens
-                {
+                // Convergence is measured in *tokens admitted*, not fragment
+                // count: a full-file expansion swaps stub summaries for full
+                // bodies (count-neutral but a large token gain), and that is
+                // real new context the model must get a completion to use. A
+                // pure fragment-count check would treat the swap as "no change"
+                // and break before re-completing.
+                if net_new_tokens < self.config.convergence_min_new_tokens {
                     debug!(
                         iteration = i + 1,
                         net_new_frags,
@@ -860,6 +881,68 @@ where
                     .search(embedding, self.config.max_candidates);
                 self.load_fragments(hits, LoadMode::Stub)?;
             }
+        }
+
+        Ok(())
+    }
+
+    /// Expand any already-loaded file the model explicitly named in `trace`
+    /// into the rest of its chunks. Naming a file the model has seen is an
+    /// expressed need — the same signal a tool-call "read that file" would
+    /// carry — but the chunk holding the answer may have ranked below the
+    /// per-source cap. Enumerate the file's chunks and admit the ones not yet
+    /// loaded, exempt from the cap so the whole file (up to the token budget)
+    /// becomes available without the model having to request it. The model can
+    /// only name a path it has been shown, so candidates are restricted to
+    /// currently-loaded sources matched by literal path occurrence.
+    fn process_file_expansion(&mut self, trace: &str) -> CawResult<()> {
+        let mentioned: Vec<String> = self
+            .loaded
+            .iter()
+            .map(|f| f.locator.source.clone())
+            .filter(|src| src != "session history" && !self.cap_exempt_sources.contains(src))
+            .filter(|src| {
+                let norm = src.trim_start_matches("./");
+                trace.contains(norm)
+            })
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        for source in mentioned {
+            let chunk_ids = self.retriever.chunk_ids_for_source(&source)?;
+            if chunk_ids.is_empty() {
+                continue;
+            }
+            let chunk_set: HashSet<&StubId> = chunk_ids.iter().collect();
+
+            // Drop this file's currently-loaded chunks so they reload as full
+            // bodies: thinking-trace recall admits chunks as stubs (summaries),
+            // and a fact lives in the body, not the summary. Skipping
+            // already-loaded ids would leave them as stubs forever.
+            let drop_ids: Vec<StubId> = self
+                .loaded
+                .iter()
+                .filter(|f| chunk_set.contains(&f.stub_id))
+                .map(|f| f.stub_id.clone())
+                .collect();
+            self.loaded.retain(|f| !chunk_set.contains(&f.stub_id));
+            for id in &drop_ids {
+                self.loaded_ids.remove(id);
+            }
+            self.loaded_source_counts.remove(&source);
+
+            debug!(
+                source = %source,
+                chunks = chunk_ids.len(),
+                "expanding model-referenced file to full bodies beyond the per-source cap"
+            );
+            // Cap-exempt so the whole file (up to the token budget) loads.
+            // Explicitly requested content gets a top admission score; the
+            // hysteresis decay still applies over later steps.
+            self.cap_exempt_sources.insert(source);
+            let hits: Vec<(StubId, f32)> = chunk_ids.into_iter().map(|id| (id, 1.0)).collect();
+            self.load_fragments(hits, LoadMode::Full)?;
         }
 
         Ok(())
@@ -1441,9 +1524,11 @@ where
             // Cap how many chunks of one source are admitted at once. Different
             // chunks of a multi-chunk document carry different answers, so this
             // is a per-source count cap, not a one-per-source ban. "session
-            // history" is exempt — multiple turns are distinct content.
+            // history" is exempt — multiple turns are distinct content — and so
+            // are sources the model explicitly named (full-file expansion).
             let source = &fragment.locator.source;
             if source != "session history"
+                && !self.cap_exempt_sources.contains(source)
                 && self.loaded_source_counts.get(source).copied().unwrap_or(0)
                     >= self.config.max_chunks_per_source
             {
@@ -1512,6 +1597,7 @@ impl<R, E, V, P: Default, M, S> DynamicRecallOrchestrator<R, E, V, P, M, S> {
         self.loaded.clear();
         self.loaded_ids.clear();
         self.loaded_source_counts.clear();
+        self.cap_exempt_sources.clear();
         self.relevance_scores.clear();
         self.provenance = P::default();
     }
@@ -1586,4 +1672,135 @@ fn answer_quality_score(answer: &str) -> f32 {
         .any(|&phrase| answer.to_lowercase().contains(phrase));
     let penalty = if has_hedge { 0.3 } else { 1.0 };
     words as f32 * penalty
+}
+
+#[cfg(test)]
+mod expansion_tests {
+    use super::*;
+    use caw_core::{
+        CompletionResponse, EmbeddingProvider, Locator, ModelAdapter, ModelCapabilities,
+        ProvenanceStore, RecallFragment, Retriever, ScoredStub, VectorIndex,
+    };
+
+    const SOURCE: &str = "pkg/changelog";
+
+    // Retriever whose file has three chunks; read_range returns the chunk body
+    // tagged with the requested range so we can tell stubs from full bodies.
+    struct MockRetriever;
+    impl Retriever for MockRetriever {
+        fn search(&mut self, _q: &str, _k: usize) -> CawResult<Vec<ScoredStub>> {
+            Ok(vec![])
+        }
+        fn read_range(&self, id: &StubId, range: &str) -> CawResult<RecallFragment> {
+            Ok(RecallFragment {
+                stub_id: id.clone(),
+                content: format!("FULL BODY of {}", id.0),
+                locator: Locator { source: SOURCE.to_string(), locator: range.to_string() },
+                tokens: 50,
+                mtime_unix_secs: 0,
+            })
+        }
+        fn chunk_ids_for_source(&self, source: &str) -> CawResult<Vec<StubId>> {
+            if source == SOURCE {
+                Ok((0..3).map(|i| StubId(format!("{}#chunk{}", SOURCE, i))).collect())
+            } else {
+                Ok(vec![])
+            }
+        }
+    }
+
+    struct MockEmbedder;
+    impl EmbeddingProvider for MockEmbedder {
+        fn embed(&mut self, texts: Vec<&str>) -> CawResult<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![0.0]).collect())
+        }
+        fn dimension(&self) -> usize {
+            1
+        }
+        fn provider_name(&self) -> &str {
+            "mock"
+        }
+    }
+
+    struct MockIndex;
+    impl VectorIndex for MockIndex {
+        fn add(&mut self, _id: StubId, _embedding: Vec<f32>) {}
+        fn search(&mut self, _q: &[f32], _k: usize) -> Vec<(StubId, f32)> {
+            vec![]
+        }
+        fn len(&self) -> usize {
+            0
+        }
+    }
+
+    struct MockProvenance;
+    impl ProvenanceStore for MockProvenance {
+        fn record(&mut self, _fragment: RecallFragment) {}
+        fn all(&self) -> Vec<RecallFragment> {
+            vec![]
+        }
+    }
+
+    struct MockAdapter;
+    impl ModelAdapter for MockAdapter {
+        fn model_name(&self) -> &str {
+            "mock"
+        }
+        fn capabilities(&self) -> ModelCapabilities {
+            ModelCapabilities::default()
+        }
+        fn complete(&self, _req: CompletionRequest) -> CawResult<CompletionResponse> {
+            Ok(CompletionResponse { answer: String::new(), thinking: None, usage: None })
+        }
+    }
+
+    // When the model's reasoning names a file already loaded only as a stub,
+    // expansion must upgrade every chunk of that file to a full body (cap
+    // exempt), not skip the already-loaded stub. This is the regression that
+    // a fragment-count check or a `loaded_ids` dedup would silently reintroduce.
+    #[test]
+    fn names_file_upgrades_all_chunks_to_full_bodies() {
+        let mut orch: DynamicRecallOrchestrator<_, _, _, _, _, ()> =
+            DynamicRecallOrchestrator::new(
+                MockRetriever,
+                MockEmbedder,
+                MockIndex,
+                MockProvenance,
+                MockAdapter,
+                DynamicRecallConfig::default(),
+            );
+
+        // Pre-load one chunk of the file as a stub (what thinking-trace recall
+        // would have admitted).
+        let stub_id = StubId(format!("{}#chunk1", SOURCE));
+        orch.loaded.push(RecallFragment {
+            stub_id: stub_id.clone(),
+            content: "stub summary".to_string(),
+            locator: Locator { source: SOURCE.to_string(), locator: "stub".to_string() },
+            tokens: 5,
+            mtime_unix_secs: 0,
+        });
+        orch.loaded_ids.insert(stub_id);
+        *orch.loaded_source_counts.entry(SOURCE.to_string()).or_insert(0) += 1;
+
+        orch.process_file_expansion(&format!("the answer is in {}", SOURCE))
+            .expect("expansion");
+
+        let frags: Vec<&RecallFragment> =
+            orch.loaded.iter().filter(|f| f.locator.source == SOURCE).collect();
+        // All three chunks present, none left as a stub summary.
+        assert_eq!(frags.len(), 3, "all three chunks of the named file are loaded");
+        assert!(
+            frags.iter().all(|f| f.locator.locator != "stub"),
+            "no chunk of an expanded file remains a stub"
+        );
+        assert!(
+            frags.iter().all(|f| f.content.starts_with("FULL BODY")),
+            "every loaded chunk carries the full body, not the summary"
+        );
+        assert!(
+            orch.cap_exempt_sources.contains(SOURCE),
+            "the named source is cap-exempt after expansion"
+        );
+    }
 }
