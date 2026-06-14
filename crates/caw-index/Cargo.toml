@@ -31,7 +31,7 @@ rusqlite = { version = "0.39", features = ["bundled"], optional = true }
 qdrant-client = { version = "1", optional = true }
 
 # Vector index
-instant-distance = "0.6"
+instant-distance = { version = "0.6", features = ["with-serde"] }
 
 # Async runtime (needed by qdrant-client)
 tokio = { workspace = true, optional = true }
@@ -41,6 +41,7 @@ reqwest = { version = "0.13", features = ["blocking", "json"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+bincode = "1"
 
 [features]
 default = ["fastembed", "sqlite"]

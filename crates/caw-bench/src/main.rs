@@ -433,21 +433,55 @@ fn load_prebuilt_index(path: &std::path::Path, corpus_root: PathBuf) -> Result<P
         );
     }
 
-    let mut vector_index = HnswVectorIndex::new();
+    // Stub summaries are needed regardless of how the HNSW graph is sourced
+    // (the false-recall heuristic compares recalled content against them).
     let mut stub_summaries: HashMap<caw_core::StubId, String> = HashMap::with_capacity(all.len());
-    for (stub_id, embedding) in &all {
+    for (stub_id, _embedding) in &all {
         if let Ok(stub) = store.get_stub(stub_id) {
             stub_summaries.insert(stub_id.clone(), stub.summary);
         }
-        vector_index.add(stub_id.clone(), embedding.clone());
     }
 
-    eprintln!(
-        "loaded prebuilt index: {} stubs from {} ({:.1}s)",
-        all.len(),
-        path.display(),
-        started.elapsed().as_secs_f64()
-    );
+    // The HNSW graph build over the full stub set is the dominant startup
+    // cost (several seconds of GPU-idle CPU at 43k stubs). Persist it next to
+    // the sqlite as `{index}.hnsw` and reuse it across runs. The len guard
+    // catches a sqlite that was rebuilt with a different stub count without
+    // its companion being invalidated; `build-index --rebuild` deletes the
+    // companion to cover the same-count-different-content case.
+    let companion = std::path::PathBuf::from(format!("{path_str}.hnsw"));
+    let vector_index = match HnswVectorIndex::load(&companion) {
+        Ok(idx) if idx.len() == all.len() => {
+            eprintln!(
+                "loaded persisted HNSW companion: {} stubs from {} ({:.1}s)",
+                idx.len(),
+                companion.display(),
+                started.elapsed().as_secs_f64()
+            );
+            idx
+        }
+        _ => {
+            let mut idx = HnswVectorIndex::new();
+            for (stub_id, embedding) in &all {
+                idx.add(stub_id.clone(), embedding.clone());
+            }
+            idx.ensure_built();
+            match idx.save(&companion) {
+                Ok(()) => eprintln!(
+                    "built and persisted HNSW companion: {} stubs from {} ({:.1}s)",
+                    all.len(),
+                    path.display(),
+                    started.elapsed().as_secs_f64()
+                ),
+                Err(e) => eprintln!(
+                    "built HNSW ({} stubs, {:.1}s); could not persist companion at {}: {e}",
+                    all.len(),
+                    started.elapsed().as_secs_f64(),
+                    companion.display()
+                ),
+            }
+            idx
+        }
+    };
 
     Ok(PrebuiltIndex {
         embedder: SharedEmbedder::new(embedder, "bge-small-en-v1.5"),

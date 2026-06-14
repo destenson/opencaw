@@ -216,6 +216,14 @@ fn main() -> Result<()> {
             .with_context(|| format!("remove existing index {}", cli.out.display()))?;
         vlog!("--rebuild: cleared existing index");
     }
+    // Invalidate any persisted HNSW companion so a rebuild can't be served a
+    // stale graph (load_prebuilt_index writes `{index}.hnsw` next to the sqlite).
+    let companion = std::path::PathBuf::from(format!("{}.hnsw", cli.out.to_string_lossy()));
+    if cli.rebuild && companion.exists() {
+        std::fs::remove_file(&companion)
+            .with_context(|| format!("remove stale HNSW companion {}", companion.display()))?;
+        vlog!("--rebuild: cleared HNSW companion");
+    }
 
     let mut embedder = build_embedder(cli.backend, cli.onnx_variant)?;
     let dim = embedder.dimension();
