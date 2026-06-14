@@ -62,6 +62,44 @@ impl TraceSink {
         }
     }
 
+    /// Default-on sink for the named component (e.g. `"caw-cli"`, `"caw-bench"`).
+    ///
+    /// Tracing is on by default while the project is pre-release: every model
+    /// message in and out is recorded for interpretability and debugging.
+    /// Returns the sink together with the path it opened so the caller can log
+    /// where the trace is going. Resolution order for the destination:
+    ///   1. `CAW_NO_TRACE` set (non-empty) — return `None` (opt out).
+    ///   2. `CAW_TRACE_FILE` — exact file path, appended to.
+    ///   3. `CAW_TRACE_DIR` — directory; file is `<component>-<ts>.jsonl`.
+    ///   4. fallback — `<temp_dir>/caw-traces/<component>-<ts>.jsonl`.
+    ///
+    /// The fallback uses the OS temp dir, not the working directory: the library
+    /// must not drop trace files into an embedder's project tree.
+    ///
+    /// At release this default should flip to off (or move to opt-out at the
+    /// app layer); the decorator and sink remain available for callers that
+    /// wire them explicitly.
+    pub fn default_for(component: &str) -> CawResult<Option<(Self, std::path::PathBuf)>> {
+        if std::env::var_os("CAW_NO_TRACE").is_some_and(|v| !v.is_empty()) {
+            return Ok(None);
+        }
+        if let Ok(p) = std::env::var("CAW_TRACE_FILE") {
+            if !p.is_empty() {
+                let path = std::path::PathBuf::from(p);
+                return Self::open(&path).map(|s| Some((s, path)));
+            }
+        }
+        let dir = std::env::var_os("CAW_TRACE_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("caw-traces"));
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let path = dir.join(format!("{component}-{ts}.jsonl"));
+        Self::open(&path).map(|s| Some((s, path)))
+    }
+
     /// Append a JSON event. `"t"` (unix millis) and `"seq"` (monotonic)
     /// are injected automatically; callers add `"event"` and whatever
     /// payload they want.
@@ -112,6 +150,45 @@ impl<A: ModelAdapter> TracingAdapter<A> {
     }
 }
 
+impl<A: ModelAdapter> TracingAdapter<A> {
+    /// Log the outgoing request. `call` distinguishes which adapter method
+    /// produced it (`complete`, `passive`, `thinking_steps`) so interleaved
+    /// calls in one turn stay attributable.
+    fn log_request(&self, call: &str, req: &CompletionRequest) {
+        self.sink.log(serde_json::json!({
+            "event": "llm_request",
+            "call": call,
+            "model": self.inner.model_name(),
+            "request": request_to_json(req),
+        }));
+    }
+
+    /// Log the response (or error) paired with the request above. Captures the
+    /// visible thinking trace and reported token usage when the adapter
+    /// provides them — both are part of the telemetry, not just the answer.
+    fn log_response(&self, call: &str, result: &CawResult<CompletionResponse>, latency_ms: u64) {
+        match result {
+            Ok(resp) => self.sink.log(serde_json::json!({
+                "event": "llm_response",
+                "call": call,
+                "model": self.inner.model_name(),
+                "latency_ms": latency_ms,
+                "answer": resp.answer,
+                "thinking": resp.thinking,
+                "input_tokens": resp.usage.map(|u| u.input_tokens),
+                "output_tokens": resp.usage.map(|u| u.output_tokens),
+            })),
+            Err(e) => self.sink.log(serde_json::json!({
+                "event": "llm_error",
+                "call": call,
+                "model": self.inner.model_name(),
+                "latency_ms": latency_ms,
+                "error": e.to_string(),
+            })),
+        }
+    }
+}
+
 impl<A: ModelAdapter> ModelAdapter for TracingAdapter<A> {
     fn model_name(&self) -> &str {
         self.inner.model_name()
@@ -122,31 +199,11 @@ impl<A: ModelAdapter> ModelAdapter for TracingAdapter<A> {
     }
 
     fn complete(&self, req: CompletionRequest) -> CawResult<CompletionResponse> {
-        self.sink.log(serde_json::json!({
-            "event": "llm_request",
-            "model": self.inner.model_name(),
-            "request": request_to_json(&req),
-        }));
-
+        self.log_request("complete", &req);
         let started = SystemTime::now();
         let result = self.inner.complete(req);
         let latency_ms = started.elapsed().map(|d| d.as_millis() as u64).unwrap_or(0);
-
-        match &result {
-            Ok(resp) => self.sink.log(serde_json::json!({
-                "event": "llm_response",
-                "model": self.inner.model_name(),
-                "latency_ms": latency_ms,
-                "answer": resp.answer,
-            })),
-            Err(e) => self.sink.log(serde_json::json!({
-                "event": "llm_error",
-                "model": self.inner.model_name(),
-                "latency_ms": latency_ms,
-                "error": e.to_string(),
-            })),
-        }
-
+        self.log_response("complete", &result, latency_ms);
         result
     }
 
@@ -157,7 +214,40 @@ impl<A: ModelAdapter> ModelAdapter for TracingAdapter<A> {
         window_size: usize,
         on_window: &mut dyn FnMut(&str) -> caw_core::CawResult<Option<String>>,
     ) -> caw_core::CawResult<CompletionResponse> {
-        self.inner.generate_passive(req, check_interval, window_size, on_window)
+        self.log_request("passive", &req);
+        let started = SystemTime::now();
+        let result = self
+            .inner
+            .generate_passive(req, check_interval, window_size, on_window);
+        let latency_ms = started.elapsed().map(|d| d.as_millis() as u64).unwrap_or(0);
+        self.log_response("passive", &result, latency_ms);
+        result
+    }
+
+    // Forwarding `thinking_with_steps` to the inner adapter is mandatory, not
+    // optional: streaming adapters (e.g. Ollama) override it to stop the HTTP
+    // response at `</think>` without paying for answer tokens, and the
+    // orchestrator's thinking-trace recall depends on that streaming path.
+    // Omitting this override would fall back to the trait default (a plain
+    // `complete`) and silently change recall behavior under tracing.
+    fn thinking_with_steps(
+        &self,
+        req: CompletionRequest,
+        on_step: &mut dyn FnMut(&str) -> CawResult<bool>,
+    ) -> CawResult<CompletionResponse> {
+        self.log_request("thinking_steps", &req);
+        let started = SystemTime::now();
+        let result = self.inner.thinking_with_steps(req, on_step);
+        let latency_ms = started.elapsed().map(|d| d.as_millis() as u64).unwrap_or(0);
+        self.log_response("thinking_steps", &result, latency_ms);
+        result
+    }
+
+    // Provenance format must pass through: it selects the XML vs bracketed
+    // wrapping the inner adapter renders recalled content with. Falling back to
+    // the default would flip an Anthropic adapter from XML to bracketed.
+    fn provenance_format(&self) -> caw_core::ProvenanceFormat {
+        self.inner.provenance_format()
     }
 }
 
@@ -185,6 +275,7 @@ fn request_to_json(req: &CompletionRequest) -> serde_json::Value {
         "system": req.system,
         "user": req.user,
         "workspace_fragments": fragments,
+        "workspace_guidance": req.workspace_guidance,
     })
 }
 

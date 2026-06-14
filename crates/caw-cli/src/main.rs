@@ -18,7 +18,7 @@ use clap::Parser;
 use rustyline::{error::ReadlineError, DefaultEditor};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Concrete orchestrator type used by the CLI. The retriever and the
 /// trace embedder are the same `LazyCandleEmbedProvider` type so they can
@@ -596,6 +596,25 @@ fn main() -> Result<()> {
     } else {
         Arc::new(raw_adapter)
     };
+    // Default-on model-message tracing (pre-release): record every request and
+    // response — including the intent classifier when it shares this adapter —
+    // to a JSONL trace. Opt out with CAW_NO_TRACE=1; redirect with
+    // CAW_TRACE_FILE / CAW_TRACE_DIR.
+    let adapter: Arc<dyn ModelAdapter> = match caw_adapters::TraceSink::default_for("caw-cli") {
+        Ok(Some((sink, path))) => {
+            // eprintln (not info!) so the path is always visible: the default
+            // log filter doesn't enable info for the app, and a user needs to
+            // know where their trace went. Matches the "Loading embedding
+            // model..." startup line's style.
+            eprintln!("Tracing model messages to {} (CAW_NO_TRACE=1 to disable)", path.display());
+            Arc::new(caw_adapters::TracingAdapter::new(adapter, sink))
+        }
+        Ok(None) => adapter,
+        Err(e) => {
+            warn!(error = %e, "could not open model trace sink; continuing without tracing");
+            adapter
+        }
+    };
     // When the main adapter is llama, reuse it for classification rather than
     // spinning up ollama. The Arc lets both the orchestrator and the classifier
     // share the already-loaded model without a second load.
@@ -687,7 +706,7 @@ fn build_completion_adapter(
     model: Option<&str>,
     num_ctx: Option<u32>,
     temperature: Option<f32>,
-    n_gpu_layers: Option<i32>,
+    _n_gpu_layers: Option<i32>,
     max_new_tokens: Option<usize>,
     fold_system: bool,
 ) -> Result<Box<dyn ModelAdapter + Send + Sync>> {

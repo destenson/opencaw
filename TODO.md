@@ -49,7 +49,8 @@ The following sections are in no particular order. Do not infer that high priori
 
 ## Degradation & Monitoring
 
-- Prompt logging: include debugging metadata
+- Model-message tracing (full request/response JSONL via `TracingAdapter`) is on by default in caw-cli; opt out with `CAW_NO_TRACE=1`. Remaining: wire caw-server's HTTP passthrough path (no `ModelAdapter` there) and adopt the same sink in caw-bench alongside its per-item `--trace-out`.
+- Orchestrator decision-event logging into the same trace stream (retrieval/probe/load/eviction events sharing the `TraceSink`, interleaved with the llm_request/llm_response pairs) — the sink already supports it; the orchestrator has no hook yet.
 - Logging: timestamps + component tags on the path to degradation
 - Logging: actionable error messages
 - Notification system when degradation is detected (affected components, causes)
