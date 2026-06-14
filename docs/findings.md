@@ -699,3 +699,39 @@ showed expansion fires, ids match, and the gold file loads as full bodies (sysdo
 lifts aggregate answer quality is the at-scale sweep's job — pending. Out-of-scope residuals
 seen in the smoke: the gold file never retrieved at all (ranking, mechanism A), and
 hard/ambiguous QA items where the content is present but the model mis-extracts.
+
+## Full-file expansion — at-scale result: strong recall_on lift, thesis validated (2026-06-14)
+
+Three-config comparison (qwen3.5:9b answer, claude-code/haiku judge, temp 0; sysdoc n=40,
+opencaw n=30). answer_score:
+
+| config | sysdoc on | sysdoc off | opencaw on | opencaw off |
+|---|---|---|---|---|
+| one-per-source (pre) | 0.042 | 0.045 | 0.148 | 0.115 |
+| cap=3 only | 0.015 | 0.028 | 0.189 | 0.176 |
+| **cap=3 + expansion** | **0.156** | 0.029 | **0.232** | 0.156 |
+
+**The full-file expansion is the change that makes the multi-pass machinery pay off.** It runs
+only in `recall_on`'s refinement loop (the model must name a file in its reasoning), so
+`recall_off` is unaffected — and that is exactly the point: it is a genuine differentiator of the
+orchestration, not a retrieval tweak that also helps the single-shot control.
+
+- **sysdoc (fact-lookup): recall_on 0.156 vs recall_off 0.029** — a 5.4× on/off gap, up from
+  ~parity. Per-item: 9 improved, **0 regressed**; items scoring ≥0.5 went 0 → 6. The escalation
+  recovers exactly the failure diagnosed earlier (gold file loaded but answer in an unshown chunk):
+  when the model names the file, the whole file loads and the answer becomes available.
+- **opencaw (synthesis): recall_on 0.232 vs recall_off 0.156** — a +0.076 gap, the largest yet.
+  Per-item 8 improved / 4 regressed (synthesis is noisier).
+
+This is the first strong, consistent end-to-end validation of the core thesis: multi-pass,
+thinking-trace-driven recall with eviction/expansion substantially beats single-shot retrieval at
+matched budget, on both fact-lookup and synthesis.
+
+**Honest caveats.** (1) `recall@k_on` *dropped* (sysdoc 0.744→0.658, opencaw 0.744→0.613) while
+answer_score rose sharply — full-file expansion concentrates the budget on the named file, crowding
+out other expected-path files, but the answer is in the file that *is* fully loaded. This is more
+evidence that path-level recall@k is a poor proxy; answer_score is the metric that moved the right
+way. (2) Absolute scores remain low (0.16–0.23) — a small abliterated 9B model + strict judge; the
+*deltas and signs* are the result, not the absolutes. (3) Single run each, n=30–40. (4) The cap
+alone (without expansion) still mildly hurts fact-lookup vs one-per-source; expansion is what turns
+it into a large net win. (5) The eval loop is slow (~20s/item); see the perf-diagnosis TODO.
