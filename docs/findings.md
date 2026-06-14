@@ -883,3 +883,9 @@ answer-score measurement and means a user asking the same question twice could g
 Once determinism is verified, re-measuring any gen change against the ≤0.03 bar becomes meaningful;
 before the fix it was not. Directional (n=10, two runs); the injected-fragment divergence is the robust,
 proven part.
+
+## Substrate divergence resolved: spurious stale flags, not a retrieval regression (2026-06-14)
+
+A `caw-bench-graph-eval --diagnose` rerun of the recorded sysdoc n=100 (hybrid recall@10 = 0.84, 2026-06-13) returned **0.37** on the same `subset-medium.sqlite`. Golds resolved fine (no "no stub covers" warnings), so it was a genuine retrieval drop, not a harness fault. Bisected to the index, not the corpus or the eval code: **16,867 of 43,232 stubs were flagged `stale=1`** (including the gold chunks, e.g. `python3-openshot/changelog#chunk0/1/2`) by a since-fixed bug that marked stubs stale on a transient content-read miss. `all_embeddings()` (and the read-only eval path) excludes stale stubs, so ~39% of the corpus — gold chunks among it — never loaded into the HNSW index or BM25, and could not be retrieved.
+
+Repair without rebuilding (the corpus content was never touched): `UPDATE stubs SET stale=0 WHERE stale=1`. After it, the same diagnosis returns **recall@10 0.850 / MRR 0.543** (changelog recall@10 0.125 → 0.839), matching the recorded baseline. The `with_read_only(true)` guard in `graph_eval` already prevents *new* eval runs from re-poisoning the flags; this only cleared the already-persisted damage. Instrument: `docs/skills/caw-dev/scripts/graph-eval.sh` (new) runs this retrieval-only diagnosis with the sysdoc index/QA/source-root and GPU pinning.
