@@ -813,3 +813,24 @@ Conclusion: cross-item concurrency is **not** the sweep-throughput lever here. O
 per-item latency — the gen phase (the dominant cost, helps both sweep and product) and HNSW
 persistence (one-time, product-startup win) — which is where the TODO/findings plan already pointed.
 Directional (n=1 curl timings), but the ~linear 4-concurrent scaling is unambiguous.
+
+## Gen-phase: capping Ollama `num_predict` — the test and pre-committed bar (2026-06-14)
+
+Testing the DECISIONS.md gen-reduction lever: cap the answer model's per-completion budget
+(`num_predict`, default 4096) and check whether it cuts gen time without hurting answers. Pre-committed
+bar (DECISIONS.md, not invented here): on matched items (sysdoc, recall_on, temp 0, **groq judge** so
+both arms share a judge and the score delta is valid), accept a cap for production only if it cuts
+`gen_ms` by ≥20% AND mean `answer_score` drops by ≤0.03 absolute AND no previously-correct item
+becomes truncated/empty. Otherwise it ships, if at all, only as an explicit dev-sweep fast mode.
+
+Run via `docs/skills/caw-dev/scripts/bench.sh` (new), n=10, the first 10 sysdoc items.
+
+**Baseline (num_predict=4096 default):** mean_answer_score **0.180**, mean_gen **16.6s** (gen_calls 1.0
+— single-pass on fact-lookup; judge 0.35s, other 0.79s, so gen is ~93% of latency). Per-item gen_ms
+spans 5.8–26.5s (median 17.2). **Only 2/10 items are correct, and both are long generations:**
+item-1 (26.5s, score 1.00) and item-7 (19.4s, score 0.80). The entire 0.180 mean rests on those two,
+so losing either drops the mean by ≥0.08 — far past the 0.03 floor. The bar therefore reduces to a
+sharp test: *can a cap that cuts mean gen_ms ≥20% avoid truncating items 1 and 7?* Mean gen 16.6s at
+the 4096 default also implies most traces already finish well below 4096 tokens, so a cap bites only
+the long items — which are exactly the correct ones. Hypothesis: the cap cannot clear the bar on this
+workload. (Result pending the cap runs below.)
