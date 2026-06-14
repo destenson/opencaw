@@ -597,3 +597,40 @@ sysdoc is single-token fact-lookup where more near-identical changelog fragments
 not synthesis where reaching unretrieved content helps. The mechanism is validated as *wired and
 firing*; whether it improves answer quality is the separate question the at-scale sweep measures,
 and the `opencaw` codebase (synthesis) workload is the more favorable test than sysdoc.
+
+## At-scale recall-on/off — sysdoc n=40 answer quality (2026-06-13)
+
+First at-scale end-to-end answer-quality run of the central claim, now that the trace fix
+makes recall_on non-trivial. qwen3.5:9b answer, haiku judge, subset-medium index, temp 0.
+
+| mode | n | answer_score | recall@k (path) | mrr | ctx_eff | latency |
+|---|---|---|---|---|---|---|
+| recall_on  | 38 | 0.042 | 0.737 | 0.439 | 0.698 | 23.0s |
+| recall_off | 38 | 0.045 | 0.737 | 0.439 | 0.615 | 17.1s |
+
+Δ answer_score = −0.003 (noise; 34/38 items score 0.0 in both modes). **recall_on ≈ recall_off
+on sysdoc** — expected: fact-lookup is adverse for thinking-trace, and the bottleneck here is
+upstream of orchestration.
+
+**The dominant failure is chunk-level injection precision, not retrieval or recall.** recall@k
+is 0.737 but answer_score is ~0.04 — the gold *file* is loaded yet the answer is wrong. Inspecting
+gold-retrieved/score-0 items: the model honestly says "the context does not contain X" because the
+*injected chunk is the wrong chunk of a multi-chunk changelog*. Example (mintsources 2.3.2 geoIP):
+expected `software-properties-common/changelog` was loaded, but the rendered fragment is
+"Chunk 2/17 … mintsources (2.3.5)" — the 2.3.2 answer is in a different chunk of the same 17-chunk
+file. The retriever surfaces the top-scoring chunk (a recent version); the answer sits in a specific
+older-version chunk; first-per-source rendering shows only one chunk per file. Thinking-trace recall
+can't rescue this — re-querying reloads the same file's top chunk.
+
+Consequences:
+- **Path-level recall@k overstates answer availability on multi-chunk docs.** The 0.84 recall@10
+  headline (chunk-level, from graph_eval) and this 0.74 path-level recall both look healthy, but
+  neither guarantees the *answer line* is injected.
+- The next lever for fact-lookup is chunk/injection precision, not orchestration: surface the
+  answer-bearing chunk of an already-loaded file (the DEFERRED item above), changelog-aware chunking
+  (version headers as chunk anchors), and budget/first-per-source rendering that currently collapses
+  a file to one chunk. These are the open TODO retrieval items, now with direct evidence.
+- **Honest grounding validated at n=40:** the model says "not present" rather than confabulating —
+  the workspace_guidance grounding hint holds across the set.
+
+This does not test the thesis (sysdoc is adverse); the opencaw synthesis workload is the fair test.
