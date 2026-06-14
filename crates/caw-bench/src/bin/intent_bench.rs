@@ -116,6 +116,7 @@ fn main() -> Result<()> {
                 openai_url: &cli.openai_url,
                 temperature: Some(cli.temperature),
                 num_ctx: cli.num_ctx,
+                num_predict: None,
             },
             &runtime,
         )

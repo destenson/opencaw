@@ -82,6 +82,13 @@ struct Cli {
     #[arg(long, default_value = "0.0")]
     temperature: f32,
 
+    /// Cap the answer model's per-completion generation budget (`num_predict`,
+    /// Ollama only). Omitted = adapter default (4096). For a reasoning model
+    /// this budget covers the thinking trace plus the answer, so a low cap can
+    /// truncate the answer — use only to measure the gen-time/quality trade.
+    #[arg(long)]
+    num_predict: Option<i32>,
+
     /// Sampling temperature for the judge model. Defaults to 0.0 so the
     /// judge gives reproducible scores for the same answer/reference pair.
     #[arg(long, default_value = "0.0")]
@@ -230,6 +237,7 @@ fn main() -> Result<()> {
             openai_url: &cli.openai_url,
             temperature: Some(cli.judge_temperature),
             num_ctx: None,
+            num_predict: None,
         },
         &runtime,
     )?;
@@ -295,6 +303,7 @@ fn main() -> Result<()> {
                     openai_url: &cli.openai_url,
                     temperature: Some(cli.temperature),
                     num_ctx: None,
+                    num_predict: cli.num_predict,
                 },
                 &runtime,
             ) {

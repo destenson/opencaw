@@ -10,6 +10,11 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
+/// Default `num_predict` (max generated tokens per completion). High enough to
+/// hold a full reasoning trace plus answer for the models used here; override
+/// via [`OllamaAdapter::with_num_predict`] when measuring shorter caps.
+const DEFAULT_NUM_PREDICT: i32 = 4096;
+
 pub struct OllamaAdapter {
     base_url: String,
     model: String,
@@ -26,6 +31,12 @@ pub struct OllamaAdapter {
     /// Set explicitly to control VRAM usage — KV cache dominates loaded model
     /// size, so capping at 4096 can cut a 32k-default model from 8 GB to ~2 GB.
     num_ctx: Option<u32>,
+    /// Max tokens the model may generate per completion, sent as `num_predict`.
+    /// For a reasoning model this budget covers the thinking trace *and* the
+    /// visible answer, so capping it too low truncates the answer before it is
+    /// emitted. Defaults to `DEFAULT_NUM_PREDICT`; lower it only with a paired
+    /// answer-quality measurement (the trace is the thesis mechanism).
+    num_predict: i32,
     /// Whether to signal the orchestrator that this model reliably follows the
     /// cooperative probe/annotation protocol (emitting `<probe>` and `<note>`
     /// markers when instructed). Defaults to false — the orchestrator degrades
@@ -74,6 +85,7 @@ impl OllamaAdapter {
             runtime,
             temperature: None,
             num_ctx: None,
+            num_predict: DEFAULT_NUM_PREDICT,
             cooperative_probes: false,
             fold_system: false,
             thinking_supported: std::sync::OnceLock::new(),
@@ -141,6 +153,15 @@ impl OllamaAdapter {
     /// running many small models back-to-back in benchmarks.
     pub fn with_num_ctx(mut self, num_ctx: u32) -> Self {
         self.num_ctx = Some(num_ctx);
+        self
+    }
+
+    /// Cap the per-completion generation budget (`num_predict`). For a
+    /// reasoning model this covers the thinking trace plus the visible answer;
+    /// setting it too low truncates the answer. Use only with a paired
+    /// answer-quality measurement.
+    pub fn with_num_predict(mut self, num_predict: i32) -> Self {
+        self.num_predict = num_predict;
         self
     }
 
@@ -290,7 +311,7 @@ impl ModelAdapter for OllamaAdapter {
             stream: false,
             options: OllamaOptions {
                 temperature: self.temperature,
-                num_predict: 4096,
+                num_predict: self.num_predict,
                 num_ctx: self.num_ctx,
             },
             think: self.supports_thinking().then_some(true),
@@ -430,7 +451,7 @@ impl ModelAdapter for OllamaAdapter {
             stream: true,
             options: OllamaOptions {
                 temperature: self.temperature,
-                num_predict: 4096,
+                num_predict: self.num_predict,
                 num_ctx: self.num_ctx,
             },
             think: Some(true),

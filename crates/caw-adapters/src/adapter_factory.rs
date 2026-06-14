@@ -92,6 +92,12 @@ pub struct AdapterSpec<'a> {
     /// from 8+ GB to ~2 GB, which matters when running many candidates back
     /// to back on a single GPU.
     pub num_ctx: Option<u32>,
+    /// Cap the Ollama answer model's per-completion generation budget
+    /// (`num_predict`). `None` uses the adapter default. For a reasoning model
+    /// this budget covers the thinking trace plus the answer, so a low cap
+    /// truncates the answer — only set it with a paired quality measurement.
+    /// Ignored by non-Ollama adapters.
+    pub num_predict: Option<i32>,
 }
 
 pub fn build(
@@ -122,6 +128,9 @@ fn build_inner(
             }
             if let Some(ctx) = spec.num_ctx {
                 a = a.with_num_ctx(ctx);
+            }
+            if let Some(np) = spec.num_predict {
+                a = a.with_num_predict(np);
             }
             Box::new(a)
         }

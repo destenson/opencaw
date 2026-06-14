@@ -390,6 +390,7 @@ fn main() -> Result<()> {
         openai_url: &cli.openai_url,
         temperature: Some(cli.temperature),
         num_ctx: cli.num_ctx,
+        num_predict: None,
     };
 
     for (idx, item) in items.iter().enumerate() {
@@ -414,6 +415,7 @@ fn main() -> Result<()> {
                     openai_url: spec_base.openai_url,
                     temperature: spec_base.temperature,
                     num_ctx: spec_base.num_ctx,
+                    num_predict: spec_base.num_predict,
                 },
                 &runtime,
             )
