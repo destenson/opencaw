@@ -1,3 +1,13 @@
+# Project Goal
+
+**OpenCAW (Context as Workspace)** is a Rust library that treats the model's context window as a managed workspace instead of a fixed buffer that must hold everything up front. Documents are indexed as lightweight stubs; full content is loaded, evicted, and consolidated inline as the model reasons, so only the content relevant to the current step stays resident while the rest of the corpus remains available on recall. The goal is to keep context free of tokens that are not relevant to the current reasoning, which is what lets the effective context cover a corpus much larger than the window at roughly flat compute cost.
+
+The mechanism for deciding what to load, evict, and consolidate is the model's own reasoning trace, rather than a retrieval step that runs once before inference. This trace-driven loop is the part that distinguishes OpenCAW from generic RAG. The library is general-purpose; project-specific heuristics do not belong in it.
+
+See `docs/design.md` for the full thesis and `docs/scope.md` for what is in and out of scope for v0.1.
+
+---
+
 - **USE RELEASE BUILDS FOR BENCHMARKING** Always use release builds (e.g. `cargo build --release`) when benchmarking or profiling the codebase to get accurate performance measurements. Debug builds include additional checks and instrumentation that can significantly impact performance, so they should not be used for benchmarking. Using release builds ensures that you are measuring the performance of the optimized code that will be used in production, rather than the slower debug version.
 - **Option<T> struct members** When adding members to existing structs, consider whether the new field should be optional (e.g. `Option<T>`) to preserve backward compatibility with existing serialized data. If the field is required, adding it will break deserialization of old data that lacks the field. If the field is optional, new code can handle missing values gracefully while still supporting old data.
 - **Default implementation** When adding members to existing structs, consider whether the struct should have a Default implementation that provides reasonable defaults for the new fields. This can help ensure that existing code that constructs the struct without specifying the new fields continues to work without modification. If the new fields are optional, the Default implementation can set them to None or some other default value.
