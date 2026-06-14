@@ -4,7 +4,12 @@
 # GPU pinning, and release-build flags every time.
 #
 # Usage: bench.sh [workload] [-- <extra caw-bench args>]
-#   workload   sysdoc (default) | opencaw | niah
+#   workload   sysdoc (default) | opencaw | code-agent | niah
+#
+# code-agent: coding-agent mid-task info-needs (signatures, struct fields, trait
+#   bounds, call sites) over this repo. Same corpus as opencaw; needle-scored
+#   exact code facts plus judge-scored synthesis questions. No prebuilt index
+#   needed (the repo is ingested in-memory once and shared across items).
 #
 # Everything after `--` is forwarded verbatim to the caw-bench binary, so the
 # full flag surface stays available (see `caw-bench --help`). Common ones:

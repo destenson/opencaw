@@ -68,7 +68,10 @@ pub fn build(repo_root: &Path, qa_file: Option<&Path>) -> Result<Vec<WorkloadIte
 /// Walk the repo, loading files we expect the Q&A to ask about. Binary
 /// and build-artifact paths are excluded by the ingest pipeline's default
 /// skip rules.
-fn load_corpus(root: &Path) -> Result<Vec<CorpusDoc>> {
+///
+/// Shared with the `codeagent` workload, which asks coding-agent-style
+/// questions against the same repo corpus.
+pub fn load_corpus(root: &Path) -> Result<Vec<CorpusDoc>> {
     let entries = walk_source_files(root);
     let mut docs = Vec::new();
     for abs_path in entries {

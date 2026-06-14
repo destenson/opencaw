@@ -1,0 +1,89 @@
+[
+  {
+    "id": "ca_001_workloaditem_fields",
+    "question": "I'm adding a field to the `WorkloadItem` struct in caw-bench. Which field on it holds the stable paths a question is expected to recall?",
+    "needle": "expected_paths",
+    "expected_paths": ["crates/caw-bench/src/workload.rs"]
+  },
+  {
+    "id": "ca_002_scoring_variants",
+    "question": "What are the variants of the `Scoring` enum in caw-bench? Name the one used for semantic judge scoring.",
+    "needle": "JudgeAgainst",
+    "expected_paths": ["crates/caw-bench/src/workload.rs"]
+  },
+  {
+    "id": "ca_003_recallmode_off_str",
+    "question": "What string does `RecallMode::as_str` return for the `Off` variant?",
+    "needle": "recall_off",
+    "expected_paths": ["crates/caw-bench/src/workload.rs"]
+  },
+  {
+    "id": "ca_004_contentkind_variants",
+    "question": "The `ContentKind` enum in caw-core classifies ingested document content. Which variant covers spoken-word / transcript content?",
+    "needle": "Transcript",
+    "expected_paths": ["crates/caw-core/src/lib.rs"]
+  },
+  {
+    "id": "ca_005_vectorindex_search_sig",
+    "question": "What is the full signature of the `search` method on the `VectorIndex` trait, including its return type?",
+    "reference_answer": "fn search(&mut self, query_embedding: &[f32], top_k: usize) -> Vec<(StubId, f32)>",
+    "expected_paths": ["crates/caw-core/src/lib.rs"]
+  },
+  {
+    "id": "ca_006_tokenizer_bounds",
+    "question": "What supertrait bounds does the `Tokenizer` trait in caw-core declare?",
+    "reference_answer": "Send + Sync",
+    "expected_paths": ["crates/caw-core/src/lib.rs"]
+  },
+  {
+    "id": "ca_007_embeddingprovider_query_default",
+    "question": "The `EmbeddingProvider` trait has an `embed_query` method with a default implementation. What does the default implementation do?",
+    "reference_answer": "It delegates to `self.embed(texts)` — asymmetric models override it to add a query prefix.",
+    "expected_paths": ["crates/caw-core/src/lib.rs"]
+  },
+  {
+    "id": "ca_008_generate_passive_override",
+    "question": "The `generate_passive` method on `ModelAdapter` has a default that runs `complete` with no injection. Which adapter is named in the docs as the kind that overrides it?",
+    "needle": "LlamaCppAdapter",
+    "expected_paths": ["crates/caw-core/src/lib.rs"]
+  },
+  {
+    "id": "ca_009_prebuiltindex_fields",
+    "question": "I need the field on caw-bench's `PrebuiltIndex` that maps stub ids to their summaries for the false-recall heuristic. What is it named?",
+    "needle": "stub_summaries",
+    "expected_paths": ["crates/caw-bench/src/runner.rs"]
+  },
+  {
+    "id": "ca_010_runnerconfig_unload",
+    "question": "Which field on caw-bench's `RunnerConfig` holds the hysteresis lower-edge threshold passed to the orchestrator?",
+    "needle": "unload_threshold",
+    "expected_paths": ["crates/caw-bench/src/runner.rs"]
+  },
+  {
+    "id": "ca_011_default_num_predict",
+    "question": "What is the value of the `DEFAULT_NUM_PREDICT` constant in the Ollama adapter?",
+    "needle": "4096",
+    "expected_paths": ["crates/caw-adapters/src/ollama.rs"]
+  },
+  {
+    "id": "ca_012_max_chunks_per_source",
+    "question": "What is the value of the `MAX_CHUNKS_PER_SOURCE` constant in caw-server?",
+    "reference_answer": "3",
+    "expected_paths": ["crates/caw-server/src/lib.rs"]
+  },
+  {
+    "id": "ca_013_create_runtime_return",
+    "question": "What does the `create_runtime` function in caw-adapters return?",
+    "reference_answer": "CawResult<std::sync::Arc<tokio::runtime::Runtime>> — a shared tokio runtime.",
+    "expected_paths": ["crates/caw-adapters/src/lib.rs"]
+  },
+  {
+    "id": "ca_014_build_in_memory_prebuilt_callsites",
+    "question": "`build_in_memory_prebuilt` is defined in caw-bench's runner module. Which files call it (the call sites, not the definition)?",
+    "reference_answer": "crates/caw-bench/src/main.rs and crates/caw-bench/src/bin/coop.rs",
+    "expected_paths": [
+      "crates/caw-bench/src/main.rs",
+      "crates/caw-bench/src/bin/coop.rs"
+    ]
+  }
+]

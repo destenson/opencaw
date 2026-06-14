@@ -16,6 +16,12 @@ Hand-authored Q&A drawn from this repo's own code, README, scope, todo, and desi
 
 The current set is mostly single-fact lookups — useful for retrieval@k but doesn't stress multi-pass refinement.
 
+### `code-agent`
+
+The questions a coding agent asks itself mid-task while working in a repository: struct fields, method signatures, trait bounds, call sites — the lookups it would otherwise satisfy by grepping and reading files. Same repo corpus as `opencaw` (whatever `.rs / .md / .toml` files `--repo-root` points at), but framed as agent info-needs rather than project facts.
+
+Per-item scoring is chosen in the QA JSON: exact code facts (a field name, a default value, a crate) carry a `needle` and are scored with a deterministic case-insensitive substring match, avoiding judge-model noise; synthesis questions (call-site sets, signatures the model paraphrases) carry a `reference_answer` and fall back to judge scoring. Call-site questions must list *every* call site in `expected_paths` or the recall@k ground truth is wrong. No prebuilt index is needed — the repo is ingested in-memory once and shared across items.
+
 ### `sysdoc`
 
 Q&A against a pre-built index of a snapshotted documentation corpus (e.g. `/usr/share/doc`). The QA file carries only the question, reference answer, and expected paths; the corpus lives in a sqlite index shared across all items in a run.
@@ -30,7 +36,7 @@ Both workloads run each item in two modes:
 ## Metrics
 
 Per-item:
-- **answer_score** (0.0–1.0) — correctness. NIAH: deterministic substring check. opencaw/sysdoc: judge model grading against a reference answer.
+- **answer_score** (0.0–1.0) — correctness. NIAH: deterministic substring check. opencaw/sysdoc: judge model grading against a reference answer. code-agent: per-item — deterministic substring check for `needle` items, judge grading for `reference_answer` items.
 - **recall@k / precision@k** — of the paths that *should* have been recalled, how many ended up in the workspace?
 - **context_efficiency** — share of actual context (recalled content + system + query + provenance tags) that is recalled content. Stubs aren't counted.
 - **false_recall_rate** — share of loaded fragments whose stub summary shares very few terms with recalled content (heuristic from `caw-eval`).

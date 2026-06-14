@@ -3,6 +3,7 @@ use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
 use caw_bench::adapter_factory::{self, AdapterKind, AdapterSpec, ModelRole};
+use caw_bench::codeagent;
 use caw_bench::niah::{self, NiahConfig};
 use caw_bench::opencaw;
 use caw_bench::report::{build_report, format_summary};
@@ -160,6 +161,10 @@ struct Cli {
 enum Workload {
     Niah,
     Opencaw,
+    /// Coding-agent mid-task info-needs (signatures, struct fields, trait
+    /// bounds, call sites) over the repo corpus. Same corpus as `opencaw`,
+    /// different question framing and per-item needle/judge scoring.
+    CodeAgent,
     Sysdoc,
 }
 
@@ -208,9 +213,9 @@ fn main() -> Result<()> {
             "--index is required for the sysdoc workload; build one with caw-bench-build-index"
         ),
         (_, Some(path)) => Some(load_prebuilt_index(path, cli.repo_root.clone())?),
-        (Workload::Opencaw, None) => {
+        (Workload::Opencaw | Workload::CodeAgent, None) => {
             let (idx, tmp) = build_in_memory_prebuilt(&items[0].corpus)
-                .context("build shared in-memory index for opencaw workload")?;
+                .context("build shared in-memory index for repo-corpus workload")?;
             _shared_corpus_tmp = Some(tmp);
             Some(idx)
         }
@@ -400,6 +405,7 @@ fn main() -> Result<()> {
     let workload_name = match cli.workload {
         Workload::Niah => "niah",
         Workload::Opencaw => "opencaw",
+        Workload::CodeAgent => "codeagent",
         Workload::Sysdoc => "sysdoc",
     };
 
@@ -560,6 +566,8 @@ fn build_workload(cli: &Cli) -> Result<Vec<WorkloadItem>> {
         Workload::Opencaw => {
             opencaw::build(&cli.repo_root, cli.qa_file.as_deref()).context("build opencaw workload")
         }
+        Workload::CodeAgent => codeagent::build(&cli.repo_root, cli.qa_file.as_deref())
+            .context("build codeagent workload"),
         Workload::Sysdoc => {
             let qa_file = cli.qa_file.as_deref().ok_or_else(|| {
                 anyhow::anyhow!(
