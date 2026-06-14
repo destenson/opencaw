@@ -9,13 +9,21 @@
 # Everything after `--` is forwarded verbatim to the caw-bench binary, so the
 # full flag surface stays available (see `caw-bench --help`). Common ones:
 #   --num-predict N      cap the answer model's per-completion budget (gen study)
-#   --judge-adapter groq fast judge (~19x vs claude-code; re-baselines absolutes)
 #   --only-mode on|off   run a single recall mode
 #   --limit N            run only the first N items (directional small-n runs)
 #   --out PATH           write the JSON report (default: stdout)
 #   --trace-out PATH     per-(item,mode) JSONL with prompts, answers, scores
 #
-# Two non-obvious choices baked in, matching the other scripts here:
+# Three non-obvious choices baked in, matching the other scripts here:
+#  - Judge: defaults to groq (~19x faster than claude-code/haiku, judge drops
+#    from ~8.5s to ~0.45s per item) because this is a dev-iteration script.
+#    Override with CAW_BENCH_JUDGE=claude-code (or pass your own --judge-adapter).
+#    Caveat: groq-70b and haiku score differently, so groq-judged absolute
+#    answer_scores are NOT comparable to the haiku-judged numbers recorded in
+#    docs/findings.md — a within-run recall-on/off delta is still valid (both
+#    modes share the judge), but cross-run absolute comparisons need a matched
+#    judge. The caw-bench BINARY default stays claude-code for that comparability;
+#    this convenience script trades it for speed.
 #  - GPU selection: the candle embedder is pinned to the freest GPU via
 #    pick-gpu.sh, because it dies on OOM rather than shrinking and GPU 0 is
 #    usually full of an Ollama model.
@@ -54,6 +62,13 @@ if [ "$WORKLOAD" = "sysdoc" ]; then
   WORKLOAD_ARGS+=(--index "$INDEX" --qa-file "$QA")
 fi
 
+# Default the judge to groq for fast dev iteration, unless the caller already
+# supplied their own --judge-adapter in the forwarded args.
+JUDGE_ARGS=()
+if [[ " $* " != *" --judge-adapter "* ]]; then
+  JUDGE_ARGS+=(--judge-adapter "${CAW_BENCH_JUDGE:-groq}")
+fi
+
 GPU="$(bash "$SCRIPT_DIR/pick-gpu.sh")"
 if [ -n "$GPU" ]; then
   echo "bench: pinning embedder to GPU $GPU (freest)" >&2
@@ -64,4 +79,5 @@ fi
 cd "$ROOT"
 CUDA_VISIBLE_DEVICES="$GPU" cargo run --release --quiet -p caw-bench --bin caw-bench -- \
   "${WORKLOAD_ARGS[@]}" \
+  "${JUDGE_ARGS[@]}" \
   "$@"
