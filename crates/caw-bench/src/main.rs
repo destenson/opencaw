@@ -145,6 +145,15 @@ struct Cli {
     /// Only run one mode (useful for debugging). Default: both.
     #[arg(long, value_enum)]
     only_mode: Option<ModeArg>,
+
+    /// Number of (item, mode) tasks to run concurrently. Default saturates
+    /// the gen/judge/retrieval overlap within reason; `1` restores the serial
+    /// path, which is the only path with valid per-phase (gen/judge/other)
+    /// timing. Note Ollama serializes same-model generation, so the *gen*
+    /// speedup is bounded (~18% on the current single-server stack) until the
+    /// gen serving stack batches; the groq judge and retrieval overlap freely.
+    #[arg(long, default_value_t = 4)]
+    concurrency: usize,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -283,94 +292,110 @@ fn main() -> Result<()> {
         None => None,
     };
 
-    for item in &items {
-        for mode in &modes {
-            done += 1;
-            eprintln!(
-                "[{done}/{total}] {} [{}] — {}",
-                item.id,
-                mode.as_str(),
-                truncate(&item.question, 80)
-            );
+    if cli.concurrency > 1 {
+        run_concurrent(
+            &items,
+            &modes,
+            &cfg,
+            &cli,
+            &answer_model,
+            &judge_model,
+            &runtime,
+            prebuilt.as_ref(),
+            total,
+            &mut results,
+            trace_writer.as_mut(),
+        )?;
+    } else {
+        for item in &items {
+            for mode in &modes {
+                done += 1;
+                eprintln!(
+                    "[{done}/{total}] {} [{}] — {}",
+                    item.id,
+                    mode.as_str(),
+                    truncate(&item.question, 80)
+                );
 
-            // Each item gets a fresh answer adapter — the orchestrator
-            // takes ownership, and we want no state carried between runs.
-            let answer_inner = match adapter_factory::build(
-                AdapterSpec {
-                    kind: cli.answer_adapter,
-                    model: &answer_model,
-                    ollama_url: &cli.ollama_url,
-                    openai_url: &cli.openai_url,
-                    temperature: Some(cli.temperature),
-                    num_ctx: None,
-                    num_predict: cli.num_predict,
-                },
-                &runtime,
-            ) {
-                Ok(a) => a,
-                Err(e) => {
-                    eprintln!("  error building answer adapter: {:#}", e);
-                    continue;
-                }
-            };
-            // Fresh answer counter per item; judge counter is shared, so diff
-            // its snapshot across the call to isolate this item's judge time.
-            let answer_counters = caw_bench::timing::PhaseCounters::new();
-            let answer_adapter: Box<dyn caw_core::ModelAdapter> = Box::new(
-                caw_bench::timing::TimingAdapter::new(answer_inner, answer_counters.clone()),
-            );
-            let (_, judge_ms_before) = judge_counters.snapshot();
-
-            match run_item(
-                item,
-                *mode,
-                &cfg,
-                answer_adapter,
-                &judge_adapter,
-                prebuilt.as_ref(),
-            ) {
-                Ok(mut result) => {
-                    let (gen_calls, gen_ms) = answer_counters.snapshot();
-                    let (_, judge_ms_after) = judge_counters.snapshot();
-                    result.gen_ms = gen_ms;
-                    result.gen_calls = gen_calls;
-                    result.judge_ms = judge_ms_after.saturating_sub(judge_ms_before);
-                    let other_ms = result
-                        .latency_ms
-                        .saturating_sub(result.gen_ms)
-                        .saturating_sub(result.judge_ms);
-                    eprintln!(
-                        "  score={:.2} recall@k={:.2} ctx_eff={:.2} loaded={} | \
-                         {}ms = gen {}ms(x{}) + judge {}ms + other {}ms",
-                        result.answer_score,
-                        result.recall_at_k,
-                        result.context_efficiency,
-                        result.loaded_paths.len(),
-                        result.latency_ms,
-                        result.gen_ms,
-                        result.gen_calls,
-                        result.judge_ms,
-                        other_ms,
-                    );
-                    if let Some(writer) = trace_writer.as_mut() {
-                        use std::io::Write;
-                        let entry = serde_json::json!({
-                            "system_prompt": cfg.system_prompt,
-                            "result": &result,
-                        });
-                        if let Ok(line) = serde_json::to_string(&entry) {
-                            let _ = writeln!(writer, "{}", line);
-                            let _ = writer.flush();
-                        }
+                // Each item gets a fresh answer adapter — the orchestrator
+                // takes ownership, and we want no state carried between runs.
+                let answer_inner = match adapter_factory::build(
+                    AdapterSpec {
+                        kind: cli.answer_adapter,
+                        model: &answer_model,
+                        ollama_url: &cli.ollama_url,
+                        openai_url: &cli.openai_url,
+                        temperature: Some(cli.temperature),
+                        num_ctx: None,
+                        num_predict: cli.num_predict,
+                    },
+                    &runtime,
+                ) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        eprintln!("  error building answer adapter: {:#}", e);
+                        continue;
                     }
-                    results.push(result);
-                }
-                Err(e) => {
-                    eprintln!("  error: {:#}", e);
+                };
+                // Fresh answer counter per item; judge counter is shared, so diff
+                // its snapshot across the call to isolate this item's judge time.
+                let answer_counters = caw_bench::timing::PhaseCounters::new();
+                let answer_adapter: Box<dyn caw_core::ModelAdapter> = Box::new(
+                    caw_bench::timing::TimingAdapter::new(answer_inner, answer_counters.clone()),
+                );
+                let (_, judge_ms_before) = judge_counters.snapshot();
+
+                match run_item(
+                    item,
+                    *mode,
+                    &cfg,
+                    answer_adapter,
+                    &judge_adapter,
+                    prebuilt.as_ref(),
+                ) {
+                    Ok(mut result) => {
+                        let (gen_calls, gen_ms) = answer_counters.snapshot();
+                        let (_, judge_ms_after) = judge_counters.snapshot();
+                        result.gen_ms = gen_ms;
+                        result.gen_calls = gen_calls;
+                        result.judge_ms = judge_ms_after.saturating_sub(judge_ms_before);
+                        let other_ms = result
+                            .latency_ms
+                            .saturating_sub(result.gen_ms)
+                            .saturating_sub(result.judge_ms);
+                        eprintln!(
+                            "  score={:.2} recall@k={:.2} ctx_eff={:.2} loaded={} | \
+                            {}ms = gen {}ms(x{}) + judge {}ms + other {}ms",
+                            result.answer_score,
+                            result.recall_at_k,
+                            result.context_efficiency,
+                            result.loaded_paths.len(),
+                            result.latency_ms,
+                            result.gen_ms,
+                            result.gen_calls,
+                            result.judge_ms,
+                            other_ms,
+                        );
+                        if let Some(writer) = trace_writer.as_mut() {
+                            use std::io::Write;
+                            let entry = serde_json::json!({
+                                "system_prompt": cfg.system_prompt,
+                                "result": &result,
+                            });
+                            if let Ok(line) = serde_json::to_string(&entry) {
+                                let _ = writeln!(writer, "{}", line);
+                                let _ = writer.flush();
+                            }
+                        }
+                        results.push(result);
+                    }
+                    Err(e) => {
+                        eprintln!("  error: {:#}", e);
+                    }
                 }
             }
         }
-    }
+    } // end serial path (concurrency == 1)
 
     let workload_name = match cli.workload {
         Workload::Niah => "niah",
@@ -390,6 +415,135 @@ fn main() -> Result<()> {
 
     eprintln!("\n{}", format_summary(&report));
 
+    Ok(())
+}
+
+/// Run the (item, mode) grid concurrently with a capped worker pool.
+///
+/// Each task builds its own answer and judge adapters inside the worker so no
+/// `dyn ModelAdapter` trait object crosses a thread boundary; the read-only
+/// `PrebuiltIndex` (Arc<Mutex<_>> embedder/store/index) is shared. Per-phase
+/// (gen/judge/other) timing is deliberately NOT collected here — under
+/// concurrency the shared judge counter and wall-time contention make it
+/// invalid (see docs/DECISIONS.md); aggregate wall-clock and answer scores
+/// stay valid. Results are reordered to the serial task order before the
+/// report is built so output is deterministic regardless of completion order.
+#[allow(clippy::too_many_arguments)]
+fn run_concurrent(
+    items: &[WorkloadItem],
+    modes: &[RecallMode],
+    cfg: &RunnerConfig,
+    cli: &Cli,
+    answer_model: &str,
+    judge_model: &str,
+    runtime: &std::sync::Arc<tokio::runtime::Runtime>,
+    prebuilt: Option<&PrebuiltIndex>,
+    total: usize,
+    results: &mut Vec<ItemResult>,
+    mut trace_writer: Option<&mut std::io::BufWriter<std::fs::File>>,
+) -> Result<()> {
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let tasks: Vec<(usize, &WorkloadItem, RecallMode)> = items
+        .iter()
+        .flat_map(|item| modes.iter().map(move |m| (item, *m)))
+        .enumerate()
+        .map(|(i, (item, m))| (i, item, m))
+        .collect();
+
+    let done = AtomicUsize::new(0);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(cli.concurrency)
+        .build()
+        .context("build bench thread pool")?;
+
+    let mut collected: Vec<(usize, ItemResult)> = pool.install(|| {
+        tasks
+            .par_iter()
+            .filter_map(|&(idx, item, mode)| {
+                let answer = match adapter_factory::build(
+                    AdapterSpec {
+                        kind: cli.answer_adapter,
+                        model: answer_model,
+                        ollama_url: &cli.ollama_url,
+                        openai_url: &cli.openai_url,
+                        temperature: Some(cli.temperature),
+                        num_ctx: None,
+                        num_predict: cli.num_predict,
+                    },
+                    runtime,
+                ) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        eprintln!("  error building answer adapter: {:#}", e);
+                        return None;
+                    }
+                };
+                let judge = match adapter_factory::build(
+                    AdapterSpec {
+                        kind: cli.judge_adapter,
+                        model: judge_model,
+                        ollama_url: &cli.ollama_url,
+                        openai_url: &cli.openai_url,
+                        temperature: Some(cli.judge_temperature),
+                        num_ctx: None,
+                        num_predict: None,
+                    },
+                    runtime,
+                ) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        eprintln!("  error building judge adapter: {:#}", e);
+                        return None;
+                    }
+                };
+
+                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                eprintln!(
+                    "[{n}/{total}] {} [{}] — {}",
+                    item.id,
+                    mode.as_str(),
+                    truncate(&item.question, 80)
+                );
+
+                match run_item(item, mode, cfg, answer, judge.as_ref(), prebuilt) {
+                    Ok(result) => {
+                        eprintln!(
+                            "  score={:.2} recall@k={:.2} ctx_eff={:.2} loaded={} | {}ms \
+                             (concurrent: per-phase timing omitted)",
+                            result.answer_score,
+                            result.recall_at_k,
+                            result.context_efficiency,
+                            result.loaded_paths.len(),
+                            result.latency_ms,
+                        );
+                        Some((idx, result))
+                    }
+                    Err(e) => {
+                        eprintln!("  error: {:#}", e);
+                        None
+                    }
+                }
+            })
+            .collect()
+    });
+
+    collected.sort_by_key(|(idx, _)| *idx);
+    for (_, result) in &collected {
+        if let Some(writer) = trace_writer.as_deref_mut() {
+            use std::io::Write;
+            let entry = serde_json::json!({
+                "system_prompt": cfg.system_prompt,
+                "result": result,
+            });
+            if let Ok(line) = serde_json::to_string(&entry) {
+                let _ = writeln!(writer, "{}", line);
+                let _ = writer.flush();
+            }
+        }
+    }
+    results.extend(collected.into_iter().map(|(_, r)| r));
     Ok(())
 }
 

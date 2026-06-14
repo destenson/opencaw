@@ -9,6 +9,8 @@
 # Everything after `--` is forwarded verbatim to the caw-bench binary, so the
 # full flag surface stays available (see `caw-bench --help`). Common ones:
 #   --num-predict N      cap the answer model's per-completion budget (gen study)
+#   --concurrency N      run N (item,mode) tasks in parallel (default 4); 1 =
+#                        serial, the only path with valid per-phase timing
 #   --only-mode on|off   run a single recall mode
 #   --limit N            run only the first N items (directional small-n runs)
 #   --out PATH           write the JSON report (default: stdout)
