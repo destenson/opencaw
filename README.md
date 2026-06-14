@@ -4,6 +4,14 @@ A Rust library for thinking-trace-driven context management in LLM applications.
 
 This is not another RAG wrapper. The differentiator is thinking-trace-as-retrieval-signal: the model's own reasoning drives what gets loaded, evicted, and consolidated, rather than a retrieval step that runs before inference.
 
+## Why this exists
+
+Watch a coding agent work on an unfamiliar codebase: it burns call after call grepping and reading files just to reconstruct facts that were on disk the whole time — a function's signature, a trait's bounds, the fields of a struct, where something is called from. Each fact is fetched piecemeal, used once, and then falls out of context, so the next related question pays the same tax again. The information was available; it just wasn't *resident* when the model needed it.
+
+That repeated "tool-call to find on-disk content" loop is the problem OpenCAW exists to remove. Instead of the model going out to fetch content, the content comes to the model: the corpus is indexed as lightweight stubs, and the model's own reasoning trace — "I need the `ModelAdapter` Send bound", "what fields does `PrebuiltIndex` have" — is the signal that pulls the right full content into the workspace and evicts what's no longer relevant. The aim is a context window that stays full of what the current reasoning step actually needs, over a corpus far larger than the window, at roughly flat compute cost.
+
+See [docs/design.md](docs/design.md) for the full thesis and [docs/scope.md](docs/scope.md) for what is in and out of scope for v0.1.
+
 ## Quick Start
 
 ```bash
