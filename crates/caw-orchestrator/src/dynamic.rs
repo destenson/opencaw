@@ -665,7 +665,18 @@ where
                 // Automatic recall only runs when the monitor permits it
                 if self.auto_recall_enabled() {
                     if self.config.enable_thinking_trace_recall {
-                        self.process_thinking_trace(&last_response.answer)?;
+                        // The reasoning trace is the retrieval signal, per the
+                        // thinking-trace-as-query design. Adapters that separate
+                        // reasoning from the answer return it in `thinking`
+                        // (modern Ollama, hidden-reasoning models); when absent
+                        // the answer text carries any inline trace, so fall back
+                        // to it. Feeding the bare answer would retrieve on the
+                        // model's own output rather than its reasoning.
+                        let trace = last_response
+                            .thinking
+                            .as_deref()
+                            .unwrap_or(&last_response.answer);
+                        self.process_thinking_trace(trace)?;
                     }
 
                     if self.config.enable_probe_recall {

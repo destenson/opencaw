@@ -569,3 +569,31 @@ strings) — a weak exercise of thinking-trace, which should help most on synthe
 exploration where reasoning reaches content initial retrieval missed. Once the trace is
 wired, the `opencaw` codebase workload is the stronger thesis test; a null on sysdoc alone
 would not disprove the thesis.
+
+### Fix landed and validated — thinking-trace recall now fires on modern Ollama (2026-06-13)
+
+Two-part fix (both confined, no cross-crate API change):
+- `caw-adapters/src/ollama.rs`: send gated `"think": true` (gate = `/api/show` `thinking`
+  capability, cached; model-name match only as offline fallback — sending it to a
+  non-reasoning model crashes llama-server), add a `thinking` field to the message/stream
+  structs, accumulate `message.thinking` stream deltas in `thinking_with_steps`, and prefer
+  `message.thinking` over `split_thinking(content)` in `complete()`. `supports_visible_reasoning`
+  now derives from the capability query.
+- `caw-orchestrator/src/dynamic.rs`: the `DynamicRecallOrchestrator` recall loop fed
+  `last_response.answer` to `process_thinking_trace`. Modern adapters now return the reasoning
+  separately in `last_response.thinking`; feed that (fall back to answer when absent). Feeding
+  the bare answer retrieved on the model's own output, not its reasoning.
+
+Validation by behavioral isolation at temperature 0 (deterministic), qwen3.5:9b, subset-medium,
+n=2: with only the adapter fix (orchestrator still feeding `.answer`), recall_on and recall_off
+loaded identical fragment sets (11 vs 11). After also wiring the orchestrator to feed
+`.thinking`, recall_on diverged to 16 vs 11 loaded — the thinking-trace re-query now pulls extra
+fragments from the reasoning trace. The divergence appeared exactly at the orchestrator wiring
+change, isolating the cause. (Note: `caw-bench` installs no tracing subscriber, so RUST_LOG logs
+are unavailable for diagnosis — behavioral isolation was the verification.)
+
+On sysdoc n=2 the extra fragments slightly *lowered* the score (Δ answer_score −0.075) — expected:
+sysdoc is single-token fact-lookup where more near-identical changelog fragments add confusion,
+not synthesis where reaching unretrieved content helps. The mechanism is validated as *wired and
+firing*; whether it improves answer quality is the separate question the at-scale sweep measures,
+and the `opencaw` codebase (synthesis) workload is the more favorable test than sysdoc.

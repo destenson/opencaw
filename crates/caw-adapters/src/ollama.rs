@@ -42,6 +42,14 @@ pub struct OllamaAdapter {
     /// degenerate looping). The correct alternative is to fix that model's
     /// template; this flag is the escape hatch when you can't.
     fold_system: bool,
+    /// Cached answer to "does this model emit a reasoning trace?" Resolved
+    /// lazily on first use by querying Ollama's `/api/show` capabilities
+    /// (the authoritative, non-heuristic source), falling back to a model-name
+    /// match only when `/api/show` is unreachable. Gates whether we send
+    /// `"think": true` — sending it to a non-reasoning model crashes
+    /// llama-server (observed GGML_ASSERT on gemma4) — and whether the
+    /// orchestrator routes through the streaming thinking-trace path.
+    thinking_supported: std::sync::OnceLock<bool>,
 }
 
 impl std::fmt::Debug for OllamaAdapter {
@@ -68,7 +76,50 @@ impl OllamaAdapter {
             num_ctx: None,
             cooperative_probes: false,
             fold_system: false,
+            thinking_supported: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Whether this model emits a reasoning trace the orchestrator can consume.
+    /// Resolved once via `/api/show` capabilities; on any error (Ollama
+    /// unreachable, old server without the `capabilities` field) falls back to
+    /// the model-name match that predated the capability query. The result is
+    /// cached for the adapter's lifetime.
+    fn supports_thinking(&self) -> bool {
+        *self.thinking_supported.get_or_init(|| match self.query_thinking_capability() {
+            Some(v) => v,
+            None => self.model.contains("deepseek") || self.model.contains("qwen"),
+        })
+    }
+
+    /// Query `/api/show` for the model's declared capabilities. Returns
+    /// `Some(true)` if "thinking" is advertised, `Some(false)` if the model
+    /// responded without it, and `None` if the request failed (caller then
+    /// falls back to the name heuristic).
+    fn query_thinking_capability(&self) -> Option<bool> {
+        #[derive(Deserialize)]
+        struct ShowResponse {
+            capabilities: Option<Vec<String>>,
+        }
+        let url = format!("{}/api/show", self.base_url);
+        let model = self.model.clone();
+        let resp: Option<ShowResponse> = self.runtime.block_on(async {
+            self.client
+                .post(&url)
+                .json(&serde_json::json!({ "model": model }))
+                .send()
+                .await
+                .ok()?
+                .json::<ShowResponse>()
+                .await
+                .ok()
+        });
+        resp.map(|r| {
+            r.capabilities
+                .unwrap_or_default()
+                .iter()
+                .any(|c| c == "thinking")
+        })
     }
 
     /// Concatenate the system content into the first user message instead of
@@ -132,17 +183,11 @@ impl OllamaAdapter {
     /// first user message instead (see the field docs).
     fn build_messages(&self, system: String, user: String) -> Vec<OllamaChatMessage> {
         if system.is_empty() {
-            vec![OllamaChatMessage { role: "user".to_string(), content: user }]
+            vec![OllamaChatMessage::user(user)]
         } else if self.fold_system {
-            vec![OllamaChatMessage {
-                role: "user".to_string(),
-                content: format!("{}\n\n{}", system, user),
-            }]
+            vec![OllamaChatMessage::user(format!("{}\n\n{}", system, user))]
         } else {
-            vec![
-                OllamaChatMessage { role: "system".to_string(), content: system },
-                OllamaChatMessage { role: "user".to_string(), content: user },
-            ]
+            vec![OllamaChatMessage::system(system), OllamaChatMessage::user(user)]
         }
     }
 }
@@ -154,12 +199,33 @@ struct OllamaChatRequest {
     messages: Vec<OllamaChatMessage>,
     stream: bool,
     options: OllamaOptions,
+    /// Request the model's reasoning trace. Sent only for models that advertise
+    /// the `thinking` capability — `true` on a non-reasoning model crashes
+    /// llama-server. Omitted (None) otherwise so the request shape is unchanged
+    /// for non-reasoning models.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    think: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 struct OllamaChatMessage {
     role: String,
     content: String,
+    /// Reasoning trace. Modern Ollama (0.30+) returns the model's thinking here
+    /// — streamed token-by-token while `content` stays empty — rather than as an
+    /// inline `<think>` block in `content`. Never sent on requests.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<String>,
+}
+
+impl OllamaChatMessage {
+    fn user(content: String) -> Self {
+        Self { role: "user".to_string(), content, thinking: None }
+    }
+
+    fn system(content: String) -> Self {
+        Self { role: "system".to_string(), content, thinking: None }
+    }
 }
 
 #[derive(Serialize)]
@@ -206,9 +272,9 @@ impl ModelAdapter for OllamaAdapter {
             // models that can't follow the protocol emit markers as literal text.
             // Enable per-model after verifying with caw-bench-coop.
             supports_hidden_reasoning: self.cooperative_probes,
-            // Visible reasoning gates <think>-block parsing; detected by model name.
-            supports_visible_reasoning: self.model.contains("deepseek")
-                || self.model.contains("qwen"),
+            // Gates the streaming thinking-trace path. Sourced from Ollama's
+            // `/api/show` capabilities (name match only as offline fallback).
+            supports_visible_reasoning: self.supports_thinking(),
             ..Default::default()
         }
     }
@@ -227,6 +293,7 @@ impl ModelAdapter for OllamaAdapter {
                 num_predict: 4096,
                 num_ctx: self.num_ctx,
             },
+            think: self.supports_thinking().then_some(true),
         };
 
         let body = self.runtime.block_on(async {
@@ -259,8 +326,17 @@ impl ModelAdapter for OllamaAdapter {
         // both candidate parses gives the caller something to act on.
         match serde_json::from_str::<OllamaChatResponse>(&body) {
             Ok(parsed) => {
+                // Prefer the dedicated `thinking` field (modern Ollama); fall
+                // back to splitting an inline <think> block out of content for
+                // models/servers that still embed reasoning there.
+                let field_thinking = parsed
+                    .message
+                    .thinking
+                    .clone()
+                    .filter(|s| !s.trim().is_empty());
                 let raw = truncate_at_chat_boundary(&parsed.message.content);
-                let (thinking, answer) = split_thinking(raw);
+                let (inline_thinking, answer) = split_thinking(raw);
+                let thinking = field_thinking.or(inline_thinking);
                 if answer.trim().is_empty() {
                     tracing::warn!(model = %self.model, "degenerate output: blank answer after split_thinking");
                     return Err(CawError::DegenerateOutput {
@@ -357,12 +433,16 @@ impl ModelAdapter for OllamaAdapter {
                 num_predict: 4096,
                 num_ctx: self.num_ctx,
             },
+            think: Some(true),
         };
 
         // Stream the thinking trace and collect completed steps. Steps are
-        // delimited by \n\n within the <think> block. We stop at </think>
-        // without reading the answer tokens — the orchestrator makes a separate
-        // complete() call with the enriched workspace for that.
+        // delimited by \n\n. Modern Ollama streams reasoning in each chunk's
+        // `message.thinking` (with `content` empty until reasoning ends); older
+        // servers/models embed it inline as a <think>…</think> block in
+        // `content`. We handle both, and stop once the answer text begins (or
+        // the inline block closes) — the orchestrator makes a separate
+        // complete() call with the enriched workspace for the answer itself.
         let steps: Vec<String> = self.runtime.block_on(async {
             let url = format!("{}/api/chat", self.base_url);
             let resp = self
@@ -384,58 +464,82 @@ impl ModelAdapter for OllamaAdapter {
             let mut steps: Vec<String> = Vec::new();
             let mut in_think = false;
 
+            // Flush any \n\n-delimited completed steps out of the buffer.
+            let flush_steps = |buf: &mut String, steps: &mut Vec<String>| {
+                while let Some(boundary) = buf.find("\n\n") {
+                    let step = buf[..boundary].trim().to_string();
+                    buf.drain(..boundary + 2);
+                    if !step.is_empty() {
+                        debug!(step_preview = &step[..step.len().min(80)], "step boundary flushed");
+                        steps.push(step);
+                    }
+                }
+            };
+
             'outer: while let Some(chunk) = stream.next().await {
                 let bytes = chunk.map_err(|e| CawError::External(format!("Stream error: {e}")))?;
                 for ch in String::from_utf8_lossy(&bytes).chars() {
-                    if ch == '\n' {
-                        if let Ok(token) = serde_json::from_str::<OllamaStreamToken>(&line_buf) {
-                            let content = &token.message.content;
+                    if ch != '\n' {
+                        line_buf.push(ch);
+                        continue;
+                    }
+                    if let Ok(token) = serde_json::from_str::<OllamaStreamToken>(&line_buf) {
+                        let msg = &token.message;
 
+                        // Modern Ollama: reasoning arrives as `thinking` deltas.
+                        if let Some(t) = msg.thinking.as_deref().filter(|t| !t.is_empty()) {
                             if !in_think {
-                                if let Some(after) = content.split_once("<think>").map(|(_, r)| r) {
-                                    in_think = true;
-                                    step_buf.push_str(after);
-                                    debug!("<think> detected — collecting steps");
-                                }
-                            } else {
-                                step_buf.push_str(content);
+                                in_think = true;
+                                debug!("thinking field detected — collecting steps");
                             }
-
-                            if in_think {
-                                if let Some(end) = step_buf.find("</think>") {
-                                    let step = step_buf[..end].trim().to_string();
-                                    if !step.is_empty() {
-                                        debug!(
-                                            step_preview = &step[..step.len().min(80)],
-                                            "step at </think>"
-                                        );
-                                        steps.push(step);
-                                    }
-                                    debug!("</think> detected — stopping stream");
-                                    break 'outer;
-                                }
-                                // Flush a completed step at \n\n boundary
-                                while let Some(boundary) = step_buf.find("\n\n") {
-                                    let step = step_buf[..boundary].trim().to_string();
-                                    step_buf.drain(..boundary + 2);
-                                    if !step.is_empty() {
-                                        debug!(
-                                            step_preview = &step[..step.len().min(80)],
-                                            "step boundary flushed"
-                                        );
-                                        steps.push(step);
-                                    }
-                                }
+                            step_buf.push_str(t);
+                            flush_steps(&mut step_buf, &mut steps);
+                        } else if in_think && msg.thinking.is_none() {
+                            // Inline-block model: keep appending content tokens
+                            // until the closing tag.
+                            step_buf.push_str(&msg.content);
+                        } else if !in_think {
+                            // Inline fallback: reasoning embedded in content as
+                            // an opening <think> tag.
+                            if let Some(after) = msg.content.split_once("<think>").map(|(_, r)| r) {
+                                in_think = true;
+                                step_buf.push_str(after);
+                                debug!("<think> detected — collecting steps");
                             }
+                        }
 
-                            if token.done {
+                        if in_think {
+                            if let Some(end) = step_buf.find("</think>") {
+                                let step = step_buf[..end].trim().to_string();
+                                if !step.is_empty() {
+                                    debug!(step_preview = &step[..step.len().min(80)], "step at </think>");
+                                    steps.push(step);
+                                }
+                                debug!("</think> detected — stopping stream");
+                                break 'outer;
+                            }
+                            flush_steps(&mut step_buf, &mut steps);
+                            // The thinking field carries no closing tag; the
+                            // reasoning phase ends when answer content begins.
+                            if msg.thinking.is_none() && !msg.content.is_empty() {
+                                let tail = step_buf.trim();
+                                if !tail.is_empty() {
+                                    steps.push(tail.to_string());
+                                }
+                                debug!("answer content started — stopping thinking stream");
                                 break 'outer;
                             }
                         }
-                        line_buf.clear();
-                    } else {
-                        line_buf.push(ch);
+
+                        if token.done {
+                            let tail = step_buf.trim();
+                            if !tail.is_empty() {
+                                steps.push(tail.to_string());
+                            }
+                            break 'outer;
+                        }
                     }
+                    line_buf.clear();
                 }
             }
 
