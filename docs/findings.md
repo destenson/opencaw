@@ -856,20 +856,30 @@ second methodological and more important:
    the only caps that would cut ≥20% sit below the typical trace length and would truncate answers.
    The real gen lever is faster inference (a faster/smaller answer model, or a faster serving stack
    such as vLLM), not a shorter budget.
-2. **temp=0 Ollama is not reproducible enough for a matched-item ≤0.03 score delta at n=10 — the
-   experiment's design assumption is falsified.** Same items, same-or-higher budget, single completion,
-   yet per-item gen_ms swings up to ~3× run-to-run (item-9 5.8s→18.6s; item-1 26.5s→16.6s). The
-   "degraded" item-7 fell 0.80→0.00 **with its gen_ms essentially unchanged (19.4s→19.7s)** — it was
-   not truncated by the cap; its output simply differed between runs. The run-to-run noise is larger
-   than the treatment effect, and because the whole 0.180 mean rests on 2 sparse correct items, the
-   score flips on that noise. (Ollama at temp 0 is not bit-reproducible — server-side batching, KV
-   cache, FP nondeterminism.)
+2. **The runs were not reproducible — and the cause is a determinism bug in OUR retrieval, not Ollama.**
+   Initially mis-attributed to temp=0 Ollama nondeterminism; that was wrong and is corrected here.
+   Diffing the two runs' trace files (which differ *only* in `num_predict`, a flag that cannot touch
+   retrieval) showed that for **5 of 10 items the injected fragments (`loaded_paths`) differed**. The
+   "degraded" item-7 (0.80→0.00) got a **different set of fragments**, so its answer changed because its
+   context changed, not because the model sampled differently. (Item-9's 3× gen_ms swing had *identical*
+   injected fragments, so that residual is genuine server-side gen-time variance — secondary.)
 
-**Conclusion.** The cap result is *uninterpretable as a quality verdict* at this n, and separately the
-cap is the wrong knob (gen is decode-bound, not budget-bound). Evaluating any gen-reduction change
-against the DECISIONS.md ≤0.03 bar requires controlling the nondeterminism first — many more items
-and/or multiple seeds per item, or a more deterministic backend — which is the long sweep we were
-trying to avoid. Net direction for the gen phase: stop tuning `num_predict` for speed; the lever is
-**decode throughput** (faster/smaller answer model, or vLLM/TensorRT serving) measured at an n large
-enough to see past Ollama's run noise. Directional (n=10, two runs); the non-reproducibility is the
-robust part.
+   Root cause: hybrid fusion (`caw-index/src/lib.rs`) builds candidates in a `HashMap<StubId,f32>`, then
+   stable-sorts by score and truncates to `top_k`. On tied fused scores the stable sort preserves the
+   HashMap's randomized iteration order, so a `top_k` cutoff falling among ties admits different stubs
+   per process. BM25 (`bm25.rs`) had the identical pattern. **Fixed** by adding a deterministic
+   tie-break (`then_with(|| a.id.cmp(b.id))`) at both sort sites. **Verified** by a unit test
+   (`bm25::tests::tied_scores_truncate_deterministically`): ten identical-score docs with `top_k=5`
+   force truncation among a ten-way tie; the test fails on the pre-fix code (the surviving set varies
+   call-to-call, since `search` builds a fresh HashMap with a new random seed each call) and passes
+   after. The hybrid-fusion site is the same idiom with the same total-order guarantee.
+
+**Conclusion.** The cap result is *uninterpretable as a quality verdict* — it was measured on a
+nondeterministic pipeline. Two separable takeaways survive: (a) gen is **decode-throughput-bound, not
+token-count-bound**, so `num_predict` capping is the wrong speed lever (a 1024 cap didn't even reduce
+gen); (b) the **eval's run-to-run instability was a real retrieval-determinism bug**, now fixed — which
+matters far beyond this experiment, since nondeterministic context injection corrupts every
+answer-score measurement and means a user asking the same question twice could get different context.
+Once determinism is verified, re-measuring any gen change against the ≤0.03 bar becomes meaningful;
+before the fix it was not. Directional (n=10, two runs); the injected-fragment divergence is the robust,
+proven part.

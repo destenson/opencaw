@@ -67,7 +67,10 @@ impl BM25Index {
             .into_iter()
             .map(|(idx, score)| (self.doc_ids[idx].clone(), score))
             .collect();
-        results.sort_by(|a, b| b.1.total_cmp(&a.1));
+        // Tie-break by stub id: `scores` is a HashMap, so equal-BM25-score docs
+        // would otherwise inherit randomized iteration order and a top_k cutoff
+        // among ties would pick different docs per run.
+        results.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0 .0.cmp(&b.0 .0)));
         results.truncate(top_k);
         results
     }
@@ -218,5 +221,31 @@ mod tests {
         let doc: std::collections::HashSet<_> = tokenize("impl DynamicRecallOrchestrator { fn evict").into_iter().collect();
         assert!(q.contains("recall") && doc.contains("recall"));
         assert!(q.contains("evict") && doc.contains("evict"));
+    }
+
+    #[test]
+    fn tied_scores_truncate_deterministically() {
+        // Ten docs with identical text get identical BM25 scores for the query,
+        // so a top_k below ten forces truncation among a ten-way tie. `search`
+        // builds a fresh HashMap (new random seed) each call, so without a
+        // deterministic tie-break the surviving set would vary call-to-call.
+        let mut idx = BM25Index::new();
+        for i in 0..10 {
+            idx.add(StubId(format!("doc{i:02}")), "alpha beta gamma");
+        }
+        let first = idx.search("alpha", 5);
+        let ids: Vec<&str> = first.iter().map(|(id, _)| id.0.as_str()).collect();
+        // Tie-break is by stub id ascending, so the lexicographically smallest
+        // five ids survive — and they survive on every call.
+        assert_eq!(ids, vec!["doc00", "doc01", "doc02", "doc03", "doc04"]);
+        for _ in 0..20 {
+            let again: Vec<String> = idx
+                .search("alpha", 5)
+                .into_iter()
+                .map(|(id, _)| id.0)
+                .collect();
+            let first_ids: Vec<String> = first.iter().map(|(id, _)| id.0.clone()).collect();
+            assert_eq!(again, first_ids, "tied-score truncation must be stable across calls");
+        }
     }
 }

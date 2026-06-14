@@ -303,7 +303,16 @@ where
             }
         }
 
-        results.sort_by(|a, b| b.score.total_cmp(&a.score));
+        // Tie-break by stub id so a top_k cutoff that falls among equal fused
+        // scores is deterministic. `combined` is a HashMap, so its iteration
+        // order is randomized per process; without a total ordering here, which
+        // tied stubs survive `truncate` varies run-to-run, changing the injected
+        // context for identical inputs.
+        results.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then_with(|| a.stub.id.0.cmp(&b.stub.id.0))
+        });
         results.truncate(top_k);
         Ok(results)
     }
