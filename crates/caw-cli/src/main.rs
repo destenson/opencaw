@@ -299,7 +299,9 @@ struct Cli {
     #[arg(long)]
     n_gpu_layers: Option<i32>,
 
-    /// Maximum number of tokens to generate per response. Llama adapter only.
+    /// Maximum number of tokens to generate per response (llama `max_new_tokens`
+    /// / Ollama `num_predict`). For a reasoning model this budget covers the
+    /// thinking trace plus the answer, so a low cap can truncate the answer.
     #[arg(long)]
     max_new_tokens: Option<usize>,
 
@@ -689,8 +691,10 @@ fn build_completion_adapter(
     max_new_tokens: Option<usize>,
     fold_system: bool,
 ) -> Result<Box<dyn ModelAdapter + Send + Sync>> {
-    // `num_ctx` and `temperature` are honored by both the llama and ollama
-    // branches below; `n_gpu_layers` and `max_new_tokens` are llama-only.
+    // `num_ctx`, `temperature`, and `max_new_tokens` are honored by both the
+    // llama and ollama branches below (`max_new_tokens` maps to Ollama's
+    // `num_predict`). `n_gpu_layers` is a self-hosted-engine GPU-offload knob
+    // consumed only by the llama branch — Ollama manages its own offload.
     let adapter: Box<dyn ModelAdapter + Send + Sync> = match adapter_name {
         "mock" => Box::new(MockAdapter::new("mock-local", true)),
         "anthropic" | "claude" => {
@@ -749,6 +753,11 @@ fn build_completion_adapter(
             // workspace, the entire payload. Honor the flag when set.
             let adapter = if let Some(n) = num_ctx {
                 adapter.with_num_ctx(n)
+            } else {
+                adapter
+            };
+            let adapter = if let Some(n) = max_new_tokens {
+                adapter.with_num_predict(n as i32)
             } else {
                 adapter
             };
@@ -817,6 +826,11 @@ fn build_completion_adapter(
             let adapter = caw_adapters::OllamaAdapter::local(m, rt).with_fold_system(fold_system);
             let adapter = if let Some(t) = temperature {
                 adapter.with_temperature(t)
+            } else {
+                adapter
+            };
+            let adapter = if let Some(n) = max_new_tokens {
+                adapter.with_num_predict(n as i32)
             } else {
                 adapter
             };
