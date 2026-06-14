@@ -1,6 +1,6 @@
 ---
 name: caw-dev
-description: This skill should be used when working on the OpenCAW project locally — to "stand up the caw-server proxy", "run the opencaw proxy", "build a caw index", "index the repo for recall", "smoke test the proxy", "test context injection", "run the caw-cli recall loop", "start the recall server", or otherwise build, run, and test OpenCAW. Provides scripts that handle the GPU-pinning and batch-size workarounds and verify context injection.
+description: This skill should be used when working on the OpenCAW project locally — to "stand up the caw-server proxy", "run the opencaw proxy", "build a caw index", "index the repo for recall", "smoke test the proxy", "test context injection", "run the caw-cli recall loop", "start the recall server", "run the recall benchmark / eval sweep", "measure recall-on vs recall-off", or otherwise build, run, and test OpenCAW. Provides scripts that handle the GPU-pinning and batch-size workarounds and verify context injection.
 version: 0.1.0
 ---
 
@@ -132,6 +132,7 @@ For the full reasoning behind each gotcha, file/line references, the host's GPU 
 - **`scripts/retrieve.sh`** — inspect retrieval directly via `/v1/retrieve`: ranked candidates with scores, token cost, and admitted/clamped/budget_full/content_miss disposition (no model call). `--full` dumps admitted bodies.
 - **`scripts/ab-test.sh`** — proxy vs. direct-upstream A/B (whole pool by default) to prove context changes the answer.
 - **`scripts/stop.sh`** — stop a running proxy.
+- **`scripts/bench.sh`** — run the `caw-bench` end-to-end recall harness (recall-on vs recall-off, judge-scored) with the canonical sysdoc index + QA file, GPU pinning, and release build. `bench.sh [sysdoc|opencaw|niah] -- <caw-bench args>` forwards everything after `--` (e.g. `--num-predict`, `--judge-adapter groq`, `--limit`, `--only-mode`, `--out`, `--trace-out`). Don't reconstruct the `caw-bench` invocation by hand.
 - **`scripts/test-cli.sh`** — drive the caw-cli recall engine non-interactively, local-only config (LLM consolidation OFF).
 - **`scripts/consolidation-cli.sh`** — exercise the full engine (eviction + LLM consolidation) and print a computed proof summary; aux model via the local `claude` CLI.
 - **`scripts/run-cli.sh`** — raw pass-through to caw-cli, args forwarded.
