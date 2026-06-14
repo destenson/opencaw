@@ -516,3 +516,56 @@ sign already flipped between corpora — so this is a deployment decision, not a
 fusion swap. `caw-server::fuse_hybrid` is unchanged; the three modes live behind
 `graph_eval --fusion` for continued measurement. Tuning a 4th variant on n=100 would be
 the same overfit-to-one-set trap refused on n=27, from the other side.
+
+## Thinking-trace recall is inert on modern Ollama — adapter drops the reasoning channel (2026-06-13)
+
+Attempting the first end-to-end recall-on vs recall-off answer-quality run (the central
+claim in `benchmarking.md` line 3, never previously run at scale) surfaced a divergence
+between the design (`DECISIONS.md`: thinking-trace-as-retrieval, default on) and the
+Ollama adapter as shipped.
+
+**Symptom.** `caw-bench --workload sysdoc` (subset-medium, 43k stubs, answer model
+qwen3.5:9b, judge claude-code/haiku, n=2): recall_on and recall_off loaded byte-identical
+fragments and produced byte-identical answers. `Δ recall@k = 0`, `Δ mrr = 0`; the only
+difference was latency (on 32.9s vs off 19.2s — wasted iteration). The model emitted no
+`<think>` text in its answer.
+
+**Root cause (confirmed in `caw-adapters/src/ollama.rs`).** The orchestrator's
+thinking-trace recall routes through `thinking_with_steps`, which for a
+`supports_visible_reasoning` model (name match: contains "qwen"/"deepseek" — qwen3.5
+matches, so the path *was* taken) streams `/api/chat` and scans each chunk's
+`message.content` for an inline `<think>…</think>` block. But modern Ollama (0.30.6) with
+qwen3.5/3.6 streams reasoning token-by-token in a separate `message.thinking` field with
+`message.content` empty until thinking finishes — verified by raw streaming call. The
+inline scan never matches, zero steps are collected, the thinking-trace re-query never
+fires, and recall_on collapses to recall_off. The request also never sends `"think": true`,
+so on these models reasoning may not be emitted at all. `OllamaChatRequest` has no `think`
+field; `OllamaStreamToken`/`OllamaChatMessage` have no `thinking` field.
+
+**Consequence for the thesis test.** The recall-on/off sweep cannot test opencaw's
+differentiator until the trace is wired through; an n=100 run as-is is structurally
+predetermined to show on==off and would only reconfirm the inertness. Sweep is blocked on
+the adapter fix.
+
+**Fix scope (confined to `ollama.rs`).** (1) Add `think` to `OllamaChatRequest`, gated —
+`think:true` on a non-reasoning model crashes llama-server (GGML_ASSERT, observed on
+gemma4). (2) Add `thinking: Option<String>` to the message/stream structs; in
+`thinking_with_steps` accumulate `message.thinking` deltas (split on `\n\n` for steps,
+stop when `content` begins) as the primary trace, keeping the inline `<think>` scan as a
+fallback. (3) In `complete()` prefer `message.thinking` over `split_thinking(content)`.
+Gate option: `/api/show` exposes a per-model `thinking` capability (non-heuristic,
+replaces the name match) — but it is imperfect (gemma4 advertises `thinking` yet crashes;
+phi4-reasoning omits it yet emits inline `<think>`), so the inline fallback must stay and
+an advertised-but-crashing model should surface an error, not be papered over.
+
+**Secondary, separate issue.** `cooperative_probes`/`supports_hidden_reasoning` is
+hard-coded false for all Ollama models (`adapter_factory.rs`: "enable after verifying with
+caw-bench-coop"), so `<probe>` instructions are never injected locally. That is a second
+cooperation channel; the trace fix above is independent and unblocks the headline
+mechanism on its own.
+
+**Caveat on workload choice.** sysdoc is single-token fact-lookup (CVE IDs, version
+strings) — a weak exercise of thinking-trace, which should help most on synthesis/
+exploration where reasoning reaches content initial retrieval missed. Once the trace is
+wired, the `opencaw` codebase workload is the stronger thesis test; a null on sysdoc alone
+would not disprove the thesis.
