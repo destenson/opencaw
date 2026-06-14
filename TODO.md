@@ -2,6 +2,8 @@
 
 Design: [docs/design.md](docs/design.md). Scope: [docs/scope.md](docs/scope.md). Settled decisions: [docs/DECISIONS.md](docs/DECISIONS.md).
 
+The following sections are in no particular order. Do not infer that high priority items are listed first.
+
 ## Validation & performance
 
 - Dogfood opencaw over this repo as a coding-agent context server (drive a real agent through caw-server against the repo index). The `code-agent` `caw-bench` workload (questions = agent mid-task info needs: signatures, trait bounds, struct fields, call sites; needle + judge scoring) needs expanded QA set and run the recall-on/off sweep.
