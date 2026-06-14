@@ -40,6 +40,3 @@ See [docs/getting-started.md](docs/getting-started.md) for adapter setup, enviro
 
 Development tracking is in [TODO.md](TODO.md).
 
-## License
-
-MIT
