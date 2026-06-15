@@ -62,7 +62,9 @@ Drive a real agent through `caw-server` against the repo index at a realistic bu
 
 ## Single next action
 
-Set `caw-server`'s default workspace budget to a realistic agent-sized value, independent of the bench's deliberately-tight `max_workspace_tokens=2000` study setting. The deterministic `code-agent` sweep shows the two recall-on regressions at 2k both vanish at 12k (on=off=1.0), so the eviction-to-stub losses are an artifact of the study budget, not a product defect — but the server must not inherit that budget. Then re-run `bench.sh code-agent -- --concurrency 1 --max-workspace-tokens <server-default>` as the regression gauge.
+✓ Done (2026-06-15): `caw-server`'s default `max_workspace_tokens` raised 2000→12000 to match the orchestrator default, so the proxy no longer ships the bench's deliberately-tight study budget (DECISIONS "Default workspace token budget").
+
+Next: progressive disclosure (step 3) — re-upgrade a stub to full content when a pinpoint query hits a file resident only as a stub. This is the durable fix for genuinely-constrained corpora, where the eviction-to-stub failure the 12000 default papers over on this small repo is real. The 2k `code-agent` sweep is the standing reproduction.
 
 ## How the docs relate
 

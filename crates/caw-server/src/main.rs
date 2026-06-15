@@ -38,7 +38,10 @@ struct Cli {
     max_candidates: usize,
 
     /// Hard cap on injected recall content (whitespace-split token count).
-    #[arg(long, default_value = "2000")]
+    /// Default is just large enough that normal recall is not clamped out; it is
+    /// not tuned to any upstream context window. Set it to fit your upstream
+    /// model's window (mirrors caw-orchestrator's DEFAULT_MAX_WORKSPACE_TOKENS).
+    #[arg(long, default_value = "12000")]
     max_workspace_tokens: usize,
 
     /// Retrieval backend. `hybrid` (default) fuses BM25 lexical scores with

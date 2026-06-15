@@ -114,6 +114,13 @@ pub struct DynamicRecallOrchestrator<R, E, V, P, M, S = ()> {
     pub evaluator: Option<SessionEvaluator>,
 }
 
+/// Default cap on recall content resident in the workspace, in whitespace-split
+/// tokens. Not a tuned value — just large enough that normal recall is not
+/// evicted to make room, unlike the deliberately-tiny budget the bench runs to
+/// force the eviction machinery to fire. The right value depends on the upstream
+/// context window, so hosts that know it should override.
+pub const DEFAULT_MAX_WORKSPACE_TOKENS: usize = 12_000;
+
 #[derive(Debug, Clone)]
 pub struct DynamicRecallConfig {
     /// Candidate pool size passed to ANN search. The load threshold — not
@@ -184,7 +191,7 @@ impl Default for DynamicRecallConfig {
         Self {
             max_candidates: 20,
             thresholds: RecallThresholds::default_hysteresis(),
-            max_workspace_tokens: 12_000,
+            max_workspace_tokens: DEFAULT_MAX_WORKSPACE_TOKENS,
             max_recall_iterations: 3,
             relevance_decay_rate: 0.8,
             enable_thinking_trace_recall: true,
