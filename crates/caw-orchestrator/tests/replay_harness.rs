@@ -17,7 +17,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use caw_adapters::{ReplayAdapter, ScriptedResponse};
 use caw_core::provenance::InMemoryProvenanceStore;
-use caw_core::{CawResult, ContentKind, EmbeddingProvider, RecallThresholds};
+use caw_core::{CawResult, ContentKind, EmbeddingProvider, RecallThresholds, Retriever};
+use caw_eval::SessionEvaluator;
 use caw_index::{HnswVectorIndex, SemanticRetriever, SqliteStubStore};
 use caw_ingest::{IngestionPipeline, SourceDocument};
 use caw_orchestrator::dynamic::{DynamicRecallConfig, DynamicRecallOrchestrator};
@@ -108,16 +109,16 @@ fn fixture_docs() -> Vec<SourceDocument> {
     ]
 }
 
-/// Write fixture docs under a temp corpus root (the store reads body text back
-/// from disk via recorded byte ranges) and build a retriever over them.
-fn build_retriever(
+/// Write `docs` under a temp corpus root (the store reads body text back from
+/// disk via recorded byte ranges) and build a retriever over them.
+fn build_retriever_from(
     dim: usize,
+    mut docs: Vec<SourceDocument>,
 ) -> (
     tempfile::TempDir,
     SemanticRetriever<HashEmbedder, SqliteStubStore, HnswVectorIndex>,
 ) {
     let corpus_root = tempfile::tempdir().expect("tempdir");
-    let mut docs = fixture_docs();
     for doc in &mut docs {
         let full = corpus_root.path().join(&doc.path);
         if let Some(parent) = full.parent() {
@@ -145,6 +146,15 @@ fn build_retriever(
         }
     }
     (corpus_root, retriever)
+}
+
+fn build_retriever(
+    dim: usize,
+) -> (
+    tempfile::TempDir,
+    SemanticRetriever<HashEmbedder, SqliteStubStore, HnswVectorIndex>,
+) {
+    build_retriever_from(dim, fixture_docs())
 }
 
 const USER_QUERY: &str =
@@ -246,5 +256,316 @@ fn thinking_trace_admits_stub_the_initial_query_missed() {
         with_trace.iter().any(|s| s == TELEMETRY_PATH),
         "the scripted reasoning trace mentions telemetry vocabulary, so trace-driven \
          recall must admit the telemetry doc the initial query missed; loaded = {with_trace:?}",
+    );
+}
+
+const TELEMETRY_QUERY: &str =
+    "how does the telemetry pipeline collect spans and forward them to the aggregator with sampling";
+
+/// Initial-query admission: a query aligned to a stub's vocabulary admits that
+/// stub and not the unrelated one. The telemetry query scores the telemetry doc
+/// 0.6605 and the auth doc 0.0769, so with the load threshold at 0.18 only
+/// telemetry is admitted — the mirror image of the auth case in the test above.
+#[test]
+fn initial_query_admits_the_aligned_stub_only() {
+    let dim = 256;
+    let (_corpus_root, retriever) = build_retriever(dim);
+
+    let config = DynamicRecallConfig {
+        max_candidates: 4,
+        thresholds: RecallThresholds {
+            load: 0.18,
+            unload: 0.1,
+        },
+        max_workspace_tokens: 8_000,
+        max_recall_iterations: 1,
+        enable_thinking_trace_recall: false,
+        enable_probe_recall: false,
+        enable_line_reference_recall: false,
+        ..Default::default()
+    };
+    let adapter = ReplayAdapter::new(
+        "replay",
+        vec![ScriptedResponse::answer_only("Spans are sampled and retained.")],
+    );
+
+    let mut orchestrator: DynamicRecallOrchestrator<_, _, _, _, _, SqliteStubStore> =
+        DynamicRecallOrchestrator::new(
+            retriever,
+            HashEmbedder::new(dim),
+            HnswVectorIndex::new(),
+            InMemoryProvenanceStore::default(),
+            adapter,
+            config,
+        );
+
+    orchestrator
+        .run_turn("", TELEMETRY_QUERY, &[], None)
+        .expect("run_turn");
+
+    let sources: Vec<&str> = orchestrator
+        .loaded
+        .iter()
+        .map(|f| f.locator.source.as_str())
+        .collect();
+    assert!(
+        sources.contains(&TELEMETRY_PATH),
+        "telemetry query should admit the telemetry doc; loaded = {sources:?}",
+    );
+    assert!(
+        !sources.contains(&AUTH_PATH),
+        "telemetry query should not admit the auth doc (scores 0.0769, below threshold); \
+         loaded = {sources:?}",
+    );
+}
+
+/// Eviction / hysteresis: a fragment admitted on turn 1 whose relevance is not
+/// re-engaged decays below the unload threshold and is evicted on turn 2. The
+/// scripted answers are deliberately low-overlap with the doc bodies so
+/// `refresh_relevance_scores` does not top the score back up. Thresholds were
+/// set from the observed decay trajectory (auth loads at 0.1949; relevance
+/// decays ×0.8 per pass to ~0.156 by end of turn 1 and ~0.125 at the start of
+/// turn 2), so unload=0.14 keeps auth through turn 1 and evicts it on turn 2.
+///
+/// Asserts both the loaded-set transition (auth present after turn 1, absent
+/// after turn 2) and the corroborating eviction event — state plus event is
+/// robust to the exact decay arithmetic.
+#[test]
+fn unengaged_fragment_decays_and_is_evicted_next_turn() {
+    let dim = 256;
+    let (_corpus_root, retriever) = build_retriever(dim);
+
+    let config = DynamicRecallConfig {
+        max_candidates: 4,
+        thresholds: RecallThresholds {
+            load: 0.18,
+            unload: 0.14,
+        },
+        max_workspace_tokens: 8_000,
+        max_recall_iterations: 1,
+        relevance_decay_rate: 0.8,
+        enable_thinking_trace_recall: false,
+        enable_probe_recall: false,
+        enable_line_reference_recall: false,
+        ..Default::default()
+    };
+    // Neutral answers: no doc vocabulary, so relevance is not refreshed.
+    let adapter = ReplayAdapter::new(
+        "replay",
+        vec![
+            ScriptedResponse::answer_only("The described behavior is supported."),
+            ScriptedResponse::answer_only("That is also configured as expected."),
+        ],
+    );
+
+    let mut orchestrator: DynamicRecallOrchestrator<_, _, _, _, _, SqliteStubStore> =
+        DynamicRecallOrchestrator::new(
+            retriever,
+            HashEmbedder::new(dim),
+            HnswVectorIndex::new(),
+            InMemoryProvenanceStore::default(),
+            adapter,
+            config,
+        )
+        .with_evaluator(SessionEvaluator::builder().build());
+
+    // Turn 1: auth query admits the auth doc.
+    orchestrator.run_turn("", USER_QUERY, &[], None).expect("turn 1");
+    let after_t1: Vec<String> = orchestrator
+        .loaded
+        .iter()
+        .map(|f| f.locator.source.clone())
+        .collect();
+    assert!(
+        after_t1.iter().any(|s| s == AUTH_PATH),
+        "auth doc should be loaded after turn 1; loaded = {after_t1:?}",
+    );
+
+    // Turn 2: an unrelated query. Auth is not re-engaged, so it decays out.
+    orchestrator
+        .run_turn("", TELEMETRY_QUERY, &[], None)
+        .expect("turn 2");
+    let after_t2: Vec<String> = orchestrator
+        .loaded
+        .iter()
+        .map(|f| f.locator.source.clone())
+        .collect();
+    assert!(
+        !after_t2.iter().any(|s| s == AUTH_PATH),
+        "auth doc should have been evicted by turn 2 after decaying below unload; \
+         loaded = {after_t2:?}",
+    );
+
+    let eval = orchestrator.take_evaluator().expect("evaluator");
+    assert!(
+        eval.eviction_count() >= 1,
+        "an eviction event should have been recorded; count = {}",
+        eval.eviction_count(),
+    );
+}
+
+const FLOOD_PATH: &str = "docs/observability.md";
+
+/// A single document large enough to split into more than `max_chunks_per_source`
+/// chunks, all sharing the same vocabulary so every chunk scores well on the
+/// aligned query.
+fn flood_doc() -> SourceDocument {
+    let mut content = String::from("# Observability Subsystem\n\n");
+    for i in 0..14 {
+        content.push_str(&format!(
+            "## Section {i}\n\nThe observability subsystem records spans emitted by instrumented \
+             services and forwards them through the collector to the aggregator. Sampling is \
+             head-based, retaining one percent of healthy traffic and the full set of error \
+             traces. Retention keeps raw spans for thirty days and rolled-up aggregates for a \
+             year. Each span carries a trace identifier, a parent reference, timing data, and \
+             structured attributes describing the operation that produced it.\n\n"
+        ));
+    }
+    SourceDocument {
+        path: FLOOD_PATH.to_string(),
+        content,
+        kind: ContentKind::Markdown,
+        mtime_unix_secs: 1_700_000_000,
+    }
+}
+
+/// Per-source flooding bound: when one file retrieves many chunks above
+/// threshold, at most `max_chunks_per_source` of them may occupy the loaded set.
+/// `max_candidates` is the default 20 (well above the cap) and
+/// `max_initial_fragments` is raised so the candidate-list gate does not fire —
+/// otherwise the cap would not be the binding constraint and the test could pass
+/// vacuously. The script does not name the file path and trace recall is off, so
+/// file-expansion does not exempt the cap.
+#[test]
+fn per_source_chunk_cap_bounds_loaded_chunks() {
+    let dim = 256;
+    let (_corpus_root, retriever) = build_retriever_from(dim, vec![flood_doc()]);
+
+    let max_chunks_per_source = 3;
+    let config = DynamicRecallConfig {
+        max_candidates: 20,
+        max_initial_fragments: 50,
+        max_loaded_fragments: 50,
+        thresholds: RecallThresholds {
+            load: 0.05,
+            unload: 0.02,
+        },
+        max_workspace_tokens: 100_000,
+        max_recall_iterations: 1,
+        max_chunks_per_source,
+        enable_thinking_trace_recall: false,
+        enable_probe_recall: false,
+        enable_line_reference_recall: false,
+        ..Default::default()
+    };
+    let adapter = ReplayAdapter::new(
+        "replay",
+        vec![ScriptedResponse::answer_only("Spans are sampled and retained.")],
+    );
+
+    let mut orchestrator: DynamicRecallOrchestrator<_, _, _, _, _, SqliteStubStore> =
+        DynamicRecallOrchestrator::new(
+            retriever,
+            HashEmbedder::new(dim),
+            HnswVectorIndex::new(),
+            InMemoryProvenanceStore::default(),
+            adapter,
+            config,
+        );
+
+    let query =
+        "how does the observability subsystem collect spans and forward them to the aggregator";
+    orchestrator.run_turn("", query, &[], None).expect("run_turn");
+
+    // The fixture must genuinely produce more chunks than the cap, or the bound
+    // is never exercised.
+    let total_chunks = orchestrator
+        .retriever
+        .chunk_ids_for_source(FLOOD_PATH)
+        .expect("chunk ids")
+        .len();
+    assert!(
+        total_chunks > max_chunks_per_source,
+        "fixture must split into more than {max_chunks_per_source} chunks to exercise the cap; \
+         got {total_chunks}",
+    );
+
+    let loaded_from_source = orchestrator
+        .loaded
+        .iter()
+        .filter(|f| f.locator.source == FLOOD_PATH)
+        .count();
+    assert!(
+        loaded_from_source > 0,
+        "some chunks of the aligned file should be admitted",
+    );
+    assert!(
+        loaded_from_source <= max_chunks_per_source,
+        "at most {max_chunks_per_source} chunks of one source may be loaded at once; \
+         loaded {loaded_from_source} of {total_chunks}",
+    );
+}
+
+/// Probe recall: a `<probe>…</probe>` marker in the model's answer is the model
+/// explicitly asking for missing content. The orchestrator extracts it, searches
+/// the corpus, and admits the match — recorded as a matched probe event.
+#[test]
+fn probe_marker_in_answer_admits_matching_content() {
+    let dim = 256;
+    let (_corpus_root, retriever) = build_retriever(dim);
+
+    let config = DynamicRecallConfig {
+        max_candidates: 4,
+        thresholds: RecallThresholds {
+            load: 0.18,
+            unload: 0.1,
+        },
+        max_workspace_tokens: 8_000,
+        max_recall_iterations: 1,
+        enable_thinking_trace_recall: false,
+        enable_probe_recall: true,
+        enable_line_reference_recall: false,
+        ..Default::default()
+    };
+    // The auth query admits auth; the answer then probes for telemetry content
+    // the initial query missed. Only probe recall can surface it here.
+    let adapter = ReplayAdapter::new(
+        "replay",
+        vec![ScriptedResponse::answer_only(
+            "Session tokens are validated. \
+             <probe>telemetry pipeline spans aggregator head-based sampling retention</probe>",
+        )],
+    );
+
+    let mut orchestrator: DynamicRecallOrchestrator<_, _, _, _, _, SqliteStubStore> =
+        DynamicRecallOrchestrator::new(
+            retriever,
+            HashEmbedder::new(dim),
+            HnswVectorIndex::new(),
+            InMemoryProvenanceStore::default(),
+            adapter,
+            config,
+        )
+        .with_evaluator(SessionEvaluator::builder().build());
+
+    orchestrator.run_turn("", USER_QUERY, &[], None).expect("run_turn");
+
+    let sources: Vec<String> = orchestrator
+        .loaded
+        .iter()
+        .map(|f| f.locator.source.clone())
+        .collect();
+    assert!(
+        sources.iter().any(|s| s == TELEMETRY_PATH),
+        "the probe names telemetry content, so probe recall must admit the telemetry doc; \
+         loaded = {sources:?}",
+    );
+
+    let eval = orchestrator.take_evaluator().expect("evaluator");
+    assert!(
+        eval.matched_probe_count() >= 1,
+        "a matched probe event should have been recorded; probes = {}, matched = {}",
+        eval.probe_count(),
+        eval.matched_probe_count(),
     );
 }
