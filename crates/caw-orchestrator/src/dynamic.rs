@@ -929,6 +929,13 @@ where
     /// only name a path it has been shown, so candidates are restricted to
     /// currently-loaded sources matched by literal path occurrence.
     fn process_file_expansion(&mut self, trace: &str) -> CawResult<()> {
+        // Dedup while preserving `self.loaded`'s order. A `HashSet` round-trip
+        // here randomizes iteration order per process, and because each
+        // mentioned file is expanded into cap-exempt full bodies under a fixed
+        // token budget, that order decides which files survive — making the
+        // loaded set non-reproducible across otherwise-identical runs. Use the
+        // same order-preserving dedup as the candidate-list mentioned pass.
+        let mut seen_sources = HashSet::new();
         let mentioned: Vec<String> = self
             .loaded
             .iter()
@@ -938,8 +945,7 @@ where
                 let norm = src.trim_start_matches("./");
                 trace.contains(norm)
             })
-            .collect::<HashSet<_>>()
-            .into_iter()
+            .filter(|src| seen_sources.insert(src.clone()))
             .collect();
 
         for source in mentioned {
