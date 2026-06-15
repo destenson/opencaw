@@ -76,6 +76,22 @@ if [[ " $* " != *" --judge-adapter "* ]]; then
   JUDGE_ARGS+=(--judge-adapter "${CAW_BENCH_JUDGE:-groq}")
 fi
 
+# Optionally run the ANSWER model on a fast remote adapter (e.g. groq) instead
+# of the slow local model, for quick iteration on the harness/instrument.
+# Local generation dominates wall time (tens of seconds per item); a remote
+# answer model cuts that to seconds. The local model stays the default because
+# it is usually the measurement target and the recall effect is model-specific
+# — opt in per run with CAW_BENCH_ANSWER=groq (optionally
+# CAW_BENCH_ANSWER_MODEL=<model>, e.g. llama-3.3-70b-versatile). Skipped if the
+# caller already passed --answer-adapter.
+ANSWER_ARGS=()
+if [[ " $* " != *" --answer-adapter "* ]] && [ -n "${CAW_BENCH_ANSWER:-}" ]; then
+  ANSWER_ARGS+=(--answer-adapter "$CAW_BENCH_ANSWER")
+  if [ -n "${CAW_BENCH_ANSWER_MODEL:-}" ]; then
+    ANSWER_ARGS+=(--answer-model "$CAW_BENCH_ANSWER_MODEL")
+  fi
+fi
+
 GPU="$(bash "$SCRIPT_DIR/pick-gpu.sh")"
 if [ -n "$GPU" ]; then
   echo "bench: pinning embedder to GPU $GPU (freest)" >&2
@@ -87,4 +103,5 @@ cd "$ROOT"
 CUDA_VISIBLE_DEVICES="$GPU" cargo run --release --quiet -p caw-bench --bin caw-bench -- \
   "${WORKLOAD_ARGS[@]}" \
   "${JUDGE_ARGS[@]}" \
+  "${ANSWER_ARGS[@]}" \
   "$@"
