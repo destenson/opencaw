@@ -34,12 +34,42 @@ pub struct ModeSummary {
     pub mean_other_ms: f32,
 }
 
+/// Paired (recall_on − recall_off) statistics for one metric, computed over
+/// items that have a result in *both* modes.
+///
+/// The `mean_delta` equals the difference of per-mode means — pairing does not
+/// move the point estimate. Its value is `std_error`: because each item
+/// contributes a single `on − off` difference, item-to-item difficulty (the
+/// usual dominant variance) cancels, so the standard error of the paired delta
+/// is far smaller than the unpaired `sqrt(var_on/n + var_off/n)`. A small
+/// effect that is invisible in the diff-of-means noise floor becomes
+/// resolvable here. `wins`/`ties`/`losses` give a distribution-free read of
+/// how consistently recall helped, not just the average.
+#[derive(Debug, Serialize)]
+pub struct PairedDelta {
+    pub metric: String,
+    /// Number of items present in both modes (the paired sample size).
+    pub n_paired: usize,
+    pub mean_delta: f32,
+    /// Sample standard deviation of the per-item deltas (n−1). 0 when n < 2.
+    pub std_delta: f32,
+    /// Standard error of `mean_delta` = `std_delta / sqrt(n)`. 0 when n < 2.
+    pub std_error: f32,
+    /// Items where on > off / on == off / on < off.
+    pub wins: usize,
+    pub ties: usize,
+    pub losses: usize,
+}
+
 #[derive(Debug, Serialize)]
 pub struct BenchReport {
     pub workload: String,
     pub answer_model: String,
     pub judge_model: String,
     pub summaries: Vec<ModeSummary>,
+    /// Per-metric paired (on − off) deltas with standard errors. Empty when a
+    /// single mode was run (e.g. `--only-mode`), since pairing needs both.
+    pub paired_deltas: Vec<PairedDelta>,
     /// Per-item results so downstream analysis can slice by question class,
     /// latency, or any other axis without re-running.
     pub items: Vec<SerializableItem>,
@@ -116,7 +146,88 @@ pub fn build_report(
         answer_model: answer_model.to_string(),
         judge_model: judge_model.to_string(),
         summaries,
+        paired_deltas: compute_paired_deltas(results),
         items: results.iter().map(SerializableItem::from).collect(),
+    }
+}
+
+/// Pair each item's recall_on result with its recall_off result (matched on
+/// `item_id`) and compute per-metric paired deltas. Items present in only one
+/// mode are skipped. Pair order follows first appearance in `results` so the
+/// output is deterministic.
+fn compute_paired_deltas(results: &[ItemResult]) -> Vec<PairedDelta> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut on: HashMap<&str, &ItemResult> = HashMap::new();
+    let mut off: HashMap<&str, &ItemResult> = HashMap::new();
+    for r in results {
+        match r.mode {
+            RecallMode::On => {
+                on.insert(r.item_id.as_str(), r);
+            }
+            RecallMode::Off => {
+                off.insert(r.item_id.as_str(), r);
+            }
+        }
+    }
+
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut pairs: Vec<(&ItemResult, &ItemResult)> = Vec::new();
+    for r in results {
+        if !seen.insert(r.item_id.as_str()) {
+            continue;
+        }
+        if let (Some(o), Some(f)) = (on.get(r.item_id.as_str()), off.get(r.item_id.as_str())) {
+            pairs.push((o, f));
+        }
+    }
+    if pairs.is_empty() {
+        return Vec::new();
+    }
+
+    vec![
+        paired_delta_for("answer_score", &pairs, |r| r.answer_score),
+        paired_delta_for("recall_at_k", &pairs, |r| r.recall_at_k),
+        paired_delta_for("precision_at_1", &pairs, |r| r.precision_at_1),
+        paired_delta_for("mrr", &pairs, |r| r.mrr),
+    ]
+}
+
+/// Compute the paired (on − off) statistics for one metric. `pairs` is
+/// `(on, off)` per item; `extract` pulls the metric off a result.
+fn paired_delta_for(
+    metric: &str,
+    pairs: &[(&ItemResult, &ItemResult)],
+    extract: impl Fn(&ItemResult) -> f32,
+) -> PairedDelta {
+    let n = pairs.len();
+    let deltas: Vec<f32> = pairs
+        .iter()
+        .map(|(on, off)| extract(on) - extract(off))
+        .collect();
+    let mean = deltas.iter().sum::<f32>() / n as f32;
+    // Sample std (n−1): we're estimating the SE of the mean, not describing a
+    // census. Undefined for n < 2, so report 0 there.
+    let (std_delta, std_error) = if n < 2 {
+        (0.0, 0.0)
+    } else {
+        let var = deltas.iter().map(|d| (d - mean).powi(2)).sum::<f32>() / (n as f32 - 1.0);
+        let std = var.sqrt();
+        (std, std / (n as f32).sqrt())
+    };
+    let wins = deltas.iter().filter(|&&d| d > 0.0).count();
+    let losses = deltas.iter().filter(|&&d| d < 0.0).count();
+    let ties = n - wins - losses;
+
+    PairedDelta {
+        metric: metric.to_string(),
+        n_paired: n,
+        mean_delta: mean,
+        std_delta,
+        std_error,
+        wins,
+        ties,
+        losses,
     }
 }
 
@@ -253,6 +364,23 @@ pub fn format_summary(report: &BenchReport) -> String {
             "  Δ latency ms:         {:+.0}\n",
             on.mean_latency_ms - off.mean_latency_ms
         ));
+    }
+
+    if let Some(first) = report.paired_deltas.first() {
+        out.push_str(&format!(
+            "\n=== Paired delta (on − off, per item; n={}) ===\n",
+            first.n_paired
+        ));
+        out.push_str(
+            "  item difficulty cancels — mean ± standard error.\n  \
+             W/T/L = items where on>off / on==off / on<off.\n",
+        );
+        for d in &report.paired_deltas {
+            out.push_str(&format!(
+                "  Δ {:<14} {:+.3} ± {:.3}  (σ={:.3}, {}W/{}T/{}L)\n",
+                d.metric, d.mean_delta, d.std_error, d.std_delta, d.wins, d.ties, d.losses,
+            ));
+        }
     }
 
     out
