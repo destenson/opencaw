@@ -105,6 +105,7 @@ The following sections are in no particular order. Do not infer that high priori
 
 - Tool call support: visible tool output + proactive context injection
 - Detect git/repo references in prompts; link stubs to git status/blame/branch/log
+- Git-aware workspace (ambient, not prompt-triggered): make the model implicitly aware of repository state and its changes across a session, so that when `git status` changes (files staged/modified/added, branch switched, commits made) the workspace reflects it without the user having to ask. Distinct from the reactive "detect git references in prompts" item above: this is a background signal feeding the curation loop (e.g. re-ingest/mark-stale changed files, surface a current-state summary like branch + dirty paths). Open questions to resolve before building: where the polling/notification of state change lives (the library is sync today — see Adapters/async), how to expose it without baking project-specific git heuristics into the general-purpose library (likely a generic "external state source" hook the host wires git into), and how a state-change event should interact with eviction/consolidation. Future work, not v0.1.
 
 ## Library hygiene
 
