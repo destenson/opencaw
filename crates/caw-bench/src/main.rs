@@ -251,25 +251,9 @@ fn main() -> Result<()> {
     let judge_model = cli.judge_model.as_deref()
         .unwrap_or_else(|| cli.judge_adapter.default_model(ModelRole::Judge))
         .to_string();
-
-    let judge_inner = adapter_factory::build(
-        AdapterSpec {
-            kind: cli.judge_adapter,
-            model: &judge_model,
-            ollama_url: &cli.ollama_url,
-            openai_url: &cli.openai_url,
-            temperature: Some(cli.judge_temperature),
-            num_ctx: None,
-            num_predict: None,
-            seed: Some(cli.seed),
-        },
-        &runtime,
-    )?;
-    // One counter for the judge across the whole run; per-item judge time is
-    // the snapshot delta around each run_item call.
-    let judge_counters = caw_bench::timing::PhaseCounters::new();
-    let judge_adapter =
-        caw_bench::timing::TimingAdapter::new(judge_inner, judge_counters.clone());
+    // The judge runs in a dedicated phase after all generation completes
+    // (see `judge_all`), so no judge adapter is built here — each judged item
+    // gets its own adapter in that phase so the remote judge can fan out.
 
     let modes: Vec<RecallMode> = match cli.only_mode {
         Some(m) => vec![m.into()],
@@ -314,7 +298,6 @@ fn main() -> Result<()> {
             &cfg,
             &cli,
             &answer_model,
-            &judge_model,
             &runtime,
             prebuilt.as_ref(),
             total,
@@ -359,37 +342,24 @@ fn main() -> Result<()> {
                 let answer_adapter: Box<dyn caw_core::ModelAdapter> = Box::new(
                     caw_bench::timing::TimingAdapter::new(answer_inner, answer_counters.clone()),
                 );
-                let (_, judge_ms_before) = judge_counters.snapshot();
 
-                match run_item(
-                    item,
-                    *mode,
-                    &cfg,
-                    answer_adapter,
-                    &judge_adapter,
-                    prebuilt.as_ref(),
-                ) {
+                match run_item(item, *mode, &cfg, answer_adapter, prebuilt.as_ref()) {
                     Ok(mut result) => {
                         let (gen_calls, gen_ms) = answer_counters.snapshot();
-                        let (_, judge_ms_after) = judge_counters.snapshot();
                         result.gen_ms = gen_ms;
                         result.gen_calls = gen_calls;
-                        result.judge_ms = judge_ms_after.saturating_sub(judge_ms_before);
-                        let other_ms = result
-                            .latency_ms
-                            .saturating_sub(result.gen_ms)
-                            .saturating_sub(result.judge_ms);
+                        // judge_ms is filled later, in the post-gen judge phase.
+                        let other_ms =
+                            result.latency_ms.saturating_sub(result.gen_ms);
                         eprintln!(
-                            "  score={:.2} recall@k={:.2} ctx_eff={:.2} loaded={} | \
-                            {}ms = gen {}ms(x{}) + judge {}ms + other {}ms",
-                            result.answer_score,
+                            "  recall@k={:.2} ctx_eff={:.2} loaded={} | \
+                            {}ms = gen {}ms(x{}) + other {}ms (judge: pending)",
                             result.recall_at_k,
                             result.context_efficiency,
                             result.loaded_paths.len(),
                             result.latency_ms,
                             result.gen_ms,
                             result.gen_calls,
-                            result.judge_ms,
                             other_ms,
                         );
                         if let Some(writer) = trace_writer.as_mut() {
@@ -419,6 +389,11 @@ fn main() -> Result<()> {
         Workload::CodeAgent => "codeagent",
         Workload::Sysdoc => "sysdoc",
     };
+
+    // Post-generation judge phase: score every JudgeAgainst item now that all
+    // answers exist. Generation never blocked on the judge; here the judge
+    // calls fan out in parallel (the remote groq judge parallelizes freely).
+    judge_all(&mut results, &cli, &judge_model, &runtime)?;
 
     let report = build_report(workload_name, &answer_model, &judge_model, &results);
     let json = serde_json::to_string_pretty(&report).context("serialize report")?;
@@ -452,7 +427,6 @@ fn run_concurrent(
     cfg: &RunnerConfig,
     cli: &Cli,
     answer_model: &str,
-    judge_model: &str,
     runtime: &std::sync::Arc<tokio::runtime::Runtime>,
     prebuilt: Option<&PrebuiltIndex>,
     total: usize,
@@ -498,26 +472,6 @@ fn run_concurrent(
                         return None;
                     }
                 };
-                let judge = match adapter_factory::build(
-                    AdapterSpec {
-                        kind: cli.judge_adapter,
-                        model: judge_model,
-                        ollama_url: &cli.ollama_url,
-                        openai_url: &cli.openai_url,
-                        temperature: Some(cli.judge_temperature),
-                        num_ctx: None,
-                        num_predict: None,
-                        seed: Some(cli.seed),
-                    },
-                    runtime,
-                ) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        eprintln!("  error building judge adapter: {:#}", e);
-                        return None;
-                    }
-                };
-
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
                 eprintln!(
                     "[{n}/{total}] {} [{}] — {}",
@@ -526,12 +480,11 @@ fn run_concurrent(
                     truncate(&item.question, 80)
                 );
 
-                match run_item(item, mode, cfg, answer, judge.as_ref(), prebuilt) {
+                match run_item(item, mode, cfg, answer, prebuilt) {
                     Ok(result) => {
                         eprintln!(
-                            "  score={:.2} recall@k={:.2} ctx_eff={:.2} loaded={} | {}ms \
-                             (concurrent: per-phase timing omitted)",
-                            result.answer_score,
+                            "  recall@k={:.2} ctx_eff={:.2} loaded={} | {}ms \
+                             (concurrent: per-phase timing omitted; judge: pending)",
                             result.recall_at_k,
                             result.context_efficiency,
                             result.loaded_paths.len(),
@@ -563,6 +516,108 @@ fn run_concurrent(
         }
     }
     results.extend(collected.into_iter().map(|(_, r)| r));
+    Ok(())
+}
+
+/// Score every `JudgeAgainst` item that generation left pending, in one
+/// parallel phase after all answers exist. Each item builds its own judge
+/// adapter wrapped in a per-item `TimingAdapter`, so the recorded `judge_ms`
+/// is that call's own latency and stays valid even though calls overlap.
+///
+/// A judge failure is logged and the item left `judge_pending` rather than
+/// aborting the run — one malformed judge response can't discard a whole
+/// generation pass (CLAUDE.md: log and continue, don't hide from the dev).
+///
+/// Fan-out is independent of `--concurrency` (which gates *generation*): the
+/// judge is a remote call that parallelizes freely, so even a serial
+/// generation run — concurrency 1, used to keep a local answer model from
+/// batching — still judges in parallel.
+fn judge_all(
+    results: &mut [ItemResult],
+    cli: &Cli,
+    judge_model: &str,
+    runtime: &std::sync::Arc<tokio::runtime::Runtime>,
+) -> Result<()> {
+    use rayon::prelude::*;
+
+    let pending = results.iter().filter(|r| r.judge_pending).count();
+    if pending == 0 {
+        return Ok(());
+    }
+
+    // Remote-judge fan-out floor so a serial-generation run still judges in
+    // parallel; honor a larger --concurrency if the user set one. 4 is the
+    // default generation concurrency, a known-safe groq fan-out width.
+    const MIN_JUDGE_WORKERS: usize = 4;
+    let judge_workers = cli.concurrency.max(MIN_JUDGE_WORKERS);
+    eprintln!(
+        "\njudge phase: scoring {} pending item(s) with {} ({}-way parallel)",
+        pending, judge_model, judge_workers
+    );
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(judge_workers)
+        .build()
+        .context("build judge thread pool")?;
+
+    pool.install(|| {
+        results.par_iter_mut().for_each(|result| {
+            if !result.judge_pending {
+                return;
+            }
+            let judge_inner = match adapter_factory::build(
+                AdapterSpec {
+                    kind: cli.judge_adapter,
+                    model: judge_model,
+                    ollama_url: &cli.ollama_url,
+                    openai_url: &cli.openai_url,
+                    temperature: Some(cli.judge_temperature),
+                    num_ctx: None,
+                    num_predict: None,
+                    seed: Some(cli.seed),
+                },
+                runtime,
+            ) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!(
+                        "  judge adapter build failed for {} [{}]: {:#}",
+                        result.item_id,
+                        result.mode.as_str(),
+                        e
+                    );
+                    return;
+                }
+            };
+            let counters = caw_bench::timing::PhaseCounters::new();
+            let judge = caw_bench::timing::TimingAdapter::new(judge_inner, counters.clone());
+            match caw_bench::judge::judge_answer(&judge, &result.answer, &result.reference_answer) {
+                Ok(verdict) => {
+                    let (_, judge_ms) = counters.snapshot();
+                    result.answer_score = verdict.score;
+                    result.judge_rationale = verdict.rationale;
+                    result.judge_ms = judge_ms;
+                    result.judge_pending = false;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "  judge failed for {} [{}] (left unscored): {:#}",
+                        result.item_id,
+                        result.mode.as_str(),
+                        e
+                    );
+                }
+            }
+        });
+    });
+
+    let still_pending = results.iter().filter(|r| r.judge_pending).count();
+    if still_pending > 0 {
+        eprintln!(
+            "  warning: {} item(s) remain unscored after the judge phase",
+            still_pending
+        );
+    }
     Ok(())
 }
 

@@ -12,7 +12,6 @@ use caw_index::{
 use caw_ingest::{IngestionPipeline, SourceDocument};
 use caw_orchestrator::dynamic::{DynamicRecallConfig, DynamicRecallOrchestrator};
 
-use crate::judge::{JudgeVerdict, judge_answer};
 use crate::shared::{ReadOnlyStore, SharedEmbedder, SharedIndex, SharedStore};
 use crate::workload::{RecallMode, Scoring, WorkloadItem};
 
@@ -211,6 +210,15 @@ pub struct ItemResult {
     pub answer_score: f32,
     /// Free-form judge rationale (JudgeAgainst only; empty for ContainsNeedle).
     pub judge_rationale: String,
+    /// True between generation and the post-gen judge phase for items whose
+    /// scoring needs a model judge (`JudgeAgainst`). Generation leaves
+    /// `answer_score`/`judge_rationale` unset and flags the item here; the
+    /// judge phase scores it and clears the flag. `ContainsNeedle` items are
+    /// scored inline (a local string check, no model call) and are never
+    /// pending. Defaults to false so a pre-existing trace deserializes as
+    /// already-judged.
+    #[serde(default)]
+    pub judge_pending: bool,
     /// Wall time for this item (ms).
     pub latency_ms: u64,
     /// Answer-model generation time (ms) within this item — the sum of all
@@ -252,12 +260,11 @@ pub fn run_item(
     mode: RecallMode,
     cfg: &RunnerConfig,
     answer_adapter: Box<dyn ModelAdapter>,
-    judge_adapter: &dyn ModelAdapter,
     prebuilt: Option<&PrebuiltIndex>,
 ) -> Result<ItemResult> {
     match prebuilt {
-        Some(idx) => run_item_shared(item, mode, cfg, answer_adapter, judge_adapter, idx),
-        None => run_item_fresh(item, mode, cfg, answer_adapter, judge_adapter),
+        Some(idx) => run_item_shared(item, mode, cfg, answer_adapter, idx),
+        None => run_item_fresh(item, mode, cfg, answer_adapter),
     }
 }
 
@@ -268,7 +275,6 @@ fn run_item_fresh(
     mode: RecallMode,
     cfg: &RunnerConfig,
     answer_adapter: Box<dyn ModelAdapter>,
-    judge_adapter: &dyn ModelAdapter,
 ) -> Result<ItemResult> {
     let started = std::time::Instant::now();
 
@@ -361,7 +367,6 @@ fn run_item_fresh(
         &loaded,
         response.answer,
         &stub_summaries,
-        judge_adapter,
     )
 }
 
@@ -372,7 +377,6 @@ fn run_item_shared(
     mode: RecallMode,
     cfg: &RunnerConfig,
     answer_adapter: Box<dyn ModelAdapter>,
-    judge_adapter: &dyn ModelAdapter,
     prebuilt: &PrebuiltIndex,
 ) -> Result<ItemResult> {
     let started = std::time::Instant::now();
@@ -424,7 +428,6 @@ fn run_item_shared(
         &loaded,
         response.answer,
         &prebuilt.stub_summaries,
-        judge_adapter,
     )
 }
 
@@ -437,7 +440,6 @@ fn finalize_result(
     loaded: &[caw_core::RecallFragment],
     answer: String,
     stub_summaries: &HashMap<StubId, String>,
-    judge_adapter: &dyn ModelAdapter,
 ) -> Result<ItemResult> {
     let loaded_paths: Vec<String> = loaded.iter().map(|f| f.locator.source.clone()).collect();
     let metrics = retrieval_metrics(&loaded_paths, &item.expected_paths);
@@ -453,7 +455,10 @@ fn finalize_result(
     let index_pool_tokens: usize = stub_summaries.values().map(|s| estimate_tokens(s)).sum();
     let false_recall_rate = false_recall_rate_heuristic(loaded, stub_summaries);
 
-    let (answer_score, judge_rationale) = score_answer(&item.scoring, &answer, judge_adapter)?;
+    // Model judging (JudgeAgainst) is deferred to the post-generation phase
+    // so the generation loop never blocks on a remote judge call. Local
+    // needle scoring is free, so it stays inline.
+    let (answer_score, judge_rationale, judge_pending) = score_local(&item.scoring, &answer);
 
     let reference_answer = match &item.scoring {
         Scoring::JudgeAgainst { reference_answer } => reference_answer.clone(),
@@ -491,6 +496,7 @@ fn finalize_result(
         false_recall_rate,
         answer_score,
         judge_rationale,
+        judge_pending,
         latency_ms: started.elapsed().as_millis() as u64,
         // Phase timings are populated by the caller (main.rs) from the
         // TimingAdapter counters after run_item returns; runner has no handle
@@ -678,20 +684,21 @@ fn estimate_tokens(text: &str) -> usize {
     count_tokens_cl100k(text)
 }
 
-fn score_answer(
-    scoring: &Scoring,
-    answer: &str,
-    judge_adapter: &dyn ModelAdapter,
-) -> Result<(f32, String)> {
+/// Score what can be scored without a model. Returns
+/// `(answer_score, judge_rationale, judge_pending)`.
+///
+/// `ContainsNeedle` is a local substring check, so it's scored here and is
+/// never pending. `JudgeAgainst` needs a model judge, which runs in the
+/// post-generation phase — so this leaves the score at 0.0 and marks the
+/// item pending. The 0.0 is a placeholder that the judge phase overwrites
+/// before any report reads it; `judge_pending` is the authoritative
+/// "not yet scored" signal, not the 0.0.
+fn score_local(scoring: &Scoring, answer: &str) -> (f32, String, bool) {
     match scoring {
         Scoring::ContainsNeedle { needle } => {
             let pass = answer.to_lowercase().contains(&needle.to_lowercase());
-            Ok((if pass { 1.0 } else { 0.0 }, String::new()))
+            (if pass { 1.0 } else { 0.0 }, String::new(), false)
         }
-        Scoring::JudgeAgainst { reference_answer } => {
-            let verdict: JudgeVerdict = judge_answer(judge_adapter, answer, reference_answer)
-                .context("judge invocation failed")?;
-            Ok((verdict.score, verdict.rationale))
-        }
+        Scoring::JudgeAgainst { .. } => (0.0, String::new(), true),
     }
 }
