@@ -578,8 +578,14 @@ where
                     "explanation query — bypassing candidate-list gate, loading stubs directly"
                 );
             }
+            // Coverage-first: give every distinct source its best chunk before
+            // any source gets a second, so a multi-chunk non-gold file can't take
+            // the head and exhaust the budget before a distinct gold source is
+            // admitted. Depth is preserved — once each source is represented, the
+            // remainder stays in score order.
+            let ordered = coverage_first_order(initial_hits, |hit| hit.stub.path.as_str());
             self.load_fragments(
-                initial_hits
+                ordered
                     .into_iter()
                     .map(|hit| (hit.stub.id, hit.score))
                     .collect(),
@@ -1443,6 +1449,12 @@ where
     }
 
     fn load_fragments(&mut self, hits: Vec<(StubId, f32)>, mode: LoadMode) -> CawResult<()> {
+        // `hits` arrive in score-descending order; admission below fills the
+        // workspace greedily until the token budget or per-source cap stops it.
+        // Pure score order lets one multi-chunk source take the head and exhaust
+        // the budget before a lower-ranked but distinct source is reached — the
+        // "gold buried in load order" failure. Reordering happens at the call
+        // site (coverage_first_order) where the source path is still known.
         let history_budget = (self.config.max_workspace_tokens as f32
             * self.config.session_history_budget_fraction) as usize;
         let mut current_history_tokens: usize = self
@@ -1640,6 +1652,26 @@ impl<R, E, V, P: Default, M, S> DynamicRecallOrchestrator<R, E, V, P, M, S> {
         self.relevance_scores.clear();
         self.provenance = P::default();
     }
+}
+
+/// Reorder ranked hits so each distinct source's first (highest-ranked) hit
+/// comes before any source's second hit, preserving the input's relative order
+/// within each group. "Coverage first, then depth": every source is represented
+/// once in rank order, then the remaining chunks follow in rank order. Stable,
+/// deterministic, and source-agnostic (the caller supplies the source key).
+fn coverage_first_order<T>(hits: Vec<T>, source_of: impl Fn(&T) -> &str) -> Vec<T> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut first: Vec<T> = Vec::with_capacity(hits.len());
+    let mut rest: Vec<T> = Vec::new();
+    for hit in hits {
+        if seen.insert(source_of(&hit).to_string()) {
+            first.push(hit);
+        } else {
+            rest.push(hit);
+        }
+    }
+    first.extend(rest);
+    first
 }
 
 fn term_overlap_score(context: &str, content: &str) -> f32 {
