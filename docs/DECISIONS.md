@@ -66,6 +66,8 @@ Prior conversation turns are not workspace stubs. They serve a different purpose
 
 Prior session responses (from earlier sessions, not the current one) are compressed before embedding. A 400-token response that outranks workspace stubs is not continuity — it is the current session reading from its own prior output rather than from the actual project.
 
+Concretely in the orchestrator: the `vector_index` field is the session-history index only (this session's turns plus any prior-session stubs from `with_session`). All *corpus* recall — the initial query, probes, and thinking-trace recall — goes through the `retriever`. Trace recall therefore queries the retriever for corpus matches and `vector_index` only for session history, and callers must not pre-populate `vector_index` with the corpus. (An earlier bench wiring left that index empty while trace recall searched only it, which made thinking-trace recall inert against the corpus.)
+
 ### Intent classification changes retrieval strategy
 
 The intent classifier exists to adapt retrieval to query type. An inventory query ("how many todos are left?") requires document-level coverage of TODO.md; similarity search will return the single most-matching chunk, which is never sufficient to answer a count. A status query needs the overview documents. An explanation query needs documentation in full-content mode, not outline-only. Classification that doesn't change behavior is waste.

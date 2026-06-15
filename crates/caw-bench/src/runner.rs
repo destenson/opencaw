@@ -328,17 +328,21 @@ fn run_item_fresh(
     }
 
     let retriever = SemanticRetriever::new(embedder, store, vector_index);
-    let trace_embedder =
-        FastEmbedProvider::bge_small().context("initialize bge-small for trace")?;
-    let trace_index = HnswVectorIndex::new();
+    // The orchestrator's own embedder + index serve session-history recall only;
+    // corpus recall (including thinking-trace recall) goes through the retriever
+    // above. A bench item is a single turn with no session history, so the index
+    // starts and stays empty.
+    let session_embedder =
+        FastEmbedProvider::bge_small().context("initialize bge-small for session recall")?;
+    let session_index = HnswVectorIndex::new();
     let provenance = InMemoryProvenanceStore::default();
 
     let config = orchestrator_config(mode, cfg);
     let mut orchestrator: DynamicRecallOrchestrator<_, _, _, _, _, SqliteStubStore> =
         DynamicRecallOrchestrator::new(
             retriever,
-            trace_embedder,
-            trace_index,
+            session_embedder,
+            session_index,
             provenance,
             answer_adapter,
             config,
@@ -383,11 +387,13 @@ fn run_item_shared(
         prebuilt.index.clone(),
     );
 
-    // Trace recall uses a distinct embedder + index per turn; the index is
-    // always per-item (trace content is per-turn), but the embedder can be
-    // the same bge-small instance — the orchestrator serializes its calls.
-    let trace_embedder = prebuilt.embedder.clone();
-    let trace_index = HnswVectorIndex::new();
+    // The orchestrator's own embedder + index serve session-history recall only;
+    // corpus recall (including thinking-trace recall) goes through the retriever
+    // above. A bench item is a single turn with no session history, so the index
+    // is per-item and stays empty. The embedder can be the shared bge-small
+    // instance — the orchestrator serializes its calls.
+    let session_embedder = prebuilt.embedder.clone();
+    let session_index = HnswVectorIndex::new();
     let provenance = InMemoryProvenanceStore::default();
 
     let config = orchestrator_config(mode, cfg);
@@ -398,8 +404,8 @@ fn run_item_shared(
     let mut orchestrator: DynamicRecallOrchestrator<_, _, _, _, _, ReadOnlyStore<SqliteStubStore>> =
         DynamicRecallOrchestrator::new(
             retriever,
-            trace_embedder,
-            trace_index,
+            session_embedder,
+            session_index,
             provenance,
             answer_adapter,
             config,

@@ -149,8 +149,10 @@ fn run_item_coop(
         ReadOnlyStore::new(&prebuilt.store),
         prebuilt.index.clone(),
     );
-    let trace_embedder = prebuilt.embedder.clone();
-    let trace_index = HnswVectorIndex::new();
+    // Orchestrator's own embedder + index are for session-history recall only;
+    // corpus recall goes through the retriever. Single-turn item, so empty.
+    let session_embedder = prebuilt.embedder.clone();
+    let session_index = HnswVectorIndex::new();
     let provenance = InMemoryProvenanceStore::default();
 
     use caw_core::RecallThresholds;
@@ -194,8 +196,8 @@ fn run_item_coop(
     let mut orchestrator: DynamicRecallOrchestrator<_, _, _, _, _, ReadOnlyStore<SqliteStubStore>> =
         DynamicRecallOrchestrator::new(
             retriever,
-            trace_embedder,
-            trace_index,
+            session_embedder,
+            session_index,
             provenance,
             adapter,
             config,

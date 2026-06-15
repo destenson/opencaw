@@ -4,6 +4,7 @@ use caw_core::{
 };
 use std::fmt::Write as FmtWrite;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 pub mod adapter_factory;
@@ -86,6 +87,121 @@ impl ModelAdapter for MockAdapter {
                 self.name, req.user, grounding,
             ),
             thinking: None,
+            usage: None,
+        })
+    }
+}
+
+/// One scripted model turn: the reasoning trace the orchestrator reads as a
+/// retrieval signal, plus the visible answer.
+#[derive(Debug, Clone, Default)]
+pub struct ScriptedResponse {
+    pub thinking: Option<String>,
+    pub answer: String,
+}
+
+impl ScriptedResponse {
+    /// A turn with a reasoning trace and an answer.
+    pub fn new(thinking: impl Into<String>, answer: impl Into<String>) -> Self {
+        Self {
+            thinking: Some(thinking.into()),
+            answer: answer.into(),
+        }
+    }
+
+    /// A turn with an answer but no separate reasoning trace.
+    pub fn answer_only(answer: impl Into<String>) -> Self {
+        Self {
+            thinking: None,
+            answer: answer.into(),
+        }
+    }
+}
+
+/// Deterministic adapter that replays a fixed script of responses on successive
+/// `complete()` calls. With no live model, the multi-pass recall trajectory is
+/// fully determined by the script, so the orchestrator's load/evict/probe
+/// decisions become exactly assertable — this is the instrument that lets the
+/// replay harness test the recall mechanism without the nondeterminism of a
+/// real LLM.
+///
+/// `supports_visible_reasoning` is set so the orchestrator treats `thinking` as
+/// the reasoning trace driving trace-recall, mirroring a visible-reasoning model.
+pub struct ReplayAdapter {
+    name: String,
+    caps: ModelCapabilities,
+    script: Vec<ScriptedResponse>,
+    next: AtomicUsize,
+}
+
+impl ReplayAdapter {
+    pub fn new(name: impl Into<String>, script: Vec<ScriptedResponse>) -> Self {
+        Self {
+            name: name.into(),
+            caps: ModelCapabilities {
+                supports_visible_reasoning: true,
+                ..Default::default()
+            },
+            script,
+            next: AtomicUsize::new(0),
+        }
+    }
+
+    /// How many completions have been served. Lets a test assert the exact
+    /// number of model calls a turn made.
+    pub fn calls(&self) -> usize {
+        self.next.load(Ordering::Relaxed)
+    }
+
+    /// Return the next scripted response and advance the counter. The
+    /// orchestrator may call `complete` a variable number of times per turn
+    /// (candidate-list re-completion, refinement iterations), so once the
+    /// script is exhausted the last entry is repeated — the test scripts the
+    /// turns that matter and the trailing entry stands in for any extra passes.
+    fn advance(&self) -> ScriptedResponse {
+        let idx = self.next.fetch_add(1, Ordering::Relaxed);
+        self.script
+            .get(idx)
+            .or_else(|| self.script.last())
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+impl ModelAdapter for ReplayAdapter {
+    fn model_name(&self) -> &str {
+        &self.name
+    }
+
+    fn capabilities(&self) -> ModelCapabilities {
+        self.caps
+    }
+
+    fn complete(&self, _req: CompletionRequest) -> CawResult<CompletionResponse> {
+        let r = self.advance();
+        Ok(CompletionResponse {
+            answer: r.answer,
+            thinking: r.thinking,
+            usage: None,
+        })
+    }
+
+    fn thinking_with_steps(
+        &self,
+        _req: CompletionRequest,
+        on_step: &mut dyn FnMut(&str) -> CawResult<bool>,
+    ) -> CawResult<CompletionResponse> {
+        let r = self.advance();
+        if let Some(thinking) = &r.thinking {
+            for step in thinking.split("\n\n").map(str::trim).filter(|s| !s.is_empty()) {
+                if !on_step(step)? {
+                    break;
+                }
+            }
+        }
+        Ok(CompletionResponse {
+            answer: r.answer,
+            thinking: r.thinking,
             usage: None,
         })
     }

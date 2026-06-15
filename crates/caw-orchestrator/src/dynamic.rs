@@ -70,6 +70,12 @@ impl LoadMode {
 pub struct DynamicRecallOrchestrator<R, E, V, P, M, S = ()> {
     pub retriever: R,
     pub embedder: E,
+    /// Session-history index: this session's prior turns (and any prior-session
+    /// stubs loaded via `with_session`), embedded for semantic recall. It is
+    /// NOT the corpus — corpus recall (initial query, probes, and the thinking
+    /// trace) goes through `retriever`. Callers therefore do not need to
+    /// pre-populate this with corpus embeddings; an empty index is correct when
+    /// there is no session history.
     pub vector_index: V,
     pub provenance: P,
     pub adapter: M,
@@ -866,20 +872,47 @@ where
                 continue;
             }
 
-            let start = Instant::now();
-            let embed_result = self.embedder.embed_query(vec![&step.content]);
-            let latency_ms = start.elapsed().as_millis() as u64;
+            // The reasoning trace is the retrieval query, and the corpus lives
+            // in the retriever — the same surface probes search. Querying it
+            // here is what makes a corpus stub the initial query missed
+            // reachable from the model's reasoning; this is the core OpenCAW
+            // mechanism. (Searching only `vector_index`, which holds session
+            // history rather than the corpus, silently admitted nothing from
+            // the corpus.) Admit as stubs: a trace mention is a soft signal, so
+            // the summary is enough until the model explicitly names the file
+            // (file expansion then upgrades it to full bodies).
+            let corpus_hits = self
+                .retriever
+                .search(&step.content, self.config.max_candidates)?;
+            self.load_fragments(
+                corpus_hits
+                    .into_iter()
+                    .map(|hit| (hit.stub.id, hit.score))
+                    .collect(),
+                LoadMode::Stub,
+            )?;
 
-            if let Some(monitor) = &mut self.degradation_monitor {
-                monitor.record_embedding_call(latency_ms, embed_result.is_ok());
-            }
+            // Also recall against `vector_index`, which holds this session's
+            // prior turns (not present in the corpus retriever), so the trace
+            // can pull back earlier-session content too. Skip the embedding
+            // entirely when there is no session history — the common single-turn
+            // case — so a trace step doesn't pay for a query against an empty index.
+            if self.vector_index.len() > 0 {
+                let start = Instant::now();
+                let embed_result = self.embedder.embed_query(vec![&step.content]);
+                let latency_ms = start.elapsed().as_millis() as u64;
 
-            let embeddings = embed_result?;
-            if let Some(embedding) = embeddings.first() {
-                let hits = self
-                    .vector_index
-                    .search(embedding, self.config.max_candidates);
-                self.load_fragments(hits, LoadMode::Stub)?;
+                if let Some(monitor) = &mut self.degradation_monitor {
+                    monitor.record_embedding_call(latency_ms, embed_result.is_ok());
+                }
+
+                let embeddings = embed_result?;
+                if let Some(embedding) = embeddings.first() {
+                    let hits = self
+                        .vector_index
+                        .search(embedding, self.config.max_candidates);
+                    self.load_fragments(hits, LoadMode::Stub)?;
+                }
             }
         }
 

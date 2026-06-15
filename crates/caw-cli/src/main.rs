@@ -499,27 +499,24 @@ fn main() -> Result<()> {
         .context("Failed to load embeddings")?;
     let total_indexed = all_emb.len();
 
-    // vector_index goes into the retriever (workspace search).
-    // trace_index goes into the orchestrator (thinking-trace and session recall).
-    // Both are populated from the same stored embeddings so either index can
-    // serve as a lookup for any stub in the corpus.
+    // vector_index is the corpus index; it goes into the retriever, which is the
+    // single surface for all corpus recall — initial query, probes, and
+    // thinking-trace recall. The orchestrator's own index (`session_index`)
+    // holds only session history, so it starts empty here and accumulates this
+    // session's turns (and any prior-session stubs from `with_session`) as the
+    // run proceeds.
     let mut vector_index = HnswVectorIndex::new();
-    let mut trace_index = HnswVectorIndex::new();
     for (id, emb) in all_emb {
-        vector_index.add(id.clone(), emb.clone());
-        trace_index.add(id, emb);
+        vector_index.add(id, emb);
     }
-    // Build both graphs now, not lazily on the first search inside a turn —
+    let session_index = HnswVectorIndex::new();
+    // Build the corpus graph now, not lazily on the first search inside a turn —
     // otherwise the first query pays the full HNSW build (seconds for a
-    // thousand-vector corpus). add() only buffers points and marks dirty. The
-    // two indexes are independent, so build them on separate threads.
-    std::thread::scope(|s| {
-        s.spawn(|| vector_index.ensure_built());
-        s.spawn(|| trace_index.ensure_built());
-    });
+    // thousand-vector corpus). add() only buffers points and marks dirty.
+    vector_index.ensure_built();
     if cli.timing {
         eprintln!(
-            "  phase: load_embeddings + build 2x HNSW ({} vectors) {:.1}s",
+            "  phase: load_embeddings + build HNSW ({} vectors) {:.1}s",
             total_indexed,
             t_index.elapsed().as_secs_f64()
         );
@@ -646,7 +643,7 @@ fn main() -> Result<()> {
     let mut orchestrator: CliOrchestrator = DynamicRecallOrchestrator::new(
         retriever,
         trace_embedder,
-        trace_index,
+        session_index,
         provenance,
         adapter,
         config,
