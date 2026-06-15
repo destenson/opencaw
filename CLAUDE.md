@@ -40,3 +40,7 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+
+## Principles
+
+- Code should be re-used as much as possible. In particular, `caw-cli`, `caw-bench`, and the tests/QA/dev harness should all use the same underlying library code for retrieval, indexing, and evaluation to ensure consistency and reduce duplication. Move duplicated logic into `caw-core` or a new crate as needed, but avoid copy-pasting code between the CLI, bench, and harnesses.
