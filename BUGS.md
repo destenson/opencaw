@@ -17,6 +17,10 @@ Open bugs only. Fixed bugs are not tracked here — they live in git history, `d
 
 - **Consolidation notes nest recursively** (was QA B9, medium): each eviction appends the prior note's full text as the new note's "topic," so a frequently-evicted stub's consolidation header grows until it exceeds its own content. The cap of 2 displayed notes preserves display budget but loses historical signal.
 
+## Eval harness
+
+- **sysdoc bench runs with unreadable bodies — answers ungrounded, BM25 empty** (found 2026-06-15): for the `sysdoc` workload the bench opens the prebuilt index with `corpus_root` defaulted to the opencaw repo root (`cli.repo_root`), but sysdoc stub paths (e.g. `HTML/ca/kcontrol/desktopthemedetails/index.cache`) are relative to the system doc root the index was built from, which does not exist under the repo. So `store.get_content` fails for every stub: BM25 builds 0 docs (the hybrid retriever silently degrades to pure cosine) and the answer model is handed no body text (answer_score ~0.066). Repro: `CAW_BENCH_ANSWER=groq bash docs/skills/caw-dev/scripts/bench.sh sysdoc -- --only-mode off --concurrency 1` — log shows `BM25 build: 43232 stubs had no readable stub/body and were skipped` then `built BM25 lexical index: 0 docs`. Evidence: `target/caw-dev/hybrid-off-head.log`. bench.sh passes no corpus-root for sysdoc and there is no flag to point it at the sysdoc source tree.
+
 ## Indexing
 
 - **Indexing batch size is a corpus-dependent magic number that OOMs on long chunks** (medium): `caw-bench/src/runner.rs` fixes the embedding batch at a hand-tuned count, but BGE attention memory scales as `batch × seq_len²`, so a fixed *count* OOMs on long (512-token) chunks while wasting capacity on short ones. `build-index.sh` papers over it with tiny batch sizes chosen to never OOM rather than to fit the workload. Fix: token-budget batching — accumulate texts until `batch_len × max_seq_len_in_batch²` would exceed a configurable budget, then flush — applied to the embedder's internal sub-batching too, not just the bench runner. (Found 2026-05-31.)
