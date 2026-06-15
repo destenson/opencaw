@@ -151,6 +151,17 @@ struct Cli {
     #[arg(long)]
     trace_out: Option<PathBuf>,
 
+    /// Re-judge a persisted trace instead of generating. Reads a JSONL
+    /// written by `--trace-out`, re-scores every judge-scored item against
+    /// the current `--judge-adapter`/`--judge-model`/`--judge-temperature`,
+    /// and emits a report — without re-running the answer model. Lets the
+    /// same answers be scored by different or repeated judges to measure the
+    /// judge's own contribution to score variance, at zero generation cost.
+    /// When set, all generation flags (workload, index, answer model) are
+    /// ignored.
+    #[arg(long)]
+    judge_trace: Option<PathBuf>,
+
     /// Only run one mode (useful for debugging). Default: both.
     #[arg(long, value_enum)]
     only_mode: Option<ModeArg>,
@@ -194,6 +205,13 @@ impl From<ModeArg> for RecallMode {
 fn main() -> Result<()> {
     caw_bench::init_tracing();
     let cli = Cli::parse();
+
+    // Re-judge mode short-circuits generation entirely: load persisted
+    // answers and score them. Nothing about the workload, index, or answer
+    // model is consulted.
+    if let Some(trace_path) = cli.judge_trace.clone() {
+        return rejudge_trace(&cli, &trace_path);
+    }
 
     let mut items = build_workload(&cli)?;
     if let Some(limit) = cli.limit {
@@ -618,6 +636,89 @@ fn judge_all(
             still_pending
         );
     }
+    Ok(())
+}
+
+/// Load a `--trace-out` JSONL and re-score every judge-scored item against the
+/// current judge config, without regenerating answers (the `--judge-trace`
+/// path). Reuses `judge_all` and `build_report`, so a re-judged report has the
+/// same shape as a generated one — including paired deltas — but the answers
+/// come from the file instead of the model.
+fn rejudge_trace(cli: &Cli, trace_path: &std::path::Path) -> Result<()> {
+    use std::io::BufRead;
+
+    // A trace line is `{"system_prompt": ..., "result": <ItemResult>}`; serde
+    // ignores the fields we don't name here.
+    #[derive(serde::Deserialize)]
+    struct TraceLine {
+        result: ItemResult,
+    }
+
+    let file = std::fs::File::open(trace_path)
+        .with_context(|| format!("open trace {}", trace_path.display()))?;
+    let reader = std::io::BufReader::new(file);
+
+    let mut results: Vec<ItemResult> = Vec::new();
+    let mut parse_failures = 0usize;
+    for (i, line) in reader.lines().enumerate() {
+        let line = line.with_context(|| format!("read trace line {}", i + 1))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<TraceLine>(&line) {
+            Ok(tl) => results.push(tl.result),
+            Err(e) => {
+                parse_failures += 1;
+                eprintln!("  warning: trace line {} did not parse: {}", i + 1, e);
+            }
+        }
+    }
+    if results.is_empty() {
+        anyhow::bail!(
+            "no usable results in {} ({} line(s) failed to parse)",
+            trace_path.display(),
+            parse_failures
+        );
+    }
+
+    // Force re-scoring of every judge-scored item. A persisted result records
+    // its scoring kind only indirectly: a non-empty `reference_answer` means
+    // the item was scored by the model judge (ContainsNeedle leaves it empty —
+    // see finalize_result), so re-judging it is meaningful. Needle items keep
+    // their inline local score. This reads a structural property of the
+    // record, not a guess about intent.
+    let mut to_judge = 0usize;
+    for r in &mut results {
+        if !r.reference_answer.is_empty() {
+            r.judge_pending = true;
+            to_judge += 1;
+        }
+    }
+    eprintln!(
+        "re-judging {} of {} loaded item(s) from {}",
+        to_judge,
+        results.len(),
+        trace_path.display()
+    );
+
+    let runtime = caw_adapters::create_runtime().context("create tokio runtime")?;
+    let judge_model = cli
+        .judge_model
+        .as_deref()
+        .unwrap_or_else(|| cli.judge_adapter.default_model(ModelRole::Judge))
+        .to_string();
+
+    judge_all(&mut results, cli, &judge_model, &runtime)?;
+
+    let report = build_report("rejudge", "(persisted answers)", &judge_model, &results);
+    let json = serde_json::to_string_pretty(&report).context("serialize report")?;
+    if let Some(path) = &cli.out {
+        std::fs::write(path, &json).with_context(|| format!("write report to {:?}", path))?;
+        eprintln!("\nreport written to {}", path.display());
+    } else {
+        println!("{}", json);
+    }
+    eprintln!("\n{}", format_summary(&report));
     Ok(())
 }
 

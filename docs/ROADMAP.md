@@ -18,7 +18,8 @@ Drive a real coding agent through `caw-server` against this repo's own index, an
 
 - ✓ Judge decoupled from generation (two-phase eval) — `5b45713`.
 - ✓ Paired per-item deltas in the report (cancel item difficulty so a real effect is resolvable) — `e309486`.
-- ☐ Standalone re-judge of persisted answers; more seeds; serial generation path for reproducibility. **← next**
+- ✓ Standalone re-judge of persisted answers (`--judge-trace`): score saved answers against any judge without regenerating.
+- ☐ More seeds; reproducible serial generation path; use `--judge-trace` to average/pin judges and quantify judge variance. **← next**
 
 ---
 
@@ -30,7 +31,8 @@ The eval currently can't resolve the effect we'd be optimizing: `answer_score` s
 
 - **Decouple judge from generation** ✓ — judging no longer blocks or contaminates the generation loop (DECISIONS, two-phase eval).
 - **Paired per-item deltas** ◐ — compare on vs off *on the same item*, so item difficulty (usually the dominant variance) cancels and the standard error shrinks. Same point estimate as diff-of-means; far tighter confidence.
-- **Standalone re-judge + more seeds + serial gen path** ☐ — score persisted answers against a pinned/averaged judge without regenerating (isolates judge noise; the two-phase split already laid the groundwork); add seeds and a reproducible serial generation path for measurement runs.
+- **Standalone re-judge** ✓ — `--judge-trace <trace.jsonl>` scores persisted answers against any judge without regenerating, so judge noise can be isolated and several judge passes averaged (the two-phase split laid the groundwork).
+- **More seeds + serial gen path** ☐ — add seeds and a reproducible serial generation path (concurrency>1 isn't bit-reproducible) for measurement runs.
 
 ### 2. Recall quality — *second, because this is the real capability gap but only tellable from noise once (1) holds*
 

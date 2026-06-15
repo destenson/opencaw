@@ -170,8 +170,10 @@ pub struct PrebuiltIndex {
 }
 
 /// Result of running a single item in a single mode. Aggregated by the
-/// reporter into per-workload and per-mode summaries.
-#[derive(Debug, Clone, serde::Serialize)]
+/// reporter into per-workload and per-mode summaries. Deserializable so a
+/// persisted `--trace-out` line can be loaded back and re-judged without
+/// regenerating the answer.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ItemResult {
     pub item_id: String,
     pub mode: RecallMode,
@@ -245,7 +247,7 @@ pub struct ItemResult {
 /// Compact per-fragment view for trace output. Content is truncated so
 /// JSONL lines stay readable; full content is always available via the
 /// sqlite store if deeper inspection is needed.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LoadedFragment {
     pub source: String,
     pub locator: String,

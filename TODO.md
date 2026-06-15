@@ -121,8 +121,7 @@ The following sections are in no particular order. Do not infer that high priori
 - Expand the intent-classification benchmark prompt suite (multi-intent, edge cases)
 - Expand the QA question set with retrieval-specific queries (symbol lookup, cross-file synthesis, bug investigation)
 - QA harness: validate each question before sending to `caw-cli` (skip acknowledgments)
-- Decouple judging from generation: judging does not need to run inline with the answer run. Persist raw answers (already in `--trace-out`) during the run, then judge afterward — in batches, re-runnable against a fixed/pinned judge without regenerating answers. Removes judge latency and nondeterminism from the generation loop and lets the same answers be re-scored by different judges for comparability.
-- Eval instrument is too noisy to resolve small effects: with the judge nondeterminism fixed, single-seed n~30 still has a large noise floor (recall-on absolute answer_score swung 0.461→0.338 on identical items between two runs, partly judge, partly answer model). Before optimizing recall, raise statistical power: paired per-item deltas (not diff-of-means), more seeds, and/or a pinned/averaged judge.
+- Eval instrument is too noisy to resolve small effects: with the judge nondeterminism fixed, single-seed n~30 still has a large noise floor (recall-on absolute answer_score swung 0.461→0.338 on identical items between two runs, partly judge, partly answer model). Before optimizing recall, raise statistical power. Done: paired per-item deltas (not diff-of-means), and a re-runnable judge (`--judge-trace`, which scores persisted answers against any judge without regenerating). Remaining: more seeds; a reproducible serial generation path (concurrency>1 isn't bit-reproducible); and actually *use* `--judge-trace` to average several judge passes / pin a judge and quantify the judge's own variance contribution.
 
 ## GGUF models to evaluate
 
