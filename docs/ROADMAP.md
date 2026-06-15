@@ -14,13 +14,15 @@ Drive a real coding agent through `caw-server` against this repo's own index and
 
 ## Where we are now
 
-**Fixing retrieval quality.** The eval is now trustworthy enough to use as QA; the current defect is recall-on burying gold in load order.
+**Fixing retrieval quality — now isolated to candidate-set recall.** The eval is trustworthy enough to use as QA, and a deterministic opencaw A/B has now located the binding constraint.
 
 - ✓ Judge decoupled from generation (two-phase eval) — `5b45713`.
 - ✓ Paired per-item deltas in the report (cancel item difficulty so a real effect is resolvable) — `e309486`.
 - ✓ Standalone re-judge of persisted answers (`--judge-trace`): score saved answers against any judge without regenerating.
 - ✓ Serial path verified deterministic (multi-seed gen rejected as no-signal); groq answer model (`CAW_BENCH_ANSWER=groq`, smallest model) makes large-n runs fast (~2–3s/item) though groq bills per token.
-- ☐ Larger-n measurement on the deterministic path, judge-pass averaging via `--judge-trace`, and a larger QA item set. **← next**
+- ✓ Deterministic opencaw A/B of the coverage-first admission fix (`d71c6c4`), `--only-mode off --concurrency 1`, HEAD vs parent over 29 common items: precision@1 flat, recall@k −0.017, mrr +0.011 — **neutral-to-marginal with one regression. Mechanism 1 (load-order flooding) was not the dominant cause.** (2026-06-15; DECISIONS "Initial-load admission".)
+- ✓ Located the candidate-recall gap's cause (2026-06-15): **the eval runs the wrong retriever.** `caw-bench`/cli use pure-cosine `SemanticRetriever`; the dogfood proxy uses `HybridRetriever`. Retrieval-only A/B on the sysdoc gold set: cosine→hybrid lifts recall@10 0.48→0.85, recall@20 0.54→0.92. (Also found: RRF is *worse* than the current `divide_total` fusion at every depth ≤20 — the planned RRF swap is contradicted; DECISIONS.)
+- ☐ **Wire bench/cli onto the proxy's hybrid retrieval, then re-measure the opencaw sweep.** The candidate-recall ceiling (~0.67) is largely an artifact of the eval running cosine; the better retriever already exists on the proxy. This is also required by the repo principle that cli/bench/proxy share retrieval code. Expected to raise recall@k for free; only after this is embedding/chunking or admission/eviction tuning worth doing. **← next**
 
 ---
 
@@ -41,8 +43,12 @@ The eval currently can't resolve the effect we'd be optimizing: `answer_score` s
 
 Recall-on currently regresses: it "buries gold in load order" and some items load the gold chunk yet still answer wrong (BUGS "Retrieval"). This is the actual thing standing between us and a useful dogfood — but a fix is indistinguishable from noise until the instrument is trustworthy.
 
-- First, the regression-flavored A/B the evidence points at: did turning thinking-trace recall from inert→active (`983aba4`) make recall-on *worse* than when it was inert? (The "recall-on doesn't win" symptom predates that commit, so this is attribution, not assumption.)
-- Then: initial-load selectivity and per-source head ordering — the two named mechanisms (a non-gold file flooding the head via `max_chunks_per_source`; thinking-trace re-query drift loading a different set than the raw query).
+Two deterministic measurements (2026-06-15) have narrowed this to a single first move. (a) Admission ordering is **not** the lever: the coverage-first fix for mechanism 1 was neutral-to-marginal on opencaw, because gold is missing from the candidate set entirely on ~1/3 of items — admission can only reorder what retrieval already surfaced. (b) That missing-candidate ceiling is largely because **the eval runs pure cosine while the proxy runs hybrid**; on the sysdoc gold set, hybrid lifts recall@10 from 0.48 to 0.85. So the work reorders:
+
+- **First, make the eval use the same hybrid retriever as the proxy.** `caw-bench`/cli instantiate `SemanticRetriever` (cosine); `caw-server` uses `HybridRetriever`. Wiring bench/cli onto hybrid is expected to raise candidate recall@k sharply for free, and is required by the repo principle that cli/bench/proxy share retrieval code. Re-run the opencaw recall-on/off sweep afterward — the ~0.67 ceiling should rise.
+- **Then, if recall@k is still short, embedding/chunking** — structure-aware chunking already exists on the proxy ingest path; confirm it's on the eval path too. (Do **not** swap `divide_total` fusion for RRF: measured worse at every depth ≤20.)
+- **Then, precision@1 / ranking** — once gold is reliably in the candidate set, get it ranked at the top so admission and the answer model see it first.
+- Deferred (measured, not the lever): mechanism 1 admission ordering (`d71c6c4`, kept but neutral); mechanism 2 thinking-trace re-query drift — only worth revisiting once candidate recall is high.
 
 ### 3. Latency / generation reduction — *third, because a live agent needs speed but a gen change needs a quality bar*
 
@@ -58,7 +64,7 @@ Drive a real agent through `caw-server` against the repo index; expand the `code
 
 ## Single next action
 
-Finish paired per-item deltas (step 1), then the standalone re-judge path — both raise the statistical power needed before touching recall (step 2).
+Wire `caw-bench`/cli onto the proxy's `HybridRetriever` (they currently use pure-cosine `SemanticRetriever`), then re-run the opencaw `--only-mode off` sweep. The deterministic A/B showed hybrid lifts recall@10 from 0.48 to 0.85 on the sysdoc gold set, and the opencaw candidate-recall ceiling (~0.67) is largely an artifact of the eval running cosine. The better retriever already exists; the work is making the eval measure it. Measure on the deterministic `--only-mode off` path so the change is attributable.
 
 ## How the docs relate
 

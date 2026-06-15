@@ -6,6 +6,7 @@ Open bugs only. Fixed bugs are not tracked here — they live in git history, `d
 
 - **Answer-model nondeterminism at `--concurrency > 1`**: even with `temperature 0` + a fixed `--seed`, batched/concurrent inference is not bit-reproducible (floating-point non-associativity in batched matmuls), so the same item can yield different answers run-to-run. Reproducible measurement currently requires `--concurrency 1` (serial). Investigate a serial generation path for eval, or ollama/llama.cpp batch-determinism options. (Measured 2026-06-14: 23/29 recall-on answers differed across two concurrency-4 runs.)
 - **`seed` ignored on the vllm / `OpenAiCompatibleAdapter` path**: `AdapterSpec.seed` is honored only by Ollama and Groq; the OpenAI-compatible adapter drops it, so vllm answer/judge runs aren't reproducible.
+- **A turn that fails all retries is dropped from the report, silently changing n**: when `run_turn` exhausts its retries (observed 2026-06-15: groq `llama-3.1-8b-instant` echoed the `[recalled from …]` injection scaffold instead of answering, `fake_blocks=2`, all 3 attempts failed), the item is excluded from `summaries`/`items` entirely rather than recorded as a failed/zero row. Repro: `CAW_BENCH_ANSWER=groq bash docs/skills/caw-dev/scripts/bench.sh opencaw -- --only-mode off --concurrency 1` — `qa_018_curation_crate` errored and the report carried 29 items, not 30. Effect: item-count differs run-to-run, so a paired A/B over two runs silently compares different item sets unless intersected by hand.
 
 ## Retrieval
 
