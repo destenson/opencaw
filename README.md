@@ -37,7 +37,7 @@ Full index with status for every doc: [docs/README.md](docs/README.md).
 | [Benchmarking](docs/benchmarking.md) | NIAH, opencaw, sysdoc workloads; sweep harness; intent bench |
 | [Design](docs/design.md) | Thesis, stub-and-recall architecture, eviction policy, curation |
 | [Scope](docs/scope.md) | v0.1 deliverables, what's in and out, scope change protocol |
-| [Bugs](docs/bugs.md) | Known bugs and regression log |
+| [Bugs](BUGS.md) | Open bug log |
 | [Codebase Review](docs/archive/codebase-review.md) | Frozen snapshot (2026-05-09): implementation status, structural gaps, debt inventory |
 
 Development tracking is in [TODO.md](TODO.md).

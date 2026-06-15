@@ -458,7 +458,7 @@ fn main() -> Result<()> {
     // batches, inserting each batch atomically. BGE attention memory scales as
     // batch×seq² and the candle provider forwards the whole batch in one pass
     // (no internal sub-batching), so cap the batch to stay clear of OOM on a
-    // shared GPU. (docs/bugs.md B23: a token budget would replace this constant.)
+    // shared GPU. (BUGS.md "indexing batch size": a token budget would replace this constant.)
     const EMBED_BATCH: usize = 32;
     let mut pending: Vec<(Stub, String)> = Vec::with_capacity(EMBED_BATCH);
     for (stub, embed_text) in documents {
