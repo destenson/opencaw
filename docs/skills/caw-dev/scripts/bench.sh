@@ -79,16 +79,21 @@ fi
 # Optionally run the ANSWER model on a fast remote adapter (e.g. groq) instead
 # of the slow local model, for quick iteration on the harness/instrument.
 # Local generation dominates wall time (tens of seconds per item); a remote
-# answer model cuts that to seconds. The local model stays the default because
-# it is usually the measurement target and the recall effect is model-specific
-# — opt in per run with CAW_BENCH_ANSWER=groq (optionally
-# CAW_BENCH_ANSWER_MODEL=<model>, e.g. llama-3.3-70b-versatile). Skipped if the
-# caller already passed --answer-adapter.
+# answer model cuts that to seconds. Note this is fast but NOT free: groq bills
+# per token, so prefer the smallest model and small --limit runs. Defaults to
+# the smallest groq model for this reason; override with CAW_BENCH_ANSWER_MODEL.
+# The local model stays the overall default because it costs no API money and
+# is usually the measurement target (the recall effect is model-specific).
+# Skipped if the caller already passed --answer-adapter.
 ANSWER_ARGS=()
 if [[ " $* " != *" --answer-adapter "* ]] && [ -n "${CAW_BENCH_ANSWER:-}" ]; then
   ANSWER_ARGS+=(--answer-adapter "$CAW_BENCH_ANSWER")
-  if [ -n "${CAW_BENCH_ANSWER_MODEL:-}" ]; then
-    ANSWER_ARGS+=(--answer-model "$CAW_BENCH_ANSWER_MODEL")
+  ANSWER_MODEL="${CAW_BENCH_ANSWER_MODEL:-}"
+  if [ -z "$ANSWER_MODEL" ] && [ "$CAW_BENCH_ANSWER" = "groq" ]; then
+    ANSWER_MODEL="llama-3.1-8b-instant"  # smallest/cheapest groq chat model
+  fi
+  if [ -n "$ANSWER_MODEL" ]; then
+    ANSWER_ARGS+=(--answer-model "$ANSWER_MODEL")
   fi
 fi
 
