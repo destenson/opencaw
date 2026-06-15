@@ -10,11 +10,11 @@ The rule that keeps this doc honest: every step is tied to **what it unblocks**,
 
 ## Current milestone: dogfood OpenCAW as a coding-agent context server
 
-Drive a real coding agent through `caw-server` against this repo's own index, and have recall measurably help the agent answer mid-task information needs (signatures, trait bounds, struct fields, call sites) better than no recall, at acceptable latency. "Done" means: recall-on beats recall-off on the `code-agent` workload by a margin the instrument can resolve, *and* end-to-end latency is low enough that a live agent loop is usable.
+Drive a real coding agent through `caw-server` against this repo's own index and have it be good enough to use daily: recall surfaces the right content for mid-task information needs (signatures, trait bounds, struct fields, call sites) without burying it, at acceptable latency. "Done" means the product is good enough that we actually use it. The `code-agent` recall-on/off numbers are a QA check that retrieval quality is where it should be — a regression gauge, not a proof that the approach works (it does).
 
 ## Where we are now
 
-**Instrument-trust phase.** We are making the eval able to resolve a recall change before we try to make recall changes.
+**Fixing retrieval quality.** The eval is now trustworthy enough to use as QA; the current defect is recall-on burying gold in load order.
 
 - ✓ Judge decoupled from generation (two-phase eval) — `5b45713`.
 - ✓ Paired per-item deltas in the report (cancel item difficulty so a real effect is resolvable) — `e309486`.
