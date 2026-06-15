@@ -7,8 +7,10 @@ use caw_core::{
     VectorIndex,
 };
 use caw_index::{
-    CandleEmbeddingProvider, FastEmbedProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore,
+    build_bm25_over_store, BM25Index, CandleEmbeddingProvider, FastEmbedProvider, HnswVectorIndex,
+    HybridRetriever, SemanticRetriever, SqliteStubStore,
 };
+use std::sync::Arc;
 use caw_ingest::{IngestionPipeline, SourceDocument};
 use caw_orchestrator::dynamic::{DynamicRecallConfig, DynamicRecallOrchestrator};
 
@@ -143,10 +145,16 @@ pub fn build_in_memory_prebuilt(
         started.elapsed().as_secs_f64()
     );
 
+    // Build BM25 over the same stubs so the shared retriever fuses lexical +
+    // semantic, matching the proxy. Done after all inserts so `get_content`
+    // can slice bodies out of the materialized corpus tempdir.
+    let bm25 = build_bm25_over_store(&store, all_stubs.iter().map(|s| s.id.clone()));
+
     let prebuilt = PrebuiltIndex {
         embedder: SharedEmbedder::new(embedder, "bge-small-en-v1.5"),
         store: SharedStore::new(store),
         index: SharedIndex::new(vector_index),
+        bm25: Arc::new(bm25),
         stub_summaries,
     };
     Ok((prebuilt, corpus_tmp))
@@ -163,6 +171,10 @@ pub struct PrebuiltIndex {
     pub embedder: SharedEmbedder<CandleEmbeddingProvider>,
     pub store: SharedStore<SqliteStubStore>,
     pub index: SharedIndex<HnswVectorIndex>,
+    /// Corpus-wide BM25 lexical index, built once at load time and shared
+    /// read-only across every per-item retriever. Behind an `Arc` because
+    /// building it reads every body — too expensive to repeat per item.
+    pub bm25: Arc<BM25Index>,
     /// Stub summaries keyed by id — populated at load time so the false-recall
     /// heuristic can compare recalled content against the summary that
     /// triggered its load.
@@ -335,7 +347,12 @@ fn run_item_fresh(
         }
     }
 
-    let retriever = SemanticRetriever::new(embedder, store, vector_index);
+    // Hybrid (semantic + BM25) so the per-item path fuses lexical and
+    // embedding scores like the proxy. BM25 is built over the just-ingested
+    // store; `get_content` slices bodies from the per-item corpus tempdir.
+    let bm25 = build_bm25_over_store(&store, stub_summaries.keys().cloned());
+    let semantic = SemanticRetriever::new(embedder, store, vector_index);
+    let retriever = HybridRetriever::balanced_shared(semantic, Arc::new(bm25));
     // The orchestrator's own embedder + index serve session-history recall only;
     // corpus recall (including thinking-trace recall) goes through the retriever
     // above. A bench item is a single turn with no session history, so the index
@@ -387,11 +404,15 @@ fn run_item_shared(
     // later wired with `.with_store(...)` or ingestion code crept into a
     // shared-mode path, writes would be silently dropped so the prebuilt
     // sqlite file stays byte-identical across items.
-    let retriever = SemanticRetriever::new(
+    // Hybrid retrieval over the shared, prebuilt BM25 index (built once in
+    // `load_prebuilt_index` / `build_in_memory_prebuilt`). The `Arc` clone is
+    // cheap; the index is never mutated on this read-only path.
+    let semantic = SemanticRetriever::new(
         prebuilt.embedder.clone(),
         ReadOnlyStore::new(&prebuilt.store),
         prebuilt.index.clone(),
     );
+    let retriever = HybridRetriever::balanced_shared(semantic, prebuilt.bm25.clone());
 
     // The orchestrator's own embedder + index serve session-history recall only;
     // corpus recall (including thinking-trace recall) goes through the retriever

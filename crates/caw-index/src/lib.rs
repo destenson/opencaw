@@ -198,7 +198,12 @@ where
     I: VectorIndex,
 {
     semantic: SemanticRetriever<E, S, I>,
-    bm25: BM25Index,
+    /// Behind an `Arc` so a corpus-wide BM25 index, which is expensive to
+    /// build (it reads every body), can be built once and shared read-only
+    /// across many per-item retrievers (the eval's shared-index path). The
+    /// incremental `insert` path copies-on-write via `Arc::make_mut`, which
+    /// is free while the `Arc` is uniquely held (the ingest-time case).
+    bm25: std::sync::Arc<BM25Index>,
     semantic_weight: f32,
     keyword_weight: f32,
 }
@@ -216,7 +221,26 @@ where
     ) -> Self {
         Self {
             semantic,
-            bm25: BM25Index::new(),
+            bm25: std::sync::Arc::new(BM25Index::new()),
+            semantic_weight,
+            keyword_weight,
+        }
+    }
+
+    /// Construct over a BM25 index that was already built elsewhere (e.g. once
+    /// at load time, then shared read-only across per-item retrievers). The
+    /// caller is responsible for having populated `bm25` with the same
+    /// `path + summary + body` text that [`HybridRetriever::insert`] uses, so
+    /// lexical scoring matches the ingest-time path.
+    pub fn with_shared_bm25(
+        semantic: SemanticRetriever<E, S, I>,
+        bm25: std::sync::Arc<BM25Index>,
+        semantic_weight: f32,
+        keyword_weight: f32,
+    ) -> Self {
+        Self {
+            semantic,
+            bm25,
             semantic_weight,
             keyword_weight,
         }
@@ -227,12 +251,22 @@ where
         Self::new(semantic, 0.6, 0.4)
     }
 
+    /// Default 0.6 / 0.4 weights over a prebuilt, shared BM25 index.
+    pub fn balanced_shared(
+        semantic: SemanticRetriever<E, S, I>,
+        bm25: std::sync::Arc<BM25Index>,
+    ) -> Self {
+        Self::with_shared_bm25(semantic, bm25, 0.6, 0.4)
+    }
+
     /// `content` is used only transiently to build the BM25 posting list;
     /// it is NOT persisted anywhere. The downstream store records only
     /// `(path, byte_offset, byte_length)` and re-reads body text from disk.
     pub fn insert(&mut self, stub: Stub, content: String) -> CawResult<()> {
         let bm25_text = format!("{} {} {}", stub.path, stub.summary, content);
-        self.bm25.add(stub.id.clone(), &bm25_text);
+        // Copy-on-write: free while this retriever uniquely holds the Arc
+        // (the ingest-time path); clones only if a shared index is mutated.
+        std::sync::Arc::make_mut(&mut self.bm25).add(stub.id.clone(), &bm25_text);
         self.semantic.insert(stub, &content)
     }
 }
@@ -328,6 +362,46 @@ where
     fn insert(&mut self, stub: Stub, content: String) -> CawResult<()> {
         self.insert(stub, content)
     }
+}
+
+/// Build a [`BM25Index`] over the stubs in `store`, indexing the same
+/// `path + summary + body` text that [`HybridRetriever::insert`] uses so a
+/// retriever constructed via [`HybridRetriever::with_shared_bm25`] scores
+/// lexically the same way the ingest-time path would. Stubs whose stub row
+/// or body can't be read are skipped.
+///
+/// This is the shared corpus-wide BM25 build used by the eval (`caw-bench`),
+/// the CLI (`caw-cli`), and mirrored by the `caw-server` proxy — keeping
+/// lexical scoring identical across all three retrieval surfaces.
+pub fn build_bm25_over_store<S, Ids>(store: &S, stub_ids: Ids) -> BM25Index
+where
+    S: StubStore,
+    Ids: IntoIterator<Item = StubId>,
+{
+    let mut bm25 = BM25Index::new();
+    let mut missing = 0usize;
+    for id in stub_ids {
+        let stub = match store.get_stub(&id) {
+            Ok(s) => s,
+            Err(_) => {
+                missing += 1;
+                continue;
+            }
+        };
+        let body = match store.get_content(&id) {
+            Ok(c) => c,
+            Err(_) => {
+                missing += 1;
+                continue;
+            }
+        };
+        let text = format!("{} {} {}", stub.path, stub.summary, body);
+        bm25.add(id, &text);
+    }
+    if missing > 0 {
+        tracing::warn!("BM25 build: {missing} stubs had no readable stub/body and were skipped");
+    }
+    bm25
 }
 
 /// Simple keyword-overlap index for fallback/demo use

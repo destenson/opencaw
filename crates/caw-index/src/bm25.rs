@@ -8,6 +8,11 @@ const B: f32 = 0.75;
 /// Complements embedding-based search by handling exact matches,
 /// rare terms, and queries where lexical overlap matters more than
 /// semantic similarity.
+///
+/// `Clone` is derived so a built index can be shared (via `Arc`) across
+/// many `HybridRetriever`s and cheaply copied-on-write when one of them
+/// ingests further documents (`Arc::make_mut`).
+#[derive(Clone)]
 pub struct BM25Index {
     inverted: HashMap<String, Vec<(usize, u32)>>,
     doc_ids: Vec<StubId>,

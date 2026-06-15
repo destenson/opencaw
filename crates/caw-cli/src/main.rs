@@ -9,7 +9,10 @@ use caw_curation::{
     ExtractiveToolOutputCompressor, HistorySummarizerConfig, LlmHistorySummarizer,
     LlmToolOutputCompressor, ToolOutputCompressorConfig, TurnMetadata, TurnRole,
 };
-use caw_index::{CandleEmbeddingProvider, HnswVectorIndex, SemanticRetriever, SqliteStubStore};
+use caw_index::{
+    build_bm25_over_store, CandleEmbeddingProvider, HnswVectorIndex, HybridRetriever,
+    SemanticRetriever, SqliteStubStore,
+};
 use caw_ingest::summarizer::LlmSummarizer;
 use caw_ingest::{DocumentIdSet, IngestionPipeline};
 use caw_orchestrator::consolidation::LlmConsolidation;
@@ -24,7 +27,7 @@ use tracing::{debug, warn};
 /// trace embedder are the same `LazyCandleEmbedProvider` type so they can
 /// share a single underlying model (see `LazyCandleEmbedProvider`).
 type CliOrchestrator = DynamicRecallOrchestrator<
-    SemanticRetriever<LazyCandleEmbedProvider, SqliteStubStore, HnswVectorIndex>,
+    HybridRetriever<LazyCandleEmbedProvider, SqliteStubStore, HnswVectorIndex>,
     LazyCandleEmbedProvider,
     HnswVectorIndex,
     InMemoryProvenanceStore,
@@ -512,7 +515,9 @@ fn main() -> Result<()> {
     // session's turns (and any prior-session stubs from `with_session`) as the
     // run proceeds.
     let mut vector_index = HnswVectorIndex::new();
+    let mut corpus_stub_ids = Vec::with_capacity(all_emb.len());
     for (id, emb) in all_emb {
+        corpus_stub_ids.push(id.clone());
         vector_index.add(id, emb);
     }
     let session_index = HnswVectorIndex::new();
@@ -549,9 +554,15 @@ fn main() -> Result<()> {
     let consolidation_store = SqliteStubStore::new(&db_path, dimension)
         .context("Failed to open consolidation store")?;
 
+    // Build BM25 over the corpus before `store` moves into the retriever, so
+    // corpus recall fuses lexical + semantic exactly like the caw-server
+    // proxy. `get_content` slices bodies from the indexed source files.
+    let bm25 = build_bm25_over_store(&store, corpus_stub_ids);
+
     // The retriever and the trace embedder share one model: clone hands the
     // retriever a handle and the original moves into the trace embedder.
-    let retriever = SemanticRetriever::new(embedder.clone(), store, vector_index);
+    let semantic = SemanticRetriever::new(embedder.clone(), store, vector_index);
+    let retriever = HybridRetriever::balanced_shared(semantic, Arc::new(bm25));
     let trace_embedder = embedder;
 
     // When using the llama adapter, the total prompt (system + user +

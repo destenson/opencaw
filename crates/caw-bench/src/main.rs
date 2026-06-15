@@ -829,10 +829,20 @@ fn load_prebuilt_index(path: &std::path::Path, corpus_root: PathBuf) -> Result<P
         }
     };
 
+    // BM25 over the same stub set so the eval fuses lexical + semantic like
+    // the proxy. Built once here and shared read-only across items.
+    let bm25 = caw_index::build_bm25_over_store(&store, all.iter().map(|(id, _)| id.clone()));
+    eprintln!(
+        "built BM25 lexical index: {} docs ({:.1}s total load)",
+        bm25.len(),
+        started.elapsed().as_secs_f64()
+    );
+
     Ok(PrebuiltIndex {
         embedder: SharedEmbedder::new(embedder, "bge-small-en-v1.5"),
         store: SharedStore::new(store),
         index: SharedIndex::new(vector_index),
+        bm25: std::sync::Arc::new(bm25),
         stub_summaries,
     })
 }
