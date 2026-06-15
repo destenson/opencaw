@@ -13,6 +13,14 @@ pub struct GroqAdapter {
     model: String,
     client: Client,
     runtime: Arc<Runtime>,
+    /// Sampling temperature. `None` lets the Groq server pick its default
+    /// (non-deterministic). `Some(0.0)` requests greedy decoding so a repeated
+    /// call with the same prompt yields the same output — required for a
+    /// reproducible judge.
+    temperature: Option<f32>,
+    /// Sampling seed forwarded to Groq. With a fixed seed and temperature 0 the
+    /// API returns reproducible completions for identical inputs.
+    seed: Option<i64>,
 }
 
 impl std::fmt::Debug for GroqAdapter {
@@ -34,7 +42,23 @@ impl GroqAdapter {
             model: model.into(),
             client: Client::new(),
             runtime,
+            temperature: None,
+            seed: None,
         }
+    }
+
+    /// Override the sampling temperature. Pass 0.0 for deterministic (greedy)
+    /// decoding.
+    pub fn with_temperature(mut self, temperature: f32) -> Self {
+        self.temperature = Some(temperature);
+        self
+    }
+
+    /// Set the sampling seed for reproducible completions (pair with
+    /// `with_temperature(0.0)`).
+    pub fn with_seed(mut self, seed: i64) -> Self {
+        self.seed = Some(seed);
+        self
     }
 
     pub fn groq_model(model: impl Into<String>, runtime: Arc<Runtime>) -> CawResult<Self> {
@@ -61,6 +85,10 @@ struct GroqRequest {
     model: String,
     messages: Vec<GroqMessage>,
     max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -108,6 +136,8 @@ impl ModelAdapter for GroqAdapter {
         let groq_req = GroqRequest {
             model: self.model.clone(),
             max_tokens: 4096,
+            temperature: self.temperature,
+            seed: self.seed,
             messages: vec![
                 GroqMessage {
                     role: "system".to_string(),

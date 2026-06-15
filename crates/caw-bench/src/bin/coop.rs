@@ -391,6 +391,7 @@ fn main() -> Result<()> {
         temperature: Some(cli.temperature),
         num_ctx: cli.num_ctx,
         num_predict: None,
+        seed: None,
     };
 
     for (idx, item) in items.iter().enumerate() {
@@ -416,6 +417,7 @@ fn main() -> Result<()> {
                     temperature: spec_base.temperature,
                     num_ctx: spec_base.num_ctx,
                     num_predict: spec_base.num_predict,
+                    seed: spec_base.seed,
                 },
                 &runtime,
             )

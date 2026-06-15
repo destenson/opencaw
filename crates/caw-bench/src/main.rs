@@ -95,6 +95,14 @@ struct Cli {
     #[arg(long, default_value = "0.0")]
     judge_temperature: f32,
 
+    /// Sampling seed forwarded to the answer and judge adapters (Ollama, Groq).
+    /// With temperature 0 this makes single-request decoding reproducible.
+    /// Note: at `--concurrency > 1` the answer model can still vary because
+    /// batched inference is not bit-reproducible; use `--concurrency 1` for a
+    /// fully reproducible run.
+    #[arg(long, default_value = "42")]
+    seed: i64,
+
     /// Max workspace tokens — applied identically to both modes for a
     /// matched-budget comparison. Tight default forces eviction to engage
     /// when probes bring in additional fragments.
@@ -252,6 +260,7 @@ fn main() -> Result<()> {
             temperature: Some(cli.judge_temperature),
             num_ctx: None,
             num_predict: None,
+            seed: Some(cli.seed),
         },
         &runtime,
     )?;
@@ -333,6 +342,7 @@ fn main() -> Result<()> {
                         temperature: Some(cli.temperature),
                         num_ctx: None,
                         num_predict: cli.num_predict,
+                        seed: Some(cli.seed),
                     },
                     &runtime,
                 ) {
@@ -477,6 +487,7 @@ fn run_concurrent(
                         temperature: Some(cli.temperature),
                         num_ctx: None,
                         num_predict: cli.num_predict,
+                        seed: Some(cli.seed),
                     },
                     runtime,
                 ) {
@@ -495,6 +506,7 @@ fn run_concurrent(
                         temperature: Some(cli.judge_temperature),
                         num_ctx: None,
                         num_predict: None,
+                        seed: Some(cli.seed),
                     },
                     runtime,
                 ) {

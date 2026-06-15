@@ -16,6 +16,9 @@ The following sections are in no particular order. Do not infer that high priori
 ## Retrieval
 
 - Recover "both retrievers miss" queries: contextual embeddings + doc2query at index time
+- Thin/empty stubs dominate retrieval misses: `graph-eval.sh --diagnose` (sysdoc n=100) shows many changelog gold chunks have empty stub bodies (`summary=0c body=0tok`) — nothing to embed or match, so they never rank (changelog recall@1=0.25). Fix ingestion so every indexed chunk carries embeddable content, or exclude genuinely-empty chunks. This, not fusion, is the largest single miss cause on sysdoc.
+- Graph-neighbor expansion gives +0.000 rank lift on the current sysdoc index (`graph-eval.sh --diagnose --fusion all`): edges are absent or not helping. Revisit edge extraction/population before relying on graph expansion.
+- Bench/cli measure pure cosine: both build `SemanticRetriever`, not `HybridRetriever` (BM25 fusion). Decide whether the multi-pass engine should retrieve hybrid like the proxy does, and measure the effect on rank-of-gold.
 
 ## Ingestion & Indexing
 
@@ -81,6 +84,8 @@ The following sections are in no particular order. Do not infer that high priori
 
 ## Retrieval quality (stubs & ranking)
 
+- Replace the prototype hybrid fusion (min-max-weighted-sum in `caw-index` `HybridRetriever`) with a principled fusion — RRF is the candidate; `graph-eval.sh --fusion all` already compares strategies. The current impl is a placeholder per the maintainer, not a tuned baseline.
+- Recall regression (recall-on buries gold in load order — the "it used to help, now it doesn't" bug): two mechanisms seen in opencaw traces — (1) `max_chunks_per_source=3` lets 3 chunks of one (often non-gold) file flood the head of the loaded set; (2) thinking-trace re-query drift loads a different set than the raw user query (qa_001/qa_002 load a wrong file's chunks ahead of gold). Some items (qa_003) load gold yet still answer wrong, suggesting the extra ~2× content distracts. Investigate initial-load selectivity and per-source head ordering. (Blocked on deterministic eval to measure fixes.)
 - Raise stub quality floor beyond `token_estimate` (drop bare single-line code statements)
 - Improve stub summaries for trailing code-fragment chunks (fall back to parent file summary)
 - Load documentation stubs in full-content mode for `wants_explanation` queries
@@ -115,6 +120,10 @@ The following sections are in no particular order. Do not infer that high priori
 - Expand the intent-classification benchmark prompt suite (multi-intent, edge cases)
 - Expand the QA question set with retrieval-specific queries (symbol lookup, cross-file synthesis, bug investigation)
 - QA harness: validate each question before sending to `caw-cli` (skip acknowledgments)
+- Decouple judging from generation: judging does not need to run inline with the answer run. Persist raw answers (already in `--trace-out`) during the run, then judge afterward — in batches, re-runnable against a fixed/pinned judge without regenerating answers. Removes judge latency and nondeterminism from the generation loop and lets the same answers be re-scored by different judges for comparability.
+- Answer-model nondeterminism at `--concurrency > 1`: even with `temperature 0` + a fixed `--seed`, batched/concurrent inference is not bit-reproducible (floating-point non-associativity in batched matmuls), so the same item can yield different answers run-to-run. Reproducible measurement currently requires `--concurrency 1` (serial). Investigate a serial generation path for eval, or ollama/llama.cpp batch-determinism options. (Measured 2026-06-14: 23/29 recall-on answers differed across two concurrency-4 runs.)
+- Wire `seed` into the vllm/`OpenAiCompatibleAdapter` path: `AdapterSpec.seed` is currently honored only by Ollama and Groq; the OpenAI-compatible adapter ignores it, so vllm answer/judge runs aren't reproducible.
+- Eval instrument is too noisy to resolve small effects: with the judge nondeterminism fixed, single-seed n~30 still has a large noise floor (recall-on absolute answer_score swung 0.461→0.338 on identical items between two runs, partly judge, partly answer model). Before optimizing recall, raise statistical power: paired per-item deltas (not diff-of-means), more seeds, and/or a pinned/averaged judge.
 
 ## GGUF models to evaluate
 

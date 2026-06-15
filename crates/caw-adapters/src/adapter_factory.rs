@@ -98,6 +98,10 @@ pub struct AdapterSpec<'a> {
     /// truncates the answer — only set it with a paired quality measurement.
     /// Ignored by non-Ollama adapters.
     pub num_predict: Option<i32>,
+    /// Sampling seed for reproducible decoding. Applied to Ollama and Groq
+    /// (pair with `temperature: Some(0.0)`). `None` lets the server pick.
+    /// Other adapters ignore it.
+    pub seed: Option<i64>,
 }
 
 pub fn build(
@@ -132,6 +136,9 @@ fn build_inner(
             if let Some(np) = spec.num_predict {
                 a = a.with_num_predict(np);
             }
+            if let Some(s) = spec.seed {
+                a = a.with_seed(s);
+            }
             Box::new(a)
         }
         AdapterKind::Vllm => {
@@ -160,7 +167,16 @@ fn build_inner(
             Box::new(a)
         }
         AdapterKind::ClaudeCode => Box::new(ClaudeCodeAdapter::builder().model(spec.model).build()),
-        AdapterKind::Groq => Box::new(GroqAdapter::groq_model(spec.model, runtime.clone())?),
+        AdapterKind::Groq => {
+            let mut a = GroqAdapter::groq_model(spec.model, runtime.clone())?;
+            if let Some(t) = spec.temperature {
+                a = a.with_temperature(t);
+            }
+            if let Some(s) = spec.seed {
+                a = a.with_seed(s);
+            }
+            Box::new(a)
+        }
         AdapterKind::Anthropic => {
             let api_key = std::env::var("ANTHROPIC_API_KEY")
                 .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;

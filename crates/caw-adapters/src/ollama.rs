@@ -37,6 +37,12 @@ pub struct OllamaAdapter {
     /// emitted. Defaults to `DEFAULT_NUM_PREDICT`; lower it only with a paired
     /// answer-quality measurement (the trace is the thesis mechanism).
     num_predict: i32,
+    /// Sampling seed sent in the request `options`. `None` lets the server
+    /// pick. With `temperature(0.0)` and a fixed seed, single (non-batched)
+    /// requests are reproducible; note that concurrent/batched inference can
+    /// still vary at temperature 0 due to floating-point non-associativity, so
+    /// reproducible measurement also needs serial generation.
+    seed: Option<i64>,
     /// Whether to signal the orchestrator that this model reliably follows the
     /// cooperative probe/annotation protocol (emitting `<probe>` and `<note>`
     /// markers when instructed). Defaults to false — the orchestrator degrades
@@ -86,6 +92,7 @@ impl OllamaAdapter {
             temperature: None,
             num_ctx: None,
             num_predict: DEFAULT_NUM_PREDICT,
+            seed: None,
             cooperative_probes: false,
             fold_system: false,
             thinking_supported: std::sync::OnceLock::new(),
@@ -146,6 +153,13 @@ impl OllamaAdapter {
     /// greedy decoding.
     pub fn with_temperature(mut self, temperature: f32) -> Self {
         self.temperature = Some(temperature);
+        self
+    }
+
+    /// Set the sampling seed (pair with `with_temperature(0.0)` for
+    /// reproducible single-request completions).
+    pub fn with_seed(mut self, seed: i64) -> Self {
+        self.seed = Some(seed);
         self
     }
 
@@ -256,6 +270,8 @@ struct OllamaOptions {
     num_predict: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     num_ctx: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -313,6 +329,7 @@ impl ModelAdapter for OllamaAdapter {
                 temperature: self.temperature,
                 num_predict: self.num_predict,
                 num_ctx: self.num_ctx,
+                seed: self.seed,
             },
             think: self.supports_thinking().then_some(true),
         };
@@ -453,6 +470,7 @@ impl ModelAdapter for OllamaAdapter {
                 temperature: self.temperature,
                 num_predict: self.num_predict,
                 num_ctx: self.num_ctx,
+                seed: self.seed,
             },
             think: Some(true),
         };

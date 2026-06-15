@@ -117,6 +117,7 @@ fn main() -> Result<()> {
                 temperature: Some(cli.temperature),
                 num_ctx: cli.num_ctx,
                 num_predict: None,
+                seed: None,
             },
             &runtime,
         )
