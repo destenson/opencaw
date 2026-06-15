@@ -168,6 +168,7 @@ struct Outcome {
 }
 
 fn main() -> Result<()> {
+    caw_bench::init_tracing();
     let args = Args::parse();
     let relations: Vec<String> = split_csv(&args.relations);
     let recall_ks: Vec<usize> = split_csv(&args.recall_k)

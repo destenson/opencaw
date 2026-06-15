@@ -241,8 +241,8 @@ impl CandleEmbeddingProvider {
             .max()
             .unwrap_or(0);
         let total_tokens: usize = encodings.iter().map(|e| e.get_ids().len()).sum();
-        eprintln!(
-            "    candle: tokenize done max_tok={} total_tok={} in {}ms",
+        debug!(
+            "candle: tokenize done max_tok={} total_tok={} in {}ms",
             max_tokens, total_tokens, tok_ms
         );
 
@@ -299,8 +299,8 @@ impl CandleEmbeddingProvider {
             .model
             .forward(&token_ids, &token_type_ids, Some(&attention_mask_i64))
             .map_err(|e| CawError::Embedding(format!("Forward pass failed: {e}")))?;
-        eprintln!(
-            "    candle: forward shape=[{}, {}] in {}ms",
+        debug!(
+            "candle: forward shape=[{}, {}] in {}ms",
             batch_size,
             padded_len,
             t_fwd.elapsed().as_millis()
@@ -346,8 +346,8 @@ impl CandleEmbeddingProvider {
             .chunks(self.dimension)
             .map(|chunk| chunk.to_vec())
             .collect::<Vec<_>>();
-        eprintln!(
-            "    candle: total embed {}ms (tok {}ms)",
+        debug!(
+            "candle: total embed {}ms (tok {}ms)",
             t_start.elapsed().as_millis(),
             tok_ms,
         );

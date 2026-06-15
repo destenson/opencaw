@@ -192,6 +192,7 @@ impl From<ModeArg> for RecallMode {
 }
 
 fn main() -> Result<()> {
+    caw_bench::init_tracing();
     let cli = Cli::parse();
 
     let mut items = build_workload(&cli)?;

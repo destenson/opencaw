@@ -63,3 +63,5 @@ candle-nn = { version = "0.10", features = ["cuda"] }
 candle-transformers = { version = "0.10", features = ["cuda"] }
 hf-hub = "0.5"
 tokenizers = "0.21"
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }

@@ -111,6 +111,16 @@ To verify the workspace contents, add `--show-prompt` (prints to stderr) and/or 
 scripts/run-cli.sh --dir crates --adapter ollama --model llama3.2:3b --max-tokens 1200 --show-prompt
 ```
 
+## Observability: logs vs. traces (three separate streams)
+
+Don't scrape stdout for signal — the binaries keep their machine-readable report on **stdout** and everything else on **stderr** or in **trace files**. The three streams:
+
+- **Report (stdout).** `caw-bench` and `caw-bench-graph-eval` print only their report to stdout, so `graph-eval.sh ... > report.txt` captures a clean report with no log interleaving. Do **not** use `2>&1 | grep` — that re-merges the log stream you just separated.
+- **Logs (stderr, `RUST_LOG`-controlled).** Diagnostic logging goes through `tracing` to stderr, quiet by default (deps at `warn`, app at `info`; per-call spam such as the candle embedder's per-batch timing is at `debug` and therefore off). Turn it up only when you need it: `RUST_LOG=debug ...` for everything, or scoped, e.g. `RUST_LOG=caw_index=debug ...` for embedder timing, `RUST_LOG=caw_orchestrator=debug ...` for recall decisions. An explicit `RUST_LOG` is honored verbatim.
+- **Traces (JSONL files).** Two distinct trace artifacts, both newline-delimited JSON:
+  - *Per-item bench trace* — `caw-bench --trace-out PATH` writes one record per `(item, mode)` with the prompt, answer, and scores. This is the artifact for comparing runs (e.g. diffing the recalled/loaded set across two identical configs).
+  - *Raw model-message trace* — `TraceSink`/`TracingAdapter` records every model request/response as JSONL. **On by default in `caw-cli`** → `$TMPDIR/caw-traces/caw-cli-<ts>.jsonl` (the path is printed at startup). Opt out with `CAW_NO_TRACE=1`; redirect with `CAW_TRACE_FILE=<file>` or `CAW_TRACE_DIR=<dir>`. Note: `caw-bench` does **not** yet wire this adapter sink (tracked in TODO under Degradation & Monitoring), so for bench runs the model-message detail you get is whatever `--trace-out` records, not the raw adapter stream.
+
 ## Gotchas (read before improvising)
 
 - **GPU OOM is a device-selection problem, not a memory-shortage problem.** On an OOM the candle embedder dies rather than shrinking — it only falls back to CPU when CUDA is *absent*. Pick a free GPU explicitly. The scripts do this via `pick-gpu.sh` + `CUDA_VISIBLE_DEVICES`; the embedder also reads `CAW_EMBED_DEVICE` (`cpu` | `cuda` | `cuda:N`) as declared config, and an explicit `cuda:N` that can't be opened errors loudly instead of dying later. The two don't compose: the scripts already mask with `CUDA_VISIBLE_DEVICES`, so *inside* a script the only visible device is ordinal 0 — passing `CAW_EMBED_DEVICE=cuda:1` there asks for an ordinal that doesn't exist in the masked view and (correctly) errors. Use one mechanism or the other. Don't run the raw `cargo` commands without selecting a device when a large model occupies GPU 0.
