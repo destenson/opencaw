@@ -982,4 +982,42 @@ mod tests {
         queue.close();
         assert_eq!(queue.receiver().recv(), Some("gone.md".to_string()));
     }
+
+    #[test]
+    fn read_only_store_does_not_persist_stale_on_missing_source() {
+        // A prebuilt-index consumer (bench/cli/server) with no reingest worker
+        // opens read-only so a missing/misconfigured source path — e.g. a wrong
+        // corpus_root that makes a present, never-changed file appear absent —
+        // surfaces as StaleStub on that read but never persists `stale = 1` into
+        // the shared index, which nothing would recover.
+        let root = temp_root();
+        let db_path = root.join("idx.db");
+        let mtime = write_file(&root, "frozen.md", "never changes");
+        let stub = mk_stub("s1", "frozen.md", mtime, 13);
+
+        // Build the index writable, then reopen the same DB read-only to consume.
+        {
+            let mut store = SqliteStubStore::new(db_path.to_str().unwrap(), 3)
+                .unwrap()
+                .with_corpus_root(root.clone());
+            store.insert(stub, vec![0.1, 0.2, 0.3]).unwrap();
+        }
+        // Point the consumer at a corpus_root where the file does not resolve,
+        // reproducing the prefix-doubling / wrong-root miss.
+        let wrong_root = root.join("does-not-exist");
+        let store = SqliteStubStore::new(db_path.to_str().unwrap(), 3)
+            .unwrap()
+            .with_corpus_root(wrong_root)
+            .with_read_only(true);
+
+        match store.get_content(&StubId("s1".into())).unwrap_err() {
+            CawError::StaleStub { path } => assert_eq!(path, "frozen.md"),
+            other => panic!("expected StaleStub, got {:?}", other),
+        }
+
+        // The row must NOT have been marked stale: get_stub still resolves and
+        // nothing landed in stale_paths.
+        assert!(store.get_stub(&StubId("s1".into())).is_ok());
+        assert!(store.stale_paths().unwrap().is_empty());
+    }
 }

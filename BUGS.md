@@ -10,7 +10,6 @@ Open bugs only. Fixed bugs are not tracked here — they live in git history, `d
 ## Retrieval
 
 - **Recall-on buries gold in load order** (recall regression — "it used to help, now it doesn't"): two mechanisms seen in opencaw traces — (1) `max_chunks_per_source=3` lets three chunks of one (often non-gold) file flood the head of the loaded set; (2) thinking-trace re-query drift loads a different set than the raw user query. Some items load gold yet still answer wrong, suggesting the extra content distracts. Investigate initial-load selectivity and per-source head ordering.
-- **Thin/empty stubs never rank**: many changelog/news gold chunks are indexed with empty stub bodies (`summary=0c body=0tok`) — nothing to embed or match, so they are guaranteed retrieval misses (sysdoc changelog recall@1≈0.30, the largest single miss cause on sysdoc; verified 2026-06-14). Fix ingestion so every indexed chunk carries embeddable content, or exclude genuinely-empty chunks.
 - **Search-candidates mode is non-functional one-shot** (was QA B4): the system prompt tells the model to "mention files you want loaded," but nothing honors that request, so the model answers from discovery metadata alone — structurally plausible but ungrounded. It's an architectural gap: search-candidates is a dialog protocol that needs a tool-call loop to be useful; one-shot it is worse than loading the top-k directly. `dynamic.rs` already bypasses it for `wants_explanation` queries (loads stubs directly); the general dead-end remains.
 
 ## Consolidation

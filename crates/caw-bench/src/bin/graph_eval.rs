@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use caw_core::{EmbeddingProvider, ScoredStub, StubId, StubStore, VectorIndex};
+use caw_core::{CawError, EmbeddingProvider, ScoredStub, StubId, StubStore, VectorIndex};
 use caw_index::graph_edges::{
     byte_offset_of_line, line_start_offsets, plan_expansion, stub_for_byte, ExpansionConfig,
     GraphEdgeStore, PlannedNeighbor,
@@ -134,6 +134,52 @@ struct MissDiag {
     shared_sample: Vec<String>,
     summary_len: usize,
     body_token_count: usize,
+    /// Resolution outcome of the gold stub(s): whether they yielded indexed
+    /// text, and if not, why. Keeps four distinct causes apart that otherwise
+    /// all surface as `summary=0c body=0tok`: withheld by a `stale=1` flag
+    /// (content is fine, just suppressed), absent from the index, a genuine
+    /// read error, and genuinely-empty indexed content. The first three are not
+    /// ingestion problems; only the last is.
+    gold_status: GoldStatus,
+}
+
+/// Why the gold stub(s) for a miss did or didn't yield indexed text.
+#[derive(Clone, Copy, PartialEq)]
+enum GoldStatus {
+    /// At least one gold stub read back with non-empty content.
+    Resolved,
+    /// A gold stub read back, but its indexed content is empty (genuine
+    /// ingestion gap — the only case the "thin/empty stub" label fits).
+    Empty,
+    /// No gold stub could be read because it is flagged `stale=1`.
+    Stale,
+    /// No gold stub could be read because it is absent from the index.
+    Missing,
+    /// No gold stub could be read for some other read error.
+    Unreadable,
+}
+
+/// Classify a read error so a stale/absent gold isn't reported as empty content.
+fn classify_read_error(e: &CawError) -> GoldStatus {
+    match e {
+        CawError::StaleStub { .. } => GoldStatus::Stale,
+        CawError::NotFound(_) => GoldStatus::Missing,
+        _ => GoldStatus::Unreadable,
+    }
+}
+
+/// When several golds fail to read, surface the most actionable cause first.
+fn worse_read_error(a: GoldStatus, b: GoldStatus) -> GoldStatus {
+    let rank = |s: GoldStatus| match s {
+        GoldStatus::Stale => 3,
+        GoldStatus::Missing => 2,
+        _ => 1,
+    };
+    if rank(b) > rank(a) {
+        b
+    } else {
+        a
+    }
 }
 
 #[derive(Deserialize)]
@@ -400,12 +446,31 @@ fn diagnose_miss(
     let mut summary_len = 0usize;
     let mut body_token_count = 0usize;
     let mut best_overlap: Option<usize> = None;
+    let mut any_resolved = false;
+    // When no gold reads back, remember why (the most actionable error) so the
+    // miss isn't reported as empty content.
+    let mut read_failure: Option<GoldStatus> = None;
     for gid in gold {
         let id = StubId(gid.clone());
         let (stub, body) = match (store.get_stub(&id), store.get_content(&id)) {
             (Ok(s), Ok(b)) => (s, b),
-            _ => continue,
+            (stub_res, content_res) => {
+                // get_content's error is the more specific signal (it carries the
+                // stale short-circuit and the missing-source path); fall back to
+                // get_stub's error otherwise.
+                if let Some(kind) = content_res
+                    .as_ref()
+                    .err()
+                    .or(stub_res.as_ref().err())
+                    .map(classify_read_error)
+                {
+                    read_failure =
+                        Some(read_failure.map_or(kind, |prev| worse_read_error(prev, kind)));
+                }
+                continue;
+            }
         };
+        any_resolved = true;
         let body_tokens = bm25_tokenize(&body);
         let doc_text = format!("{} {} {}", stub.path, stub.summary, body);
         let doc_set: HashSet<String> = bm25_tokenize(&doc_text).into_iter().collect();
@@ -421,6 +486,17 @@ fn diagnose_miss(
         }
     }
 
+    let gold_status = if any_resolved {
+        // A resolved gold with no embeddable text is the genuine ingestion gap.
+        if body_token_count == 0 && summary_len == 0 {
+            GoldStatus::Empty
+        } else {
+            GoldStatus::Resolved
+        }
+    } else {
+        read_failure.unwrap_or(GoldStatus::Unreadable)
+    };
+
     MissDiag {
         qid: q.id.clone(),
         qtype: q.qtype.clone(),
@@ -433,6 +509,7 @@ fn diagnose_miss(
         shared_sample,
         summary_len,
         body_token_count,
+        gold_status,
     }
 }
 
@@ -441,6 +518,15 @@ fn diagnose_miss(
 /// query/document expansion; "buried" with overlap is a scoring problem.
 fn miss_cause(d: &MissDiag, cutoff: usize) -> &'static str {
     let found = |r: Option<usize>| r.is_some_and(|r| r <= cutoff);
+    // A gold that couldn't be read is not a retrieval/fusion problem and not an
+    // ingestion gap — report the read outcome so it isn't conflated with either.
+    match d.gold_status {
+        GoldStatus::Stale => return "gold stub withheld: flagged stale=1",
+        GoldStatus::Missing => return "gold stub absent from index",
+        GoldStatus::Unreadable => return "gold stub read error",
+        GoldStatus::Empty => return "empty indexed content (ingestion gap)",
+        GoldStatus::Resolved => {}
+    }
     if d.summary_len < 15 && d.overlap_count == 0 {
         "thin stub + register dead-end"
     } else if found(d.cosine_rank) && found(d.bm25_rank) {
@@ -475,13 +561,19 @@ fn print_miss_diagnosis(diags: &[MissDiag], cutoff: usize) {
             fmt(d.bm25_rank),
             miss_cause(d, cutoff),
         );
+        // When a gold didn't read back, the 0c/0tok counts reflect why it was
+        // skipped, not "indexed empty" — say so instead of misleading zeros.
+        let gold_text = match d.gold_status {
+            GoldStatus::Stale => "withheld (stale=1)".to_string(),
+            GoldStatus::Missing => "absent from index".to_string(),
+            GoldStatus::Unreadable => "read error".to_string(),
+            GoldStatus::Resolved | GoldStatus::Empty => {
+                format!("summary={}c body={}tok", d.summary_len, d.body_token_count)
+            }
+        };
         println!(
-            "    overlap: {}/{} query tokens   gold-text: summary={}c body={}tok   shared={:?}",
-            d.overlap_count,
-            d.query_token_count,
-            d.summary_len,
-            d.body_token_count,
-            d.shared_sample,
+            "    overlap: {}/{} query tokens   gold-text: {}   shared={:?}",
+            d.overlap_count, d.query_token_count, gold_text, d.shared_sample,
         );
     }
 }

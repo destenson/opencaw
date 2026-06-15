@@ -80,6 +80,12 @@ Rationale: the proxy's only window into retrieval quality was a DEBUG log line a
 
 This is a conscious deviation from "pure OpenAI surface," made on explicit request, and scoped to diagnostics. It does not open the door to adding orchestrator/probe/multi-pass endpoints to the proxy — that engine stays in the CLI.
 
+### Prebuilt-index consumers open the store read-only
+
+A consumer that serves or measures over a prebuilt index and has no reingest worker attached must open the `SqliteStubStore` with `with_read_only(true)`. `get_content` marks a stub `stale = 1` (persisted) when it can't read the body — a missing source, a wrong `corpus_root` that makes a present file appear absent, or an mtime mismatch. Without a reingest worker nothing ever clears that flag, and a stale stub is excluded from both retrieval halves (`all_embeddings` and the BM25 build both filter `stale = 0`), so the marking silently and permanently degrades every later run against the shared index.
+
+This bit the bench and CLI: a single run with a misconfigured `corpus_root` poisoned a frozen benchmark index (`subset-medium.sqlite`) with ~26% spurious `stale = 1` flags — the benchmark corpora never change, so they are never legitimately stale, which means any stale flag on them is a marking bug, not a real edit. The read-only flag gates the `mark_path_stale` calls so a transient/misconfigured read can't persist staleness. All four prebuilt-index consumers — `caw-server`, `caw-bench` (`--index` path), `caw-cli` retrieval store, and `graph-eval` — now open read-only. The CLI's separate consolidation store stays writable; an in-process pipeline that legitimately owns a reingest worker (none today) would attach one via `with_reindex_queue` instead of opening read-only.
+
 ---
 
 ## Implementation principles

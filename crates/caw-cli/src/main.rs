@@ -390,10 +390,16 @@ fn main() -> Result<()> {
     // `corpus_root.join(stored_path)`, so the corpus root must be the CWD;
     // using `cli.dir` here doubles the prefix (`crates/crates/...`), the file
     // appears missing, and every full read marks its stubs stale.
+    //
+    // Read-only: this is the retrieval store and there is no reingest worker
+    // attached to it, so a misconfigured/missing path must not persist
+    // `stale = 1` into the index (which nothing would ever recover). The
+    // separate consolidation store below stays writable.
     let corpus_root = std::env::current_dir().context("Failed to determine current directory")?;
     let mut store = SqliteStubStore::new(&db_path, dimension)
         .context("Failed to open SQLite stub store")?
-        .with_corpus_root(corpus_root);
+        .with_corpus_root(corpus_root)
+        .with_read_only(true);
 
     let tokenizer: Arc<dyn Tokenizer> = match cli.tokenizer.as_str() {
         "cl100k" => Arc::new(

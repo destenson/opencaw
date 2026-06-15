@@ -605,9 +605,15 @@ fn load_prebuilt_index(path: &std::path::Path, corpus_root: PathBuf) -> Result<P
     // paths stored on each stub and slice the body back out of the source
     // file. Without this the retrieval path errors the moment any loaded
     // fragment needs its body expanded.
+    //
+    // Read-only: the bench consumes a prebuilt index and has no reingest
+    // worker, so get_content must not mark rows stale on a missing/
+    // misconfigured path — that would persist into the shared index and
+    // degrade every later run (mirrors caw-server's prebuilt-index opener).
     let store = SqliteStubStore::new(&path_str, dim)
         .with_context(|| format!("open prebuilt index at {}", path.display()))?
-        .with_corpus_root(corpus_root);
+        .with_corpus_root(corpus_root)
+        .with_read_only(true);
 
     let all = store.all_embeddings().context("read all embeddings")?;
     if all.is_empty() {
