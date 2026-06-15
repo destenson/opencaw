@@ -193,6 +193,37 @@ impl SessionEvaluator {
         self.total_overhead_tokens += tokens;
     }
 
+    /// Number of recall events recorded.
+    pub fn recall_count(&self) -> usize {
+        self.recalls.len()
+    }
+
+    /// Stub ids recorded as recalled, in event order. Lets a test assert
+    /// which fragments the orchestrator admitted over a session.
+    pub fn recalled_stub_ids(&self) -> Vec<String> {
+        self.recalls.iter().map(|r| r.stub_id.clone()).collect()
+    }
+
+    /// Number of eviction events recorded.
+    pub fn eviction_count(&self) -> usize {
+        self.evictions.len()
+    }
+
+    /// Stub ids evicted, in event order.
+    pub fn evicted_stub_ids(&self) -> Vec<String> {
+        self.evictions.iter().map(|e| e.stub_id.clone()).collect()
+    }
+
+    /// Number of probe events recorded.
+    pub fn probe_count(&self) -> usize {
+        self.probes.len()
+    }
+
+    /// Number of recorded probes that matched (i.e. the probe admitted content).
+    pub fn matched_probe_count(&self) -> usize {
+        self.probes.iter().filter(|p| p.matched).count()
+    }
+
     /// Basic recall@k / precision@k over recorded recall events.
     /// `expected_ids` is the ground-truth set of stub ids that should have been recalled.
     pub fn recall_metrics(&self, expected_ids: &[String], k: usize) -> RecallMetrics {
