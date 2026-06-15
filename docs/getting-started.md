@@ -1,5 +1,7 @@
 # Getting Started
 
+*Status: Living reference — kept current. See [docs/README.md](README.md) for the docs index.*
+
 ## Prerequisites
 
 - Rust toolchain (stable)

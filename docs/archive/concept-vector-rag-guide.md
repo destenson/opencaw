@@ -1,5 +1,7 @@
 # Probing Concept Vectors for RAG
 
+> **Status: Frozen spike (2026-06-01).** Completed research write-up, kept for history. Not maintained. See [docs/README.md](../README.md) for the live docs index.
+
 *A practitioner's guide to using prefill activations as a semantic index.*
 
 ---

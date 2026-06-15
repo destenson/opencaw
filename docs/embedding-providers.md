@@ -1,5 +1,7 @@
 # Embedding Providers
 
+*Status: Living reference — kept current. See [docs/README.md](README.md) for the docs index.*
+
 All providers implement `EmbeddingProvider` from `caw-core`, which exposes `embed_query()` and `embed_document()` for asymmetric encoding. BGE-family models add `"query: "` / `"passage: "` prefixes automatically.
 
 ## FastEmbed (default)

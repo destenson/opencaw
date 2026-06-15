@@ -4,7 +4,7 @@
 //! This answers one question before any architecture is committed: does raw
 //! `cosine(query_cv, passage_cv)` rank the gold passage competitively against the
 //! real production embedder (`CandleEmbeddingProvider::bge_small`)? The guide
-//! (concept-vector-rag-guide.md) only ever validates concept vectors through a
+//! (docs/archive/concept-vector-rag-guide.md) only ever validates concept vectors through a
 //! *trained linear probe*; using them directly for cosine similarity is a stronger,
 //! unproven claim. This binary measures exactly that claim and nothing else.
 //! Interpretation of the table happens in chat, not here.

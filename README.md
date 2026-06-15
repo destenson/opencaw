@@ -24,6 +24,8 @@ See [docs/getting-started.md](docs/getting-started.md) for adapter setup, enviro
 
 ## Documentation
 
+Full index with status for every doc: [docs/README.md](docs/README.md).
+
 | | |
 |---|---|
 | [Glossary](docs/glossary.md) | Canonical definitions for every term used in the project |
@@ -36,7 +38,7 @@ See [docs/getting-started.md](docs/getting-started.md) for adapter setup, enviro
 | [Design](docs/design.md) | Thesis, stub-and-recall architecture, eviction policy, curation |
 | [Scope](docs/scope.md) | v0.1 deliverables, what's in and out, scope change protocol |
 | [Bugs](docs/bugs.md) | Known bugs and regression log |
-| [Codebase Review](docs/codebase-review.md) | Implementation status, structural gaps, debt inventory |
+| [Codebase Review](docs/archive/codebase-review.md) | Frozen snapshot (2026-05-09): implementation status, structural gaps, debt inventory |
 
 Development tracking is in [TODO.md](TODO.md).
 

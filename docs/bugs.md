@@ -1,5 +1,7 @@
 # A place to record bugs as they're found
 
+*Status: Log (append-only) — running bug and regression record. Entries are dated, marked with resolution state, and not pruned. See [docs/README.md](README.md) for the docs index.*
+
 ## B00. REGRESSION: caw-cli fails on first run with degenerate Rust code output. — RUST-CODE SYMPTOM RESOLVED
 
 Between .caw00013 and .caw00014, a regression was introduced that causes

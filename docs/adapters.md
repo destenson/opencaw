@@ -1,5 +1,7 @@
 # Model Adapters
 
+*Status: Living reference — kept current. See [docs/README.md](README.md) for the docs index.*
+
 All adapters implement the `ModelAdapter` trait from `caw-core`. The pattern is synchronous (using `block_on` internally), which works for library use but will panic if called from within an existing async context. Async refactoring is deferred to v2 per [scope.md](scope.md).
 
 ## Anthropic

@@ -1,5 +1,7 @@
 # Architecture
 
+*Status: Living reference — kept current. See [docs/README.md](README.md) for the docs index.*
+
 OpenCAW treats LLM context as a managed workspace rather than a simple container. The core loop: ingest documents → embed and index them → replace file references in prompts with lightweight stubs → dynamically recall full content as the model reasons about it → evict stale fragments and consolidate what was learned.
 
 ## Crates
@@ -88,4 +90,4 @@ Source documents
 - [Design doc](design.md) — thesis, stub-and-recall architecture, eviction policy, curation
 - [Scope](scope.md) — v0.1 deliverables and boundaries
 - [Decisions and Defaults](DECISIONS.md) — authoritative reference for settled implementation choices, feature defaults, and the decision protocol for ambiguous cases
-- [Codebase review](codebase-review.md) — implementation status, structural gaps, debt inventory
+- [Codebase review](archive/codebase-review.md) — frozen snapshot (2026-05-09): implementation status, structural gaps, debt inventory

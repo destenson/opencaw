@@ -1,5 +1,7 @@
 # Glossary
 
+*Status: Living reference — kept current. See [docs/README.md](README.md) for the docs index.*
+
 Canonical definitions for terms used across OpenCAW. Definitions follow how the term is actually used in this codebase and the design docs — where a term has a general ML meaning, the entry describes the OpenCAW-specific sense. Cross-references point to the authoritative source: [design](design.md), [architecture](architecture.md), [DECISIONS](DECISIONS.md), [storage](storage.md), [benchmarking](benchmarking.md).
 
 ---

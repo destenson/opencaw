@@ -1,7 +1,7 @@
 //! Quantized (GGUF) Mistral decoder, vendored from candle-transformers 0.10.2
 //! (`models/quantized_mistral.rs`), reduced to a prefill-only forward that returns the
 //! **per-layer last-token hidden state** — the "concept vector" of
-//! concept-vector-rag-guide.md.
+//! docs/archive/concept-vector-rag-guide.md.
 //!
 //! Why vendor: the stock `quantized_mistral::Model::forward` runs the layer loop
 //! internally and only returns final-token logits; its layers/embeddings are private

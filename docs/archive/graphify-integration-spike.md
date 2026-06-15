@@ -1,5 +1,7 @@
 # Graphify Integration Spike
 
+> **Status: Frozen spike (2026-06-07).** Completed investigation, kept for history. Not maintained. See [docs/README.md](../README.md) for the live docs index.
+
 Status: spike complete — edge sidecar + ingest + expansion + measurement all built and run over two passes (`caw-index::graph_edges`, `caw-cli` bin `caw-graph-ingest`, `caw-bench` bin `caw-bench-graph-eval`). Verdict in **Result (second pass)**: call-graph expansion with rank-adjacent merge is a real retrieval signal that recovers answers cosine misses, but needs a displacement gate before it goes on by default. Not wired into the orchestrator. Sections marked _(as built)_ record what the implementation does, which in places differs from the original spec.
 
 ## Goal
@@ -156,7 +158,7 @@ Two changes from the first pass. **(1) Harder questions:** added 8 `type: "calle
 ## File inventory
 
 OpenCAW (this repo):
-- `docs/graphify-integration-spike.md` (this file)
+- `docs/archive/graphify-integration-spike.md` (this file)
 - `crates/caw-cli/src/bin/caw-graph-ingest.rs` (graph.json → edge sidecar)
 - edge sidecar storage: small module in `caw-index/src/storage/` next to the stub store
 - expansion step: pure function in `caw-index` wrapping the retriever; opt-out flag wired in `caw-cli`

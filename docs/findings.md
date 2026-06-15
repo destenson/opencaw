@@ -1,5 +1,7 @@
 # QA Findings — Consolidated (Loops 0001–0021)
 
+> **Status: Closed historical log.** Consolidates QA loops 0001–0021; no longer appended to. The judged score numbers here predate the current judge and are retired — read it for the bug/finding history, not the metrics. See [docs/README.md](README.md) for the docs index.
+
 Distilled from `qa/recommendations/0001.md` through `0020.md` before artifact
 cleanup.
 

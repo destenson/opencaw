@@ -1,5 +1,7 @@
 # Benchmarking
 
+*Status: Living reference — kept current. See [docs/README.md](README.md) for the docs index.*
+
 The benchmark harness (`caw-bench`) measures recall-on vs. recall-off at matched context budget — this is the central empirical claim of the project. All binaries live in the `caw-bench` crate.
 
 ## Workloads

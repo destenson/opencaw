@@ -1,5 +1,7 @@
 # OpenCAW
 
+> **Status: Frozen brainstorm (2026-05-08).** Informal mascot/branding ideas, kept for history. Not maintained. See [docs/README.md](../README.md) for the live docs index.
+
 OpenCAW revolutionizes LLM context management with a Rust library that enables thinking-trace-driven recall and active context curation. It also provides primitives for measuring recall quality, heuristics for false-recall detection, and hooks for LLM-assisted curation. OpenCAW is not another RAG wrapper — it empowers developers to build smarter context management strategies that go beyond retrieval.
 
 OpenCAW is designed to be flexible and adaptable, allowing developers to implement their own context management strategies while providing a solid foundation of tools and primitives. Whether you're building a chatbot, a virtual assistant, automated agents, or any application that relies on LLMs, OpenCAW can help you manage context more effectively and improve the quality of your interactions.

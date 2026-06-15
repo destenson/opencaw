@@ -1,5 +1,7 @@
 # Scope — OpenCAW v0.1
 
+*Status: Living reference — kept current. See [docs/README.md](README.md) for the docs index.*
+
 ## What v0.1 is
 
 A **Rust library** for context-as-workspace management in LLM applications. Embeddable in any application that constructs LLM prompts. The core value proposition: thinking-trace-driven recall with eviction, consolidation, and context curation — not another RAG wrapper.

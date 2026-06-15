@@ -1,5 +1,7 @@
 # OpenCAW Codebase Review
 
+> **Status: Frozen snapshot (2026-05-02).** A point-in-time review, kept for history. Not maintained — do not read as current state. See [docs/README.md](../README.md) for the live docs index.
+
 **Date:** 2026-05-02
 **Branch:** try1
 **Reviewer:** codebase-review skill

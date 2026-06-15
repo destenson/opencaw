@@ -1,5 +1,7 @@
 # Stub Storage and Vector Index
 
+*Status: Living reference — kept current. See [docs/README.md](README.md) for the docs index.*
+
 The `StubStore` trait handles durability (stubs, embeddings, content, consolidation notes). The `VectorIndex` trait handles similarity search. They are separate so the storage layer can evolve independently of the search layer.
 
 Note: file content is stored as byte-range pointers back into the source, not duplicated in the database.
