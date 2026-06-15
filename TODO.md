@@ -127,4 +127,17 @@ The following sections are in no particular order. Do not infer that high priori
 ## GGUF models to evaluate
 
 - Test `~/models` GGUF models as cheaper intent-classification / relevance-probe adapters
-- Test `~/models/unsloth` diffusion-gemma GGUF via custom `llama.cpp`; consider fine-tuning for intent/probe tasks
+
+## Diffusion models (exploration — never used in opencaw)
+
+We have never used a diffusion language model in opencaw. A custom `llama.cpp` build at `~/src/llama.cpp` can run the DiffusionGemma model in `~/models/unsloth`. Goal: find where and how diffusion LMs can enhance opencaw, not just slot one in as a drop-in answer model.
+
+Diffusion LMs differ from autoregressive ones in ways that may map onto specific opencaw subsystems — record these as hypotheses to test, not as settled fit:
+
+- **Iterative/parallel denoising** instead of left-to-right token generation. The multi-pass refinement step (orchestrator `dynamic.rs`, the "refinement produced lower-quality answer" path) is itself an iterative-improvement loop — a diffusion model's native refinement may be a better fit there than re-prompting an AR model, or may compose with it.
+- **Infilling / bidirectional context.** Consolidation (rewriting/merging evicted stubs into a compact note) and stub-summary generation are constrained-rewrite tasks where bidirectional context could help.
+- **Cheap structured classification.** The intent classifier and relevance probe want fast, well-formed short outputs (JSON-ish); a small diffusion model may produce them more reliably than a small AR model that drifts. (Consider fine-tuning for these.)
+
+First steps before committing to anything: (1) stand up the custom `llama.cpp` build as a `caw-bench` adapter (likely via the existing `LlamaCpp` adapter path or an OpenAI-compatible server it exposes — verify which) and confirm it generates at all; (2) measure it on one concrete task with an existing bench (intent classification or relevance probe) so the comparison is apples-to-apples against the current small-model baseline. Don't add diffusion anywhere in the library until a measured task shows it helps.
+
+Kept here (backlog), not in `docs/ROADMAP.md`: this is exploratory and off the current dogfooding critical path. Promote to the roadmap only if a measured result makes it a priority.
