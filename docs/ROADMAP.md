@@ -10,19 +10,17 @@ The rule that keeps this doc honest: every step is tied to **what it unblocks**,
 
 ## Current milestone: dogfood OpenCAW as a coding-agent context server
 
-Drive a real coding agent through `caw-server` against this repo's own index and have it be good enough to use daily: recall surfaces the right content for mid-task information needs (signatures, trait bounds, struct fields, call sites) without burying it, at acceptable latency. "Done" means the product is good enough that we actually use it. The `code-agent` recall-on/off numbers are a QA check that retrieval quality is where it should be — a regression gauge, not a proof that the approach works (it does).
+Drive a real coding agent through `caw-server` against this repo's own index and have it be good enough to use daily: recall surfaces the right content for mid-task information needs (signatures, trait bounds, struct fields, call sites) without burying it, at acceptable latency. "Done" means the product is good enough that we actually use it. The `code-agent` recall-on/off numbers are a QA regression gauge, not evidence — when recall-on answers a lookup wrong, that's a defect to fix.
 
 ## Where we are now
 
-**Fixing retrieval quality — now isolated to candidate-set recall.** The eval is trustworthy enough to use as QA, and a deterministic opencaw A/B has now located the binding constraint.
+**Retrieval wiring done; the dogfood surface is clean at a realistic budget.** Bench/cli now share the proxy's hybrid retriever, and a deterministic `code-agent` sweep over this repo says recall-on and recall-off are indistinguishable on the QA set once the workspace budget is realistic.
 
-- ✓ Judge decoupled from generation (two-phase eval) — `5b45713`.
-- ✓ Paired per-item deltas in the report (cancel item difficulty so a real effect is resolvable) — `e309486`.
-- ✓ Standalone re-judge of persisted answers (`--judge-trace`): score saved answers against any judge without regenerating.
-- ✓ Serial path verified deterministic (multi-seed gen rejected as no-signal); groq answer model (`CAW_BENCH_ANSWER=groq`, smallest model) makes large-n runs fast (~2–3s/item) though groq bills per token.
-- ✓ Deterministic opencaw A/B of the coverage-first admission fix (`d71c6c4`), `--only-mode off --concurrency 1`, HEAD vs parent over 29 common items: precision@1 flat, recall@k −0.017, mrr +0.011 — **neutral-to-marginal with one regression. Mechanism 1 (load-order flooding) was not the dominant cause.** (2026-06-15; DECISIONS "Initial-load admission".)
-- ✓ Located the candidate-recall gap's cause (2026-06-15): **the eval runs the wrong retriever.** `caw-bench`/cli use pure-cosine `SemanticRetriever`; the dogfood proxy uses `HybridRetriever`. Retrieval-only A/B on the sysdoc gold set: cosine→hybrid lifts recall@10 0.48→0.85, recall@20 0.54→0.92. (Also found: RRF is *worse* than the current `divide_total` fusion at every depth ≤20 — the planned RRF swap is contradicted; DECISIONS.)
-- ☐ **Wire bench/cli onto the proxy's hybrid retrieval, then re-measure the opencaw sweep.** The candidate-recall ceiling (~0.67) is largely an artifact of the eval running cosine; the better retriever already exists on the proxy. This is also required by the repo principle that cli/bench/proxy share retrieval code. Expected to raise recall@k for free; only after this is embedding/chunking or admission/eviction tuning worth doing. **← next**
+- ✓ Judge decoupled from generation (two-phase eval) — `5b45713`; paired per-item deltas — `e309486`; standalone re-judge (`--judge-trace`).
+- ✓ Serial path verified deterministic; groq answer model (`CAW_BENCH_ANSWER=groq`, smallest model) runs ~2–3s/item (bills per token).
+- ✓ Bench/cli wired onto `HybridRetriever` to match the proxy — `0bb14f5`.
+- ✓ Deterministic `code-agent` sweep over this repo (2026-06-15, `--concurrency 1`, groq answer). At the bench default `max_workspace_tokens=2000`: recall-on lost on two exact-fact items (`ca_005`, `ca_012`) because eviction reduced the gold body to a stub before the answer turn. At `--max-workspace-tokens 12000`: both flip to on=off=1.0 and the set goes flat (answer_score 0W/12T/1L, Δ−0.077). The 2k regressions were the eviction-microscope budget, not a product defect.
+- Standing observations from that sweep: `recall@k` +0.115 but `precision@1`/`mrr` −0.23 — recall-on surfaces more gold but ranks it lower; `recall@k` counts a stub-only resident path as a hit (BUGS "Retrieval").
 
 ---
 
@@ -39,32 +37,32 @@ The eval currently can't resolve the effect we'd be optimizing: `answer_score` s
 - **Fast (not free) large-n via groq answer model** ✓ — `CAW_BENCH_ANSWER=groq` in `bench.sh` runs ~2–3s/item (vs tens of seconds locally), defaulting to the smallest groq model. Removes wall-time as the blocker on the real power lever (more QA items) — but groq bills per token, so use the smallest model and bounded runs; don't run the full set casually.
 - **Larger-n measurement + judge averaging** ☐ — run on the deterministic path, average judge passes via `--judge-trace`, and expand the QA item set. **← next**
 
-### 2. Recall quality — *second, because this is the real capability gap but only tellable from noise once (1) holds*
+### 2. Workspace budget — *first, because the bench's study budget is not a dogfood budget*
 
-Recall-on currently regresses: it "buries gold in load order" and some items load the gold chunk yet still answer wrong (BUGS "Retrieval"). This is the actual thing standing between us and a useful dogfood — but a fix is indistinguishable from noise until the instrument is trustworthy.
+The bench pins `max_workspace_tokens=2000` on purpose, to force eviction to fire so the curation machinery is observable (see the comment on `RunnerConfig::default`). A coding agent dogfooding `caw-server` has a much larger context budget. At 2k, eviction throws away gold bodies the answer needs; at 12k it does not. So the server needs a realistic default workspace budget, set independently of the bench's deliberately-tight study setting, before any of the curation behavior below is tuned against a representative workload.
 
-Two deterministic measurements (2026-06-15) have narrowed this to a single first move. (a) Admission ordering is **not** the lever: the coverage-first fix for mechanism 1 was neutral-to-marginal on opencaw, because gold is missing from the candidate set entirely on ~1/3 of items — admission can only reorder what retrieval already surfaced. (b) That missing-candidate ceiling is largely because **the eval runs pure cosine while the proxy runs hybrid**; on the sysdoc gold set, hybrid lifts recall@10 from 0.48 to 0.85. So the work reorders:
+### 3. Progressive disclosure — *second, the durable fix for genuinely-constrained corpora*
 
-- **First, make the eval use the same hybrid retriever as the proxy.** `caw-bench`/cli instantiate `SemanticRetriever` (cosine); `caw-server` uses `HybridRetriever`. Wiring bench/cli onto hybrid is expected to raise candidate recall@k sharply for free, and is required by the repo principle that cli/bench/proxy share retrieval code. Re-run the opencaw recall-on/off sweep afterward — the ~0.67 ceiling should rise.
-- **Then, if recall@k is still short, embedding/chunking** — structure-aware chunking already exists on the proxy ingest path; confirm it's on the eval path too. (Do **not** swap `divide_total` fusion for RRF: measured worse at every depth ≤20.)
-- **Then, precision@1 / ranking** — once gold is reliably in the candidate set, get it ranked at the top so admission and the answer model see it first.
-- Deferred (measured, not the lever): mechanism 1 admission ordering (`d71c6c4`, kept but neutral); mechanism 2 thinking-trace re-query drift — only worth revisiting once candidate recall is high.
+On a corpus too large to fit (the case OpenCAW exists for), the workspace *will* be under real pressure and stubs *will* be evicted. When a pinpoint query then hits a file resident only as a stub, the loop should re-upgrade that stub to full content in place rather than answer from the stub (TODO "Progressive disclosure"). The 2k sweep is the standing reproduction of what this fixes.
 
-### 3. Latency / generation reduction — *third, because a live agent needs speed but a gen change needs a quality bar*
+### 4. Ranking and the recall metric — *third*
 
-Generation dominates wall time (~60–170s/item; judge is ~0.6s). Dogfooding a live agent loop needs that down. But because generation *is* the thesis mechanism, any gen-reduction change is gated on a pre-committed quality bar (DECISIONS "Performance optimization") — which requires the trustworthy instrument from (1).
+- `recall@k` counts a stub-only resident path as a hit, masking whether the body the answer needs is actually loaded (BUGS "Retrieval"). Separate stub residency from body residency in `retrieval_metrics`.
+- `precision@1`/`mrr` run −0.23 against recall-off on the `code-agent` sweep while `recall@k` runs +0.115: recall-on surfaces more gold but ranks it lower. The `divide_total` hybrid fusion is a placeholder (TODO); ranking is where to spend effort once budget and disclosure are settled. (Do **not** swap to RRF: measured worse at every depth ≤20.)
 
-- Configurable `num_predict`; skip the refinement completion when the first answer is already grounded; a batching serve stack (vLLM/TensorRT).
+### 5. Latency / generation reduction
 
-### 4. Dogfood — *the destination*
+Generation dominates wall time. A live agent loop needs it down: configurable `num_predict`; skip the refinement completion when the first answer is already grounded; a batching serve stack (vLLM/TensorRT). Gen-reduction changes are gated on the quality bar in DECISIONS "Performance optimization".
 
-Drive a real agent through `caw-server` against the repo index; expand the `code-agent` QA set; run the recall-on/off sweep on real agent information-needs. This is where qualitative pain becomes the signal — but only after (1)–(3), or we'd be debugging blind.
+### 6. Dogfood — *the destination*
+
+Drive a real agent through `caw-server` against the repo index at a realistic budget; expand the thin `code-agent` QA set (14 items); run the recall-on/off sweep on real agent information-needs as a standing regression gauge.
 
 ---
 
 ## Single next action
 
-Wire `caw-bench`/cli onto the proxy's `HybridRetriever` (they currently use pure-cosine `SemanticRetriever`), then re-run the opencaw `--only-mode off` sweep. The deterministic A/B showed hybrid lifts recall@10 from 0.48 to 0.85 on the sysdoc gold set, and the opencaw candidate-recall ceiling (~0.67) is largely an artifact of the eval running cosine. The better retriever already exists; the work is making the eval measure it. Measure on the deterministic `--only-mode off` path so the change is attributable.
+Set `caw-server`'s default workspace budget to a realistic agent-sized value, independent of the bench's deliberately-tight `max_workspace_tokens=2000` study setting. The deterministic `code-agent` sweep shows the two recall-on regressions at 2k both vanish at 12k (on=off=1.0), so the eviction-to-stub losses are an artifact of the study budget, not a product defect — but the server must not inherit that budget. Then re-run `bench.sh code-agent -- --concurrency 1 --max-workspace-tokens <server-default>` as the regression gauge.
 
 ## How the docs relate
 
