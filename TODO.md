@@ -2,6 +2,8 @@
 
 Design: [docs/design.md](docs/design.md). Scope: [docs/scope.md](docs/scope.md). Settled decisions: [docs/DECISIONS.md](docs/DECISIONS.md).
 
+**For priority and sequence, see [docs/ROADMAP.md](docs/ROADMAP.md)** — this file is the *unordered* backlog; the roadmap carries the ordered critical path and current focus.
+
 The following sections are in no particular order. Do not infer that high priority items are listed first.
 
 ## Logging

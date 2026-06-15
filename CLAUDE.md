@@ -6,6 +6,8 @@ The mechanism for deciding what to load, evict, and consolidate is the model's o
 
 See `docs/design.md` for the full thesis and `docs/scope.md` for what is in and out of scope for v0.1.
 
+For **current priority, sequence, and what to work on next** — the question "where should we go next?" — read `docs/ROADMAP.md`. It carries the ordered critical path to the next milestone and the forcing logic behind that order, which `TODO.md` (unordered backlog), `BUGS.md` (open defects), and `docs/DECISIONS.md` (settled choices) deliberately do not.
+
 ---
 
 - **USE RELEASE BUILDS FOR BENCHMARKING** Always use release builds (e.g. `cargo build --release`) when benchmarking or profiling the codebase to get accurate performance measurements. Debug builds include additional checks and instrumentation that can significantly impact performance, so they should not be used for benchmarking. Using release builds ensures that you are measuring the performance of the optimized code that will be used in production, rather than the slower debug version.

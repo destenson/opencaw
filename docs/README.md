@@ -11,6 +11,7 @@ If a living doc contradicts the code, the code wins — fix the doc. The active 
 
 - [Design](design.md) — the thesis: context-as-workspace, on-demand recall, curated working sets. Read this first to understand *why* OpenCAW exists.
 - [Scope](scope.md) — what v0.1 is and is not; the scope-change protocol.
+- [Roadmap](ROADMAP.md) — where we are, what's next, and *why that order*. Read to answer "where should we go next?"; carries sequence and current focus that TODO/BUGS/DECISIONS deliberately don't.
 - [Decisions](DECISIONS.md) — authoritative reference for settled implementation choices. Read before making any significant implementation decision.
 - [Getting Started](getting-started.md) — build, run, environment variables, a code example.
 - [Glossary](glossary.md) — canonical definitions for terms used across the project and docs.
