@@ -193,9 +193,18 @@ pub struct ItemResult {
     pub answer: String,
     pub loaded_paths: Vec<String>,
     pub expected_paths: Vec<String>,
-    /// recall@k over the final loaded set (after all orchestrator iterations).
-    /// Fraction of expected paths that ended up in the loaded set.
+    /// recall@k over the final loaded set, counting only *body* fragments —
+    /// the fraction of expected paths whose answer-bearing content is resident.
+    /// A path resident only as a stub does not count (a stub is a pointer, not
+    /// the content).
     pub recall_at_k: f32,
+    /// Path-level recall counting stub residency too — the fraction of expected
+    /// paths surfaced in the workspace at all, as stub or body. Always ≥
+    /// `recall_at_k`; the gap is the progressive-disclosure headroom (paths
+    /// surfaced as stubs but never upgraded to full content). Defaults to 0 so
+    /// a pre-existing trace without this field still deserializes.
+    #[serde(default)]
+    pub stub_recall_at_k: f32,
     /// Fraction of the loaded set that's actually relevant (i.e. in
     /// `expected_paths`). Mathematically capped at `min(expected, k) / k`,
     /// so for single-needle NIAH this can never exceed `1/k`. Renamed from
@@ -465,7 +474,7 @@ fn finalize_result(
     stub_summaries: &HashMap<StubId, String>,
 ) -> Result<ItemResult> {
     let loaded_paths: Vec<String> = loaded.iter().map(|f| f.locator.source.clone()).collect();
-    let metrics = retrieval_metrics(&loaded_paths, &item.expected_paths);
+    let metrics = retrieval_metrics(loaded, &item.expected_paths);
     let content_tokens: usize = loaded.iter().map(|f| f.tokens).sum();
     let provenance_overhead = loaded.len() * 15;
     let overhead_tokens =
@@ -510,6 +519,7 @@ fn finalize_result(
         loaded_paths,
         expected_paths: item.expected_paths.clone(),
         recall_at_k: metrics.recall_at_k,
+        stub_recall_at_k: metrics.stub_recall_at_k,
         relevance_at_k: metrics.relevance_at_k,
         precision_at_1: metrics.precision_at_1,
         mrr: metrics.mrr,
@@ -549,6 +559,7 @@ fn truncate_preview(s: &str, cap: usize) -> String {
 #[derive(Debug, Clone, Copy)]
 struct RetrievalMetrics {
     recall_at_k: f32,
+    stub_recall_at_k: f32,
     relevance_at_k: f32,
     precision_at_1: f32,
     mrr: f32,
@@ -609,27 +620,53 @@ fn path_matches(loaded: &str, expected: &str) -> bool {
         && loaded.as_bytes()[loaded.len() - expected.len() - 1] == b'/'
 }
 
-fn retrieval_metrics(loaded: &[String], expected: &[String]) -> RetrievalMetrics {
-    let expected_match_count = expected
+/// A stub fragment is a pointer (summary/outline), not answer-bearing content.
+/// `read_range(id, "stub")` sets the locator string to "stub"; full/range reads
+/// set it to the range. So the locator is an explicit residency marker — no
+/// content-sniffing heuristic needed.
+fn is_stub_fragment(f: &caw_core::RecallFragment) -> bool {
+    f.locator.locator.eq_ignore_ascii_case("stub")
+}
+
+fn path_recall(loaded: &[&str], expected: &[String]) -> f32 {
+    if expected.is_empty() {
+        return 1.0;
+    }
+    let matched = expected
         .iter()
         .filter(|exp| loaded.iter().any(|l| path_matches(l, exp)))
         .count();
-    let loaded_match_count = loaded
-        .iter()
-        .filter(|l| expected.iter().any(|exp| path_matches(l, exp)))
-        .count();
+    matched as f32 / expected.len() as f32
+}
 
-    let recall_at_k = if expected.is_empty() {
-        1.0
-    } else {
-        expected_match_count as f32 / expected.len() as f32
-    };
-    let relevance_at_k = if loaded.is_empty() {
+/// Recall, relevance, precision@1, and mrr are computed over *body* fragments
+/// only: a stub holds no answer, so a path resident only as a stub is not
+/// recalled in the sense the metric is meant to capture (an earlier version
+/// counted stub residency as a hit, reporting recall@k=1.0 for items whose
+/// answer body was never loaded). `stub_recall_at_k` keeps the path-level
+/// "surfaced at all" number; the gap (stub_recall_at_k − recall_at_k) is the
+/// progressive-disclosure headroom — paths surfaced as stubs but never upgraded.
+fn retrieval_metrics(loaded: &[caw_core::RecallFragment], expected: &[String]) -> RetrievalMetrics {
+    let body_paths: Vec<&str> = loaded
+        .iter()
+        .filter(|f| !is_stub_fragment(f))
+        .map(|f| f.locator.source.as_str())
+        .collect();
+    let all_paths: Vec<&str> = loaded.iter().map(|f| f.locator.source.as_str()).collect();
+
+    let recall_at_k = path_recall(&body_paths, expected);
+    let stub_recall_at_k = path_recall(&all_paths, expected);
+
+    let relevance_at_k = if body_paths.is_empty() {
         0.0
     } else {
-        loaded_match_count as f32 / loaded.len() as f32
+        let matched = body_paths
+            .iter()
+            .filter(|l| expected.iter().any(|exp| path_matches(l, exp)))
+            .count();
+        matched as f32 / body_paths.len() as f32
     };
-    let precision_at_1 = match loaded.first() {
+    let precision_at_1 = match body_paths.first() {
         Some(top) if expected.iter().any(|exp| path_matches(top, exp)) => 1.0,
         _ => 0.0,
     };
@@ -639,7 +676,7 @@ fn retrieval_metrics(loaded: &[String], expected: &[String]) -> RetrievalMetrics
         let total: f32 = expected
             .iter()
             .map(
-                |exp| match loaded.iter().position(|l| path_matches(l, exp)) {
+                |exp| match body_paths.iter().position(|l| path_matches(l, exp)) {
                     Some(rank) => 1.0 / (rank as f32 + 1.0),
                     None => 0.0,
                 },
@@ -649,6 +686,7 @@ fn retrieval_metrics(loaded: &[String], expected: &[String]) -> RetrievalMetrics
     };
     RetrievalMetrics {
         recall_at_k,
+        stub_recall_at_k,
         relevance_at_k,
         precision_at_1,
         mrr,

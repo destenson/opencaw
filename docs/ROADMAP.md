@@ -43,12 +43,12 @@ The bench pins `max_workspace_tokens=2000` on purpose, to force eviction to fire
 
 ### 3. Progressive disclosure — *second, the durable fix for genuinely-constrained corpora*
 
-On a corpus too large to fit (the case OpenCAW exists for), the workspace *will* be under real pressure and stubs *will* be evicted. When a pinpoint query then hits a file resident only as a stub, the loop should re-upgrade that stub to full content in place rather than answer from the stub (TODO "Progressive disclosure"). The 2k sweep is the standing reproduction of what this fixes.
+On a corpus too large to fit (the case OpenCAW exists for), the workspace *will* be under real pressure and stubs *will* be evicted. When a pinpoint query then hits a file resident only as a stub, the loop should re-upgrade that stub to full content in place rather than answer from the stub. Design committed (DECISIONS "Progressive disclosure"): the upgrade replaces the early-return in `load_fragments`' already-resident branch (and the line-reference path) for `LoadMode::Full`, reads residency from the fragment locator, and respects three invariants (provenance-invertible, query-referenced retention, budget-monotonic). **Not yet implemented — this is the next code.** The `stub_recall_at_k − recall_at_k` gap on the 2k sweep is the standing reproduction and the measure of what it buys.
 
-### 4. Ranking and the recall metric — *third*
+### 4. Ranking — *third*
 
-- `recall@k` counts a stub-only resident path as a hit, masking whether the body the answer needs is actually loaded (BUGS "Retrieval"). Separate stub residency from body residency in `retrieval_metrics`.
-- `precision@1`/`mrr` run −0.23 against recall-off on the `code-agent` sweep while `recall@k` runs +0.115: recall-on surfaces more gold but ranks it lower. The `divide_total` hybrid fusion is a placeholder (TODO); ranking is where to spend effort once budget and disclosure are settled. (Do **not** swap to RRF: measured worse at every depth ≤20.)
+- ✓ `recall@k` now counts only body residency; `stub_recall_at_k` reports the path-level number and the gap is the disclosure headroom (`retrieval_metrics`, report). The metric no longer hides stub-only gold.
+- `precision@1`/`mrr` run below recall-off on the `code-agent` sweep while `recall@k` runs above it: recall-on surfaces more gold but ranks it lower. The `divide_total` hybrid fusion is a placeholder (TODO); ranking is where to spend effort once disclosure is settled. (Do **not** swap to RRF: measured worse at every depth ≤20.)
 
 ### 5. Latency / generation reduction
 
@@ -62,9 +62,9 @@ Drive a real agent through `caw-server` against the repo index at a realistic bu
 
 ## Single next action
 
-✓ Done (2026-06-15): `caw-server`'s default `max_workspace_tokens` raised 2000→12000 to match the orchestrator default, so the proxy no longer ships the bench's deliberately-tight study budget (DECISIONS "Default workspace token budget").
+✓ Done (2026-06-15): server budget 2000→12000 (DECISIONS "Default workspace token budget"); `recall@k` split into body-recall vs `stub_recall_at_k` so the metric no longer counts stub-only gold as a hit (step 4); progressive-disclosure design committed (DECISIONS "Progressive disclosure").
 
-Next: progressive disclosure (step 3) — re-upgrade a stub to full content when a pinpoint query hits a file resident only as a stub. This is the durable fix for genuinely-constrained corpora, where the eviction-to-stub failure the 12000 default papers over on this small repo is real. The 2k `code-agent` sweep is the standing reproduction.
+Next: **implement progressive disclosure** (step 3) per the committed design — turn `load_fragments`' already-resident early-return into a stub→body upgrade for `LoadMode::Full`, honoring the three invariants. Verify with the 2k `code-agent` sweep: the `stub_recall_at_k − recall_at_k` gap should close as stubs get upgraded.
 
 ## How the docs relate
 

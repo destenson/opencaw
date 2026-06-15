@@ -88,6 +88,23 @@ This bit the bench and CLI: a single run with a misconfigured `corpus_root` pois
 
 ---
 
+### Progressive disclosure: upgrade a resident stub to full content in place (2026-06-15, design — not yet implemented)
+
+**Problem.** A fragment can be resident in the workspace as a *stub* (summary/outline) or as a *body* (full content or a line range). The initial load admits stubs (`LoadMode::Stub`); only the probe, line-reference, and mention paths admit bodies (`LoadMode::Full`). When a later reasoning step references a file that is already resident *as a stub*, nothing upgrades it: `load_fragments`' "already loaded" branch (`if self.loaded_ids.contains(&stub_id)`) only refreshes the relevance score and returns, and the line-reference path's equivalent branch skips with the comment "full file already loaded" — which is wrong when the resident copy is a stub. So the model is left to answer a pinpoint question (a field default, a constant value, a signature) from an outline that does not contain it. Measured on the deterministic `code-agent` sweep: gold was resident only as a stub on 7 of 13 items, and `stub_recall_at_k − recall_at_k` (added to the bench report alongside this design) quantifies exactly that gap.
+
+**Decision.** When a recall trigger that wants full content (`LoadMode::Full` — probe recall, line-reference recall, an explicit mention) fires on a `stub_id` whose resident fragment is a stub, upgrade it: read the body (or the referenced range), and replace the stub fragment *in place* — same position in `self.loaded`, updated `content`/`tokens`/`locator` — rather than appending (which would duplicate the source) or leaving the stub (the current bug). Residency mode is read from the resident fragment's locator (`is_stub_fragment`: `locator.locator == "stub"`), so no new per-id state and no heuristic. A trigger arriving in `LoadMode::Stub`, or one whose resident copy is already a body, keeps the current refresh-score behavior.
+
+**Invariants** (the upgrade is a memory-state transition; state them so the transition is checkable):
+- *Provenance-invertible.* A stub always retains the `stub_id` needed to read its body, so an upgrade is always possible and never loses the link to ground truth.
+- *Query-referenced retention.* A fragment upgraded by the current trigger is the one the model just asked for; it must not be evicted in the same step. The upgrade sets/refreshes its relevance above the unload threshold before any budget eviction runs.
+- *Budget-monotonic.* An upgrade raises token count, so it respects `max_workspace_tokens`: if the larger body would overflow, evict lower-relevance fragments first (the existing eviction path), and only skip the upgrade if even after eviction it cannot fit — in which case the stub stays and the skip is logged, not silently dropped.
+
+**Call sites** (verified): the upgrade replaces the early-return in `load_fragments`' already-resident branch (`dynamic.rs`, the `loaded_ids.contains` check) for `LoadMode::Full`, and the analogous skip in the line-reference path. Eviction-to-stub on the *other* side (a body decayed back down) is the existing consolidation path and is unchanged here.
+
+**Why on this repo it only shows under budget pressure.** With the workspace budget large enough to hold every candidate body (the 12000 default on a small repo), the initial bodies are never evicted and the gap is small. The upgrade matters on corpora too large to fit, where the workspace genuinely churns — which is the case OpenCAW exists for. The 2000-budget `code-agent` sweep is the standing reproduction.
+
+---
+
 ## Implementation principles
 
 When making a choice this document doesn't explicitly cover, apply these in order.

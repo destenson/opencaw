@@ -11,6 +11,9 @@ pub struct ModeSummary {
     /// thesis: does recall improve task-level correctness at matched budget.
     pub mean_answer_score: f32,
     pub mean_recall_at_k: f32,
+    /// Path-level recall counting stub residency too (≥ `mean_recall_at_k`).
+    /// The gap is the mean progressive-disclosure headroom across items.
+    pub mean_stub_recall_at_k: f32,
     /// Capped at min(|expected|, k) / k. For single-needle workloads this
     /// is degenerate (max = 1/k); use precision_at_1 or mrr as the
     /// signal instead.
@@ -84,6 +87,7 @@ pub struct SerializableItem {
     pub loaded_paths: Vec<String>,
     pub expected_paths: Vec<String>,
     pub recall_at_k: f32,
+    pub stub_recall_at_k: f32,
     pub relevance_at_k: f32,
     pub precision_at_1: f32,
     pub mrr: f32,
@@ -109,6 +113,7 @@ impl From<&ItemResult> for SerializableItem {
             loaded_paths: r.loaded_paths.clone(),
             expected_paths: r.expected_paths.clone(),
             recall_at_k: r.recall_at_k,
+            stub_recall_at_k: r.stub_recall_at_k,
             relevance_at_k: r.relevance_at_k,
             precision_at_1: r.precision_at_1,
             mrr: r.mrr,
@@ -188,6 +193,7 @@ fn compute_paired_deltas(results: &[ItemResult]) -> Vec<PairedDelta> {
     vec![
         paired_delta_for("answer_score", &pairs, |r| r.answer_score),
         paired_delta_for("recall_at_k", &pairs, |r| r.recall_at_k),
+        paired_delta_for("stub_recall_at_k", &pairs, |r| r.stub_recall_at_k),
         paired_delta_for("precision_at_1", &pairs, |r| r.precision_at_1),
         paired_delta_for("mrr", &pairs, |r| r.mrr),
     ]
@@ -235,6 +241,7 @@ fn mean_summary(mode: RecallMode, items: &[&ItemResult]) -> ModeSummary {
     let n = items.len() as f32;
     let sum_answer: f32 = items.iter().map(|r| r.answer_score).sum();
     let sum_recall: f32 = items.iter().map(|r| r.recall_at_k).sum();
+    let sum_stub_recall: f32 = items.iter().map(|r| r.stub_recall_at_k).sum();
     let sum_relevance: f32 = items.iter().map(|r| r.relevance_at_k).sum();
     let sum_p1: f32 = items.iter().map(|r| r.precision_at_1).sum();
     let sum_mrr: f32 = items.iter().map(|r| r.mrr).sum();
@@ -260,6 +267,7 @@ fn mean_summary(mode: RecallMode, items: &[&ItemResult]) -> ModeSummary {
         item_count: items.len(),
         mean_answer_score: sum_answer / n,
         mean_recall_at_k: sum_recall / n,
+        mean_stub_recall_at_k: sum_stub_recall / n,
         mean_relevance_at_k: sum_relevance / n,
         mean_precision_at_1: sum_p1 / n,
         mean_mrr: sum_mrr / n,
@@ -293,8 +301,13 @@ pub fn format_summary(report: &BenchReport) -> String {
             summary.mean_answer_score
         ));
         out.push_str(&format!(
-            "  recall@k:             {:.3}\n",
+            "  recall@k (body):      {:.3}\n",
             summary.mean_recall_at_k
+        ));
+        out.push_str(&format!(
+            "  recall@k (+stub):     {:.3}  (gap {:.3} = stub-only gold, disclosure headroom)\n",
+            summary.mean_stub_recall_at_k,
+            summary.mean_stub_recall_at_k - summary.mean_recall_at_k
         ));
         out.push_str(&format!(
             "  precision@1:          {:.3}\n",
