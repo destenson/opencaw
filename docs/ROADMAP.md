@@ -17,8 +17,8 @@ Drive a real coding agent through `caw-server` against this repo's own index, an
 **Instrument-trust phase.** We are making the eval able to resolve a recall change before we try to make recall changes.
 
 - ✓ Judge decoupled from generation (two-phase eval) — `5b45713`.
-- ◐ Paired per-item deltas in the report (cancel item difficulty so a real effect is resolvable) — in progress.
-- ☐ Standalone re-judge of persisted answers; more seeds; serial generation path for reproducibility.
+- ✓ Paired per-item deltas in the report (cancel item difficulty so a real effect is resolvable) — `e309486`.
+- ☐ Standalone re-judge of persisted answers; more seeds; serial generation path for reproducibility. **← next**
 
 ---
 
