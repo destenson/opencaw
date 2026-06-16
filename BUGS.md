@@ -14,9 +14,6 @@ Some QA-era findings (loops 0001–0021) remain in `docs/archive/findings.md` ra
 
 - **`caw-cli` emits no `tracing` log output; `RUST_LOG` has no effect** (found 2026-06-16): the diagnostic lines `caw-cli` prints on stderr are plain prints (no timestamp, level, target, or `file:line` location), and no `tracing`-formatted event is ever emitted at any `RUST_LOG` setting — so the orchestrator's own load/evict/probe/recall decisions are unreachable. `docs/skills/caw-dev/SKILL.md` documents `RUST_LOG=caw_orchestrator=debug` as the way to see recall decisions and claims an explicit `RUST_LOG` is honored verbatim. Repro: `printf 'what is opencaw?\n' | RUST_LOG=caw_orchestrator=debug,caw_core=debug docs/skills/caw-dev/scripts/run-cli.sh --dir crates --adapter ollama --model llama3.2:3b --no-intent-classifier 2>&1 | grep -E '[a-z_]+\.rs:[0-9]+'` prints nothing — a working subscriber would emit lines carrying a `file.rs:NN` location.
 
-## Intent classification
-
-- **Intent classifier output is dropped to empty and leaks a malformed guidance line** (found 2026-06-16): with `--intent-model granite4:micro`, an explanatory query yields an all-empty structured intent (`[intent] QueryIntent()` on the terminal) while an unrecognized classifier key (`is_explanation`) is rendered into the prompt verbatim as the guidance line `Additional context: is explanation.`. Net effect: the intent is treated as empty so explanation-query handling never fires, and a meaningless line is injected into the model's context. Repro: `docs/skills/caw-dev/scripts/test-cli.sh -q "which struct owns the multi-pass recall loop and how does it decide what to evict?"` prints `[intent] QueryIntent()`; add `--save-prompt` (per SKILL.md) and the dumped prompt's guidance section contains `Additional context: is explanation.`.
 
 ## Retrieval
 

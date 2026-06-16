@@ -73,6 +73,7 @@ The following sections are in no particular order. Do not infer that high priori
 - Intent classifier must not gate retrieval; use it to bias retrieval/prompt, never to disable it
 - Tolerate classifier parse failures in small models (don't require strict JSON)
 - Intent-driven proactive context injection: act on `AugmentationSignals` (status→todo docs + `git status`, results→bench files, inventory→file listing) before the answer model runs
+- Redesign `QueryIntent::guidance_lines` — prototype leftover. It maps each intent flag to a fixed hand-written sentence and turns any leftover `extra` bool-true key into a synthesized `Additional context: {key}.` line. Both are canned prose stuffed into the answer prompt: the per-flag sentences are static boilerplate not grounded in the query, and the `extra`-key synthesis dresses an unrecognized model token up as an instruction. Decide what guidance (if any) the answer model should actually receive from intent, rather than emitting templated strings. (Near-miss schema keys like `is_explanation` are now folded onto their real field before this runs, so this is about the design of the guidance layer itself, not the parser.)
 
 ## Session history
 

@@ -588,6 +588,35 @@ impl Display for QueryIntent {
     }
 }
 
+/// Reduce a classifier key to its distinguishing token by stripping the verb
+/// prefix the schema varies on (`is_`/`wants_`/`needs_`/…) and a trailing
+/// `_request`. Lets `is_explanation`, `wants_explanation`, and bare `explanation`
+/// all reconcile to the same schema field. Lowercased so casing variance from the
+/// model doesn't matter.
+fn normalize_intent_key(key: &str) -> String {
+    const VERB_PREFIXES: [&str; 8] = [
+        "wants_",
+        "want_",
+        "needs_",
+        "need_",
+        "requires_",
+        "require_",
+        "are_",
+        "is_",
+    ];
+    let mut s = key.to_ascii_lowercase();
+    for prefix in VERB_PREFIXES {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest.to_string();
+            break;
+        }
+    }
+    if let Some(rest) = s.strip_suffix("_request") {
+        s = rest.to_string();
+    }
+    s
+}
+
 impl QueryIntent {
     /// Extract the context workspace augmentation signals. These drive what to
     /// proactively load before answering — independent of how the answer is phrased.
@@ -691,7 +720,55 @@ impl QueryIntent {
         if let Some(c) = parsed.confidence {
             parsed.confidence = Some(if c.is_finite() { c.clamp(0.0, 1.0) } else { 0.0 });
         }
+        parsed.reconcile_near_miss_keys();
         Ok((parsed, emitted_keys))
+    }
+
+    /// Fold near-miss key names the classifier emitted into their schema field.
+    ///
+    /// A small classifier model does not reliably reproduce the exact verb prefix
+    /// the schema uses (`is_` vs `wants_` vs `needs_`), so it emits e.g.
+    /// `is_explanation` where the schema field is `wants_explanation`. Serde routes
+    /// the unrecognized key into `extra`, silently dropping the signal. Here we
+    /// match each `extra` bool key against a schema field by its prefix-stripped
+    /// token and, on a match, set the field (sticky OR) and remove it from `extra`.
+    ///
+    /// Match is by *equality* of the normalized token, not substring: substring
+    /// matching would wrongly swallow legitimate model-authored hints such as
+    /// `needs_git_status` (which contains "status") into `is_status_request`.
+    fn reconcile_near_miss_keys(&mut self) {
+        let candidates: Vec<(String, bool)> = self
+            .extra
+            .iter()
+            .filter_map(|(k, v)| match v {
+                serde_json::Value::Bool(b) => Some((k.clone(), *b)),
+                _ => None,
+            })
+            .collect();
+
+        for (key, val) in candidates {
+            let core = normalize_intent_key(&key);
+            let slot: Option<&mut bool> = match core.as_str() {
+                "inventory" => Some(&mut self.is_inventory_request),
+                "results" => Some(&mut self.is_results_request),
+                "status" => Some(&mut self.is_status_request),
+                "next_step" => Some(&mut self.is_next_step_request),
+                "exact_names_or_paths" => Some(&mut self.wants_exact_names_or_paths),
+                "numeric_values" => Some(&mut self.wants_numeric_values),
+                "latest_run_only" => Some(&mut self.wants_latest_run_only),
+                "comparison" => Some(&mut self.wants_comparison),
+                "explanation" => Some(&mut self.wants_explanation),
+                "completion_state" => Some(&mut self.wants_completion_state),
+                "recommended_actions" => Some(&mut self.wants_recommended_actions),
+                "grounded_evidence_only" => Some(&mut self.needs_grounded_evidence_only),
+                "abstain" => Some(&mut self.abstain),
+                _ => None,
+            };
+            if let Some(slot) = slot {
+                *slot |= val;
+                self.extra.remove(&key);
+            }
+        }
     }
 
     pub fn guidance_lines(&self) -> Vec<String> {
@@ -1569,6 +1646,29 @@ mod tests {
         assert_eq!(parsed.confidence, Some(0.82));
         assert!(keys.contains("is_inventory_request"));
         assert!(keys.contains("confidence"));
+    }
+
+    #[test]
+    fn query_intent_reconciles_near_miss_key_names() {
+        // The classifier emitted `is_explanation` where the schema field is
+        // `wants_explanation`. The signal must land on the field, not be lost
+        // into `extra` (which would both leave the intent empty and leak a
+        // bogus `Additional context: is explanation.` guidance line).
+        let (parsed, _keys) =
+            QueryIntent::from_classifier_response("{\"is_explanation\": true}").unwrap();
+        assert!(parsed.wants_explanation, "is_explanation should fold into wants_explanation");
+        assert!(parsed.extra.is_empty(), "reconciled key should be removed from extra");
+        assert!(
+            !parsed.guidance_lines().iter().any(|l| l.contains("Additional context: is explanation")),
+            "no malformed guidance line should leak"
+        );
+
+        // A genuine model-authored hint that merely contains a schema token must
+        // NOT be folded into a schema field.
+        let (other, _) =
+            QueryIntent::from_classifier_response("{\"needs_git_status\": true}").unwrap();
+        assert!(!other.is_status_request, "git_status must not match status");
+        assert!(other.extra.contains_key("needs_git_status"));
     }
 
     #[test]
