@@ -111,6 +111,8 @@ This bit the bench and CLI: a single run with a misconfigured `corpus_root` pois
 
 **Call sites** (verified): the upgrade replaces the early-return in `load_fragments`' already-resident branch (`dynamic.rs`, the `loaded_ids.contains` check) for `LoadMode::Full`, and the analogous skip in the line-reference path. Eviction-to-stub on the *other* side (a body decayed back down) is the existing consolidation path and is unchanged here.
 
+**Implementation note (2026-06-15):** The current `upgrade_stub_to_body` implementation skips the upgrade when the body won't fit in the remaining budget — it does not evict lower-relevance fragments first as specified above. With the 1500-token `max_inline_body_tokens` default, bodies rarely overflow the budget after truncation, so this omission is low-impact. Evict-before-upgrade can be added when bench results show it matters.
+
 **Why on this repo it only shows under budget pressure.** With the workspace budget large enough to hold every candidate body (the 12000 default on a small repo), the initial bodies are never evicted and the gap is small. The upgrade matters on corpora too large to fit, where the workspace genuinely churns — which is the case OpenCAW exists for. The 2000-budget `code-agent` sweep is the standing reproduction.
 
 ### `process_file_expansion` removed: path-mention is not an intent signal (2026-06-15)
