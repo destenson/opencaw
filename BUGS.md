@@ -4,6 +4,8 @@ Open bugs only — symptom, reproduction, and evidence. No cause speculation, no
 
 Some QA-era findings (loops 0001–0021) remain in `docs/archive/findings.md` rather than here: B0/B1/B2 (degenerate-output era, not re-verified) and B7/B10 (prior-session responses outcompeting stubs).
 
+See also: `TODO.md` for non-bug work items, and `docs/ROADMAP.md` for planned features, and `docs/README.md` for project documentation.
+
 ## Reproducibility
 
 - **Answer-model nondeterminism at `--concurrency > 1`**: with `temperature 0` and a fixed `--seed`, batched/concurrent inference is still not bit-reproducible run-to-run; the same item can yield different answers. Reproducible measurement requires `--concurrency 1`. Measured 2026-06-14: 23/29 recall-on answers differed across two concurrency-4 runs.
