@@ -188,6 +188,7 @@ impl IngestionPipeline {
                             mtime_unix_secs: doc.mtime_unix_secs,
                             byte_offset: chunk.body_start,
                             byte_length: chunk.body_end.saturating_sub(chunk.body_start),
+                            chunk_total: chunk.total_chunks,
                             consolidation_notes: Vec::new(),
                         };
                         (stub, chunk.content)
@@ -228,6 +229,7 @@ impl IngestionPipeline {
                 mtime_unix_secs: doc.mtime_unix_secs,
                 byte_offset: 0,
                 byte_length: body_length,
+                chunk_total: 1,
                 consolidation_notes: Vec::new(),
             },
             doc_content,

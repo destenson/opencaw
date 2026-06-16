@@ -122,6 +122,7 @@ mod tests {
             mtime_unix_secs: 0,
             byte_offset: 0,
             byte_length: 0,
+            chunk_total: 1,
             consolidation_notes: Vec::new(),
         });
 
@@ -148,6 +149,7 @@ mod tests {
             mtime_unix_secs: 0,
             byte_offset: 0,
             byte_length: 0,
+            chunk_total: 1,
             consolidation_notes: Vec::new(),
         });
 

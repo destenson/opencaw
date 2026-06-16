@@ -392,8 +392,19 @@ pub struct Stub {
     /// Chunks tile the file — offsets are contiguous, nothing is duplicated.
     #[serde(default)]
     pub byte_length: u64,
+    /// Number of chunks the parent file was split into (1 for single-stub
+    /// files). All chunks of a file carry the same value. Lets a resumable
+    /// builder tell a fully-indexed file from one missing some chunks: a file
+    /// is only safe to skip when the count of its present non-stale stubs
+    /// reaches `chunk_total`. Defaults to 1 for stubs predating this field.
+    #[serde(default = "default_chunk_total")]
+    pub chunk_total: usize,
     #[serde(default)]
     pub consolidation_notes: Vec<ConsolidationNote>,
+}
+
+fn default_chunk_total() -> usize {
+    1
 }
 
 #[derive(Debug, Clone)]
@@ -1582,6 +1593,7 @@ mod tests {
                 mtime_unix_secs: 0,
                 byte_offset: 0,
                 byte_length: 0,
+                chunk_total: 1,
                 consolidation_notes: Vec::new(),
             },
             score: 0.9,

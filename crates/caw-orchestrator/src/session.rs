@@ -146,6 +146,7 @@ pub fn collect_previous_stubs(
                 mtime_unix_secs: mtime,
                 byte_offset: 0,
                 byte_length: 0,
+                chunk_total: 1,
                 consolidation_notes: Vec::new(),
             };
             result.push((stub, embed_text));

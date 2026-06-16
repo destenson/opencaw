@@ -77,7 +77,8 @@ impl SqliteStubStore {
                 byte_length INTEGER NOT NULL,
                 stub_json TEXT NOT NULL,
                 stale INTEGER NOT NULL DEFAULT 0,
-                ignored INTEGER NOT NULL DEFAULT 0
+                ignored INTEGER NOT NULL DEFAULT 0,
+                chunk_total INTEGER NOT NULL DEFAULT 1
             )",
             [],
         )
@@ -113,6 +114,29 @@ impl SqliteStubStore {
                 if !msg.contains("duplicate column name") {
                     return Err(CawError::VectorStore(format!(
                         "Failed to add ignored column: {}",
+                        e
+                    )));
+                }
+            }
+        }
+
+        // Migration for databases created before `chunk_total` existed. Old
+        // rows default to 1: a legacy index then keeps its prior resume
+        // behavior (skip a file if any non-stale stub for it is present),
+        // because the `HAVING COUNT(*) >= MAX(chunk_total)` test in
+        // `indexed_paths` is always satisfied at chunk_total=1. Indexes built
+        // after this change record the true per-file chunk count, which is what
+        // lets resume detect a file missing some of its chunks.
+        match conn.execute(
+            "ALTER TABLE stubs ADD COLUMN chunk_total INTEGER NOT NULL DEFAULT 1",
+            [],
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                let msg = e.to_string();
+                if !msg.contains("duplicate column name") {
+                    return Err(CawError::VectorStore(format!(
+                        "Failed to add chunk_total column: {}",
                         e
                     )));
                 }
@@ -319,8 +343,8 @@ impl SqliteStubStore {
             let mut stub_stmt = tx
                 .prepare(
                     "INSERT INTO stubs \
-                     (id, path, token_estimate, kind, summary, outline, content_hash, mtime_unix_secs, byte_offset, byte_length, stub_json) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                     (id, path, token_estimate, kind, summary, outline, content_hash, mtime_unix_secs, byte_offset, byte_length, stub_json, chunk_total) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 )
                 .map_err(|e| CawError::VectorStore(format!("prepare stubs: {}", e)))?;
             let mut embed_stmt = tx
@@ -347,6 +371,7 @@ impl SqliteStubStore {
                         stub.byte_offset as i64,
                         stub.byte_length as i64,
                         stub_json,
+                        stub.chunk_total as i64,
                     ])
                     .map_err(|e| {
                         CawError::VectorStore(format!("insert stub {}: {}", stub.id.0, e))
@@ -396,9 +421,21 @@ impl SqliteStubStore {
         // Exclude stale rows so the resumable builder reingests files whose
         // source changed since last index — otherwise the skip-already-indexed
         // fast path would keep stale stubs alive forever.
+        //
+        // Only report a (path, mtime) as indexed when the count of its present
+        // non-stale stubs reaches the file's recorded `chunk_total`. A file
+        // missing some of its chunks (e.g. a partial-delete or an interrupted
+        // ingest) therefore stays out of the skip-list and gets re-ingested,
+        // rather than being treated as complete because one chunk survived.
+        // `>=` keeps legacy rows (chunk_total defaulted to 1 by migration)
+        // behaving as before: any surviving chunk satisfies the test.
         let mut stmt = self
             .conn
-            .prepare("SELECT DISTINCT path, mtime_unix_secs FROM stubs WHERE stale = 0")
+            .prepare(
+                "SELECT path, mtime_unix_secs FROM stubs WHERE stale = 0 \
+                 GROUP BY path, mtime_unix_secs \
+                 HAVING COUNT(*) >= MAX(chunk_total)",
+            )
             .map_err(|e| CawError::VectorStore(format!("prepare indexed_paths: {}", e)))?;
         let rows = stmt
             .query_map([], |row| {
@@ -441,8 +478,8 @@ impl SqliteStubStore {
             let mut stub_stmt = tx
                 .prepare(
                     "INSERT OR REPLACE INTO stubs \
-                     (id, path, token_estimate, kind, summary, outline, content_hash, mtime_unix_secs, byte_offset, byte_length, stub_json) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                     (id, path, token_estimate, kind, summary, outline, content_hash, mtime_unix_secs, byte_offset, byte_length, stub_json, chunk_total) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 )
                 .map_err(|e| CawError::VectorStore(format!("prepare stubs: {}", e)))?;
             let mut embed_stmt = tx
@@ -469,6 +506,7 @@ impl SqliteStubStore {
                         stub.byte_offset as i64,
                         stub.byte_length as i64,
                         stub_json,
+                        stub.chunk_total as i64,
                     ])
                     .map_err(|e| {
                         CawError::VectorStore(format!("insert stub {}: {}", stub.id.0, e))
@@ -875,8 +913,66 @@ mod tests {
             mtime_unix_secs: mtime,
             byte_offset: 0,
             byte_length: len,
+            chunk_total: 1,
             consolidation_notes: vec![],
         }
+    }
+
+    fn mk_chunk_stub(id: &str, rel: &str, mtime: u64, chunk_total: usize) -> Stub {
+        Stub {
+            chunk_total,
+            ..mk_stub(id, rel, mtime, 10)
+        }
+    }
+
+    #[test]
+    fn indexed_paths_excludes_file_missing_a_chunk() {
+        let root = temp_root();
+        let db_path = root.join("idx.db");
+        let mut store = SqliteStubStore::new(db_path.to_str().unwrap(), 3).unwrap();
+
+        // A 3-chunk file (all chunks carry chunk_total = 3) and a 1-chunk file.
+        for i in 0..3 {
+            let s = mk_chunk_stub(&format!("multi#chunk{i}"), "multi.md", 100, 3);
+            store.insert(s, vec![0.1, 0.2, 0.3]).unwrap();
+        }
+        store
+            .insert(mk_chunk_stub("solo", "solo.md", 100, 1), vec![0.4, 0.5, 0.6])
+            .unwrap();
+
+        // Fully indexed: both files appear.
+        let mut paths: Vec<String> = store
+            .indexed_paths()
+            .unwrap()
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
+        paths.sort();
+        assert_eq!(paths, vec!["multi.md".to_string(), "solo.md".to_string()]);
+
+        // Drop one chunk of the multi-chunk file (partial delete). The file is
+        // now incomplete and must NOT be reported as indexed — otherwise a
+        // resumable build would skip it and never re-embed the missing chunk.
+        store
+            .conn
+            .execute("DELETE FROM embeddings WHERE stub_id = 'multi#chunk1'", [])
+            .unwrap();
+        store
+            .conn
+            .execute("DELETE FROM stubs WHERE id = 'multi#chunk1'", [])
+            .unwrap();
+
+        let paths: Vec<String> = store
+            .indexed_paths()
+            .unwrap()
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
+        assert_eq!(
+            paths,
+            vec!["solo.md".to_string()],
+            "a file missing one of its chunks should be excluded from the skip-list"
+        );
     }
 
     #[test]
