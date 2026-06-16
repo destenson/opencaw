@@ -23,5 +23,28 @@ ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GPU="$(bash "$SCRIPT_DIR/pick-gpu.sh")"
 
+# Keep dev artifacts in-tree under target/caw-dev/ instead of the binary's
+# default (~/.cache/caw/…). The bare binary writes to the user cache so an
+# end-user `caw` run never drops files into a project; for the dev harness we
+# want the index + session history wiped by `cargo clean` alongside everything
+# else, matching build-index.sh and serve.sh. Keyed per-corpus (the --dir arg,
+# default "crates") so distinct corpora don't share an index. Only injected when
+# the caller hasn't already passed --db / --session-dir.
+DEV_STATE="$ROOT/target/caw-dev"
+corpus="crates"
+prev=""
+have_db=0
+have_sessions=0
+for arg in "$@"; do
+  [ "$prev" = "--dir" ] && corpus="$arg"
+  [ "$arg" = "--db" ] && have_db=1
+  [ "$arg" = "--session-dir" ] && have_sessions=1
+  prev="$arg"
+done
+slug="$(printf '%s' "$corpus" | tr -c 'A-Za-z0-9._-' '_')"
+extra=()
+[ "$have_db" -eq 0 ] && extra+=(--db "$DEV_STATE/cli/$slug/index.db")
+[ "$have_sessions" -eq 0 ] && extra+=(--session-dir "$DEV_STATE/cli/$slug/sessions")
+
 cd "$ROOT"
-exec env CUDA_VISIBLE_DEVICES="$GPU" cargo run --release --quiet -p caw-cli -- "$@"
+exec env CUDA_VISIBLE_DEVICES="$GPU" cargo run --release --quiet -p caw-cli -- "${extra[@]}" "$@"

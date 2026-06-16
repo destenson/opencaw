@@ -1,6 +1,6 @@
 ---
 name: caw-dev
-description: This skill should be used when working on the OpenCAW project locally — to "stand up the caw-server proxy", "run the opencaw proxy", "build a caw index", "index the repo for recall", "smoke test the proxy", "test context injection", "run the caw-cli recall loop", "start the recall server", "run the recall benchmark / eval sweep", "measure recall-on vs recall-off", or otherwise build, run, and test OpenCAW. Provides scripts that handle the GPU-pinning and batch-size workarounds and verify context injection.
+description: This skill should be used when working on the OpenCAW project locally — to "stand up the caw-server proxy", "run the opencaw proxy", "build a caw index", "index the repo for recall", "smoke test the proxy", "test context injection", "run the caw-cli recall loop", "start the recall server", "run the recall benchmark / eval sweep", "measure recall-on vs recall-off", "index Claude Code sessions for recall", or otherwise build, run, and test OpenCAW. Provides scripts that handle the GPU-pinning and batch-size workarounds and verify context injection.
 version: 0.1.0
 ---
 
@@ -70,6 +70,23 @@ All scripts live in `scripts/` and are self-locating (they find the repo root vi
 
 To use the proxy from a real tool: set the client's OpenAI base URL to `http://localhost:8090/v1` and use any model name Ollama has (`ollama list`).
 
+## Workflow: index Claude Code sessions for recall
+
+To make past Claude Code conversations recall-able (e.g. "have we hit this bug before?", "why did we pick hybrid retrieval?"), index this project's session transcripts as a corpus. The transcripts live under `~/.claude/projects/<slug>/*.jsonl`, but they cannot be indexed in place: each line is a JSON envelope (so chunks would be JSON, not prose), and the path is under a hidden `.claude` dir which `build_index`'s skip rules drop silently. `extract-sessions.py` solves both — it flattens each transcript into one readable Markdown doc (user prose + assistant text + assistant thinking; tool_use/tool_result are skipped for now) and stages them at an indexable path.
+
+```bash
+# 1. Flatten transcripts -> prose docs. Omit the out-dir to get a printed mkdtemp path.
+docs/skills/caw-dev/scripts/extract-sessions.py ~/.claude/projects/-home-dennis-src-ai-experiments-opencaw
+#   -> extract-sessions: 82 docs written to /tmp/caw-sessions-XXXX
+
+# 2. Index that dir, then serve as usual (any port/corpus-root, same as the proxy workflow).
+docs/skills/caw-dev/scripts/build-index.sh /tmp/caw-sessions-XXXX target/caw-dev/sessions-index.sqlite
+docs/skills/caw-dev/scripts/serve.sh target/caw-dev/sessions-index.sqlite /tmp/caw-sessions-XXXX http://localhost:11434/v1 8091
+docs/skills/caw-dev/scripts/retrieve.sh "why did we move to hybrid retrieval?" 8091
+```
+
+The staging dir must NOT sit under `target/`/hidden/`scripts/`/`node_modules/` (the same skip rule — see Gotchas); the `mkdtemp` default and `opencaw-corpora/sessions` both satisfy this. Caveat: a session corpus is extremely single-domain (every conversation is about this one project), so cosine discrimination is weak and a precise factual query can rank the exactly-right session below the injection budget — raise `--max-tokens` or inspect with `retrieve.sh` to see whether the right chunk was ranked out vs. clamped out.
+
 ## Workflow: run the recall engine (CLI)
 
 For non-interactive testing with a sane local-only config (no Anthropic key, GPU pinned, index + sessions kept under `target/caw-dev/`), use `test-cli.sh`:
@@ -136,6 +153,7 @@ For the full reasoning behind each gotcha, file/line references, the host's GPU 
 
 - **`references/internals.md`** — detailed internals: embedder device handling, corpus/path-resolution contract, indexer skip rules, what the proxy is and isn't, how to verify injection, upstream model notes, runtime-state layout.
 - **`scripts/pick-gpu.sh`** — prints the freest CUDA ordinal (empty = CPU); used by the other scripts.
+- **`scripts/extract-sessions.py`** — flatten Claude Code session transcripts (`~/.claude/projects/<slug>/*.jsonl`) into per-session prose docs for indexing as a recall corpus. Out-dir defaults to a printed `mkdtemp` path; must not be under `target/`/hidden/`scripts/`.
 - **`scripts/build-index.sh`** — build an index with safe batch sizes and GPU pinning.
 - **`scripts/serve.sh`** — start the proxy (backgrounded, debug logging, GPU pinned).
 - **`scripts/queries.txt`** — shared default query pool (one per line) used by `smoke.sh`, `ab-test.sh`, and `test-cli.sh` when no query is passed. Add lines here to broaden coverage for all three.
