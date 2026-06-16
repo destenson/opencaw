@@ -17,22 +17,22 @@ All scripts live in `scripts/` and are self-locating (they find the repo root vi
 
 ## Workflow: stand up the proxy
 
-1. **Build an index** over a corpus (pick `crates/` for code or `docs/` for prose — never the repo root; see Gotchas):
+1. **Serve** the proxy over a corpus root (pick `crates/` for code or `docs/` for prose — never the repo root; see Gotchas). `serve.sh` derives the index path from the corpus and builds it on demand, so there is no separate build step:
+
+   ```bash
+   docs/skills/caw-dev/scripts/serve.sh crates
+   #                                     <corpus-root> [upstream] [port] [max-tokens] [retriever] [--index PATH]
+   ```
+
+   The index lands at `target/caw-dev/<corpus-base>-<hash>.sqlite` (gitignored scratch), keyed by the corpus's absolute path so the same corpus always maps to the same index. On first run it is built in full; on later runs it is refreshed incrementally — only files whose `(path, mtime)` changed are re-embedded (there is no watcher; the refresh happens at serve startup). Pass `--index PATH` to override placement. Defaults: upstream `http://localhost:11434/v1` (Ollama), port `8090`, max injected tokens `2000`, retriever `hybrid`. The script backgrounds the server, waits for readiness, and prints the log path. Startup includes a compile + candle init + index load (hybrid also reads every body once to build BM25 posting lists), so allow up to ~90s on a cold first build.
+
+   To build **without** serving — to pre-build, or to force a full `--rebuild` after the corpus shrank or chunking config changed — call the indexer directly. It rebuilds in full by default; `--no-rebuild` opts into the same incremental refresh `serve.sh` uses:
 
    ```bash
    docs/skills/caw-dev/scripts/build-index.sh crates target/caw-dev/code-index.sqlite
    ```
 
-   Output is an SQLite index under `target/caw-dev/` (gitignored scratch). Re-run after editing files (there is no watcher). The script forces small batches and the freest GPU.
-
-2. **Serve** the proxy. The `corpus-root` MUST equal the corpus passed to `build-index.sh`:
-
-   ```bash
-   docs/skills/caw-dev/scripts/serve.sh target/caw-dev/code-index.sqlite crates
-   #                                     <index>                         <corpus-root> [upstream] [port] [max-tokens] [retriever]
-   ```
-
-   Defaults: upstream `http://localhost:11434/v1` (Ollama), port `8090`, max injected tokens `2000`, retriever `hybrid`. The script backgrounds the server, waits for readiness, and prints the log path. Startup includes a compile + candle init + index load (hybrid also reads every body once to build BM25 posting lists), so allow up to ~90s.
+   If you pre-build to a custom path this way, pass it to `serve.sh` as `--index target/caw-dev/code-index.sqlite` — otherwise `serve.sh` derives its own hashed path and rebuilds.
 
    The retriever defaults to `hybrid` (BM25 lexical fused with cosine) because pure cosine buries definitional chunks on a single-domain corpus — a query paraphrasing a struct's doc comment can rank that struct at the median of the score band. Pass `flat` as the 6th arg for pure cosine, or `hnsw` for the ANN index. Every request logs the full ranked candidate list with scores at DEBUG (`candidate #N score=… path`), so you can see whether a relevant stub was ranked out vs. clamped out by the token budget.
 
@@ -75,16 +75,23 @@ To use the proxy from a real tool: set the client's OpenAI base URL to `http://l
 To make past Claude Code conversations recall-able (e.g. "have we hit this bug before?", "why did we pick hybrid retrieval?"), index this project's session transcripts as a corpus. The transcripts live under `~/.claude/projects/<slug>/*.jsonl`, but they cannot be indexed in place: each line is a JSON envelope (so chunks would be JSON, not prose), and the path is under a hidden `.claude` dir which `build_index`'s skip rules drop silently. `extract-sessions.py` solves both — it flattens each transcript into one readable Markdown doc (user prose + assistant text + assistant thinking; tool_use/tool_result are skipped for now) and stages them at an indexable path.
 
 ```bash
-# 1. Flatten transcripts -> prose docs. The script reports the staging dir it wrote to.
+# 1. Flatten transcripts -> prose docs. A bare run stages to a fresh temp dir
+#    and PRINTS its path — copy that path for the next steps.
 docs/skills/caw-dev/scripts/extract-sessions.py ~/.claude/projects/-home-dennis-src-ai-experiments-opencaw
+# -> extract-sessions: 84 docs written to /tmp/caw-sessions-XXXX (...)
 
-# 2. Index that dir, then serve as usual (corpus-root must equal the staging dir).
-docs/skills/caw-dev/scripts/build-index.sh <staging-dir> target/caw-dev/sessions-index.sqlite
-docs/skills/caw-dev/scripts/serve.sh target/caw-dev/sessions-index.sqlite <staging-dir> http://localhost:11434/v1 8091
+# 2. Serve that dir directly — serve.sh builds the index on demand.
+docs/skills/caw-dev/scripts/serve.sh /tmp/caw-sessions-XXXX http://localhost:11434/v1 8091
 docs/skills/caw-dev/scripts/retrieve.sh "why did we move to hybrid retrieval?" 8091
+
+# 3. Refresh later, cheaply. Re-extract into the SAME printed dir (pass it
+#    explicitly — the bare-run default would make a NEW temp dir), then serve
+#    again. Only sessions whose transcript grew are re-embedded.
+docs/skills/caw-dev/scripts/extract-sessions.py ~/.claude/projects/-home-dennis-src-ai-experiments-opencaw /tmp/caw-sessions-XXXX
+docs/skills/caw-dev/scripts/serve.sh /tmp/caw-sessions-XXXX http://localhost:11434/v1 8091
 ```
 
-The staging dir must NOT sit under `target/`/hidden/`scripts/`/`node_modules/` (the same skip rule — see Gotchas). Caveat: a session corpus is extremely single-domain (every conversation is about this one project), so cosine discrimination is weak and a precise factual query can rank the exactly-right session below the injection budget — raise `--max-tokens` or inspect with `retrieve.sh` to see whether the right chunk was ranked out vs. clamped out.
+Incremental refresh works because `extract-sessions.py` stamps each prose doc with its **source transcript's** mtime (not the extraction time) and names it deterministically per session, so a re-extraction into the same dir leaves unchanged sessions byte- and mtime-identical and the indexer skips re-embedding them. The staging dir must NOT sit under `target/`/hidden/`scripts/`/`node_modules/` (the same skip rule — see Gotchas), which is also why the temp default is `/tmp` rather than under the repo. Caveat: a session corpus is extremely single-domain (every conversation is about this one project), so cosine discrimination is weak and a precise factual query can rank the exactly-right session below the injection budget — raise `--max-tokens` or inspect with `retrieve.sh` to see whether the right chunk was ranked out vs. clamped out.
 
 ## Workflow: run the recall engine (CLI)
 

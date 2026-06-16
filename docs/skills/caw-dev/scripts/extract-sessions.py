@@ -23,8 +23,16 @@ Usage:
                  can be passed straight to build-index.sh. Note: the corpus must
                  NOT sit under target/ or any hidden/scripts/node_modules path —
                  build_index's should_skip drops those silently (0 stubs).
+
+                 Pass a STABLE out-dir to get incremental indexing across runs:
+                 filenames are deterministic per session and each doc is stamped
+                 with its source transcript's mtime, so re-extracting into the
+                 same dir leaves unchanged sessions byte- and mtime-identical and
+                 the indexer skips re-embedding them. The mkdtemp default is for
+                 one-shot extraction; it churns a new dir + paths every run.
 """
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -133,7 +141,20 @@ def main():
             skipped_empty += 1
             continue
         name = f"{meta['date'] or '0000-00-00'}-{meta['session'][:8]}.md"
-        (out_dir / name).write_text(render(meta, turns))
+        out_path = out_dir / name
+        out_path.write_text(render(meta, turns))
+        # Stamp the extracted doc with the SOURCE transcript's mtime, not the
+        # (just-now) write time. The corpus the indexer sees is this derived
+        # file, but the thing that actually changes is the source .jsonl. The
+        # indexer skips files whose (path, mtime) it has already embedded, so
+        # mirroring the source mtime here is what makes re-extraction idempotent:
+        # re-run into the same out-dir and a session whose transcript hasn't
+        # grown keeps its mtime, gets skipped, and is not re-embedded. (The
+        # filename is already deterministic per session, so a stable out-dir
+        # gives stable paths.) Without this, every extraction stamps "now" and
+        # the indexer re-embeds the whole corpus each time.
+        src_mtime = path.stat().st_mtime
+        os.utime(out_path, (src_mtime, src_mtime))
         written += 1
 
     print(f"extract-sessions: {written} docs written to {out_dir} "

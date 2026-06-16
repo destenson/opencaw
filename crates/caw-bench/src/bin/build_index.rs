@@ -271,11 +271,16 @@ fn main() -> Result<()> {
     }
 
     // Stat + resume-filter in one pass. mtime mismatches re-ingest the file;
-    // `INSERT OR REPLACE` in the store keeps that idempotent.
+    // `INSERT OR REPLACE` in the store keeps that idempotent. The key must
+    // match how the producer below stores `doc.path` — relative to the corpus
+    // root (line ~357). Comparing the absolute walk path here would never hit
+    // an entry in `already` (which holds the stored relative paths), so resume
+    // would re-embed the whole corpus every run.
     let todo: Vec<PathBuf> = paths
         .into_iter()
         .filter(|p| {
-            let path_str = p.to_string_lossy().into_owned();
+            let rel = p.strip_prefix(&cli.corpus).unwrap_or(p);
+            let path_str = rel.to_string_lossy().into_owned();
             let mtime = std::fs::metadata(p)
                 .ok()
                 .and_then(|m| m.modified().ok())
