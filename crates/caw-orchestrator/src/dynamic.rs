@@ -120,6 +120,10 @@ pub struct DynamicRecallOrchestrator<R, E, V, P, M, S = ()> {
 /// force the eviction machinery to fire. The right value depends on the upstream
 /// context window, so hosts that know it should override.
 pub const DEFAULT_MAX_WORKSPACE_TOKENS: usize = 12_000;
+/// Body token limit for progressive disclosure upgrades. Bodies larger than
+/// this are truncated with a nav hint pointing the model to use line references
+/// for specific ranges. Calibrate against real corpora; this is a starting point.
+pub const DEFAULT_MAX_INLINE_BODY_TOKENS: usize = 1_500;
 
 #[derive(Debug, Clone)]
 pub struct DynamicRecallConfig {
@@ -184,6 +188,10 @@ pub struct DynamicRecallConfig {
     /// budget is exhausted the turn is recorded as degenerate rather than
     /// silently cleaned up.
     pub max_degenerate_retries: usize,
+    /// Maximum tokens to inline when upgrading a resident stub to its full body
+    /// (progressive disclosure). Bodies larger than this are truncated and a nav
+    /// hint is appended so the model can request specific ranges if needed.
+    pub max_inline_body_tokens: usize,
 }
 
 impl Default for DynamicRecallConfig {
@@ -206,6 +214,7 @@ impl Default for DynamicRecallConfig {
             passive_injection_window_size: 192,
             session_history_budget_fraction: 0.25,
             max_degenerate_retries: 2,
+            max_inline_body_tokens: DEFAULT_MAX_INLINE_BODY_TOKENS,
         }
     }
 }
@@ -1154,17 +1163,27 @@ where
                 }
             };
 
-            if self.loaded_ids.contains(&stub_id) {
-                // Full file already loaded; the specific range is already visible.
-                debug!(source = %line_ref.source_hint, "line reference: stub already loaded");
-                continue;
-            }
-
             let range = if line_ref.start == line_ref.end {
                 line_ref.start.to_string()
             } else {
                 format!("{}-{}", line_ref.start, line_ref.end)
             };
+
+            if self.loaded_ids.contains(&stub_id) {
+                // Progressive disclosure: if the resident copy is a stub, upgrade
+                // it to the requested range. If it's already a body (any range),
+                // the specific lines are already visible — skip.
+                let resident_is_stub = self
+                    .loaded
+                    .iter()
+                    .any(|f| f.stub_id == stub_id && f.locator.locator == "stub");
+                if resident_is_stub {
+                    self.upgrade_stub_to_body(&stub_id, &range, self.config.thresholds.load)?;
+                } else {
+                    debug!(source = %line_ref.source_hint, range = %range, "line reference: already loaded as body");
+                }
+                continue;
+            }
 
             if self.loaded.len() >= self.config.max_loaded_fragments {
                 debug!("fragment cap reached — line reference skipped");
@@ -1404,6 +1423,19 @@ where
                         *current = score;
                     }
                 }
+                // Progressive disclosure: if this is a Full load and the resident
+                // copy is only a stub, upgrade it — the model explicitly asked for
+                // this source (via probe or candidate mention) and shouldn't have to
+                // answer from the summary.
+                if mode == LoadMode::Full {
+                    let resident_is_stub = self
+                        .loaded
+                        .iter()
+                        .any(|f| f.stub_id == stub_id && f.locator.locator == "stub");
+                    if resident_is_stub {
+                        self.upgrade_stub_to_body(&stub_id, "full", score)?;
+                    }
+                }
                 continue;
             }
 
@@ -1547,6 +1579,81 @@ where
                     "fragment would exceed budget — skipped"
                 );
             }
+        }
+
+        Ok(())
+    }
+
+    /// Upgrade a resident stub to its body (or a truncated body with a nav hint
+    /// if it exceeds `max_inline_body_tokens`). Replaces the fragment in-place
+    /// and pins its relevance above the eviction threshold so it isn't immediately
+    /// evicted. If the body won't fit in the remaining workspace budget, leaves
+    /// the stub untouched and logs.
+    fn upgrade_stub_to_body(
+        &mut self,
+        stub_id: &StubId,
+        range: &str,
+        admitted_score: f32,
+    ) -> CawResult<()> {
+        let mut body = match self.retriever.read_range(stub_id, range) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!(stub_id = %stub_id.0, error = %e, "progressive disclosure: failed to read body for upgrade");
+                return Ok(());
+            }
+        };
+
+        // Truncate bodies that would flood the context. A rough char-per-token
+        // estimate is used to find the cut point; we recount after truncation.
+        if body.tokens > self.config.max_inline_body_tokens {
+            // ~3 chars/token is conservative for code; slightly underestimates for
+            // prose, which means we may include a few extra tokens — acceptable.
+            let keep_chars = self.config.max_inline_body_tokens * 3;
+            let truncated: String = body.content.chars().take(keep_chars).collect();
+            let remaining = body.tokens.saturating_sub(self.config.max_inline_body_tokens);
+            body.content = format!(
+                "{truncated}\n[{remaining} tokens not shown. To read a specific range: `{}:start-end`]",
+                body.locator.source
+            );
+            body.tokens = count_tokens_cl100k(&body.content);
+        }
+
+        let stub_tokens = self
+            .loaded
+            .iter()
+            .find(|f| f.stub_id == *stub_id)
+            .map(|f| f.tokens)
+            .unwrap_or(0);
+        let current_tokens: usize = self.loaded.iter().map(|f| f.tokens).sum();
+        let tokens_after = current_tokens.saturating_sub(stub_tokens) + body.tokens;
+
+        if tokens_after > self.config.max_workspace_tokens {
+            debug!(
+                stub_id = %stub_id.0,
+                body_tokens = body.tokens,
+                available = self.config.max_workspace_tokens.saturating_sub(current_tokens.saturating_sub(stub_tokens)),
+                "progressive disclosure: body too large for budget, leaving stub"
+            );
+            return Ok(());
+        }
+
+        if let Some(frag) = self.loaded.iter_mut().find(|f| f.stub_id == *stub_id) {
+            debug!(
+                stub_id = %stub_id.0,
+                tokens = body.tokens,
+                range,
+                "progressive disclosure: upgraded stub to body"
+            );
+            *frag = body;
+        }
+
+        // Keep the upgraded fragment above the eviction floor — it was just
+        // explicitly requested and must not be immediately evicted.
+        let floor = self.config.thresholds.unload + f32::EPSILON;
+        let effective_score = admitted_score.max(floor);
+        let entry = self.relevance_scores.entry(stub_id.clone()).or_insert(effective_score);
+        if *entry < floor {
+            *entry = effective_score;
         }
 
         Ok(())

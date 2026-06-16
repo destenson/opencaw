@@ -98,7 +98,7 @@ This bit the bench and CLI: a single run with a misconfigured `corpus_root` pois
 
 ---
 
-### Progressive disclosure: upgrade a resident stub to full content in place (2026-06-15, design — not yet implemented)
+### Progressive disclosure: upgrade a resident stub to full content in place (2026-06-15)
 
 **Problem.** A fragment can be resident in the workspace as a *stub* (summary/outline) or as a *body* (full content or a line range). The initial load admits stubs (`LoadMode::Stub`); only the probe, line-reference, and mention paths admit bodies (`LoadMode::Full`). When a later reasoning step references a file that is already resident *as a stub*, nothing upgrades it: `load_fragments`' "already loaded" branch (`if self.loaded_ids.contains(&stub_id)`) only refreshes the relevance score and returns, and the line-reference path's equivalent branch skips with the comment "full file already loaded" — which is wrong when the resident copy is a stub. So the model is left to answer a pinpoint question (a field default, a constant value, a signature) from an outline that does not contain it. Measured on the deterministic `code-agent` sweep: gold was resident only as a stub on 7 of 13 items, and `stub_recall_at_k − recall_at_k` (added to the bench report alongside this design) quantifies exactly that gap.
 
