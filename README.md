@@ -10,7 +10,7 @@ Watch a coding agent work on an unfamiliar codebase: it burns call after call gr
 
 That repeated "tool-call to find on-disk content" loop is the problem OpenCAW exists to remove. Instead of the model going out to fetch content, the content comes to the model: the corpus is indexed as lightweight stubs, and the model's own reasoning trace — "I need the `ModelAdapter` Send bound", "what fields does `PrebuiltIndex` have" — is the signal that pulls the right full content into the workspace and evicts what's no longer relevant. The aim is a context window that stays full of what the current reasoning step actually needs, over a corpus far larger than the window, at roughly flat compute cost.
 
-See [docs/design.md](docs/design.md) for the full thesis and [docs/scope.md](docs/scope.md) for what is in and out of scope for v0.1.
+See [docs/origin.md](docs/origin.md) for the founding design and [docs/scope.md](docs/scope.md) for what is in and out of scope for v0.1.
 
 ## Quick Start
 
@@ -35,7 +35,7 @@ Full index with status for every doc: [docs/README.md](docs/README.md).
 | [Embedding Providers](docs/embedding-providers.md) | FastEmbed, API, Candle, ONNX |
 | [Storage](docs/storage.md) | SQLite, Qdrant, HNSW, hybrid retrieval |
 | [Benchmarking](docs/benchmarking.md) | NIAH, opencaw, sysdoc workloads; sweep harness; intent bench |
-| [Design](docs/design.md) | Thesis, stub-and-recall architecture, eviction policy, curation |
+| [Origin](docs/origin.md) | Frozen origin document: founding design, stub-and-recall architecture, eviction policy, curation |
 | [Scope](docs/scope.md) | v0.1 deliverables, what's in and out, scope change protocol |
 | [Bugs](BUGS.md) | Open bug log |
 | [Codebase Review](docs/archive/codebase-review.md) | Frozen snapshot (2026-05-09): implementation status, structural gaps, debt inventory |

@@ -83,8 +83,8 @@ let mut retriever = SemanticRetriever::new(embedder, store, index);
 // Ingest — cl100k tokenizer, deterministic summaries, adaptive chunking at 2k tokens
 let pipeline = IngestionPipeline::new();
 let doc = SourceDocument {
-    path: "docs/design.md".to_string(),
-    content: std::fs::read_to_string("docs/design.md")?,
+    path: "docs/origin.md".to_string(),
+    content: std::fs::read_to_string("docs/origin.md")?,
     kind: ContentKind::Markdown,
     mtime_unix_secs: 0,
 };

@@ -592,7 +592,7 @@ fn orchestrator_config(mode: RecallMode, cfg: &RunnerConfig) -> DynamicRecallCon
             thresholds,
             max_workspace_tokens: cfg.max_workspace_tokens,
             // No multi-pass, no probes, no trace recall: this is the
-            // "basic RAG" baseline the thesis is measured against.
+            // "basic RAG" baseline recall is measured against.
             max_recall_iterations: 0,
             relevance_decay_rate: 0.8,
             enable_thinking_trace_recall: false,

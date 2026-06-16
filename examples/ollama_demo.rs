@@ -72,7 +72,7 @@ fn main() -> Result<()> {
     println!("Ingesting project docs...");
     let pipeline = IngestionPipeline::new();
     for (rel_path, kind) in &[
-        ("docs/design.md", ContentKind::Markdown),
+        ("docs/origin.md", ContentKind::Markdown),
         ("README.md", ContentKind::Markdown),
     ] {
         ingest_file(&pipeline, &mut retriever, project_root, rel_path, *kind)?;

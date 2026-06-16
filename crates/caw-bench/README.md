@@ -1,8 +1,9 @@
 # caw-bench
 
 Benchmark harness for the OpenCAW recall loop. Produces the "recall on vs.
-recall off, same model + same context budget" numbers the design doc's
-central thesis stands or falls on.
+recall off, same model + same context budget" numbers used as a QA gauge of
+whether recall improves task correctness — a regression gauge, not a test of
+whether the approach is sound.
 
 ## What it measures
 

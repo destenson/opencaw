@@ -9,7 +9,7 @@ If a living doc contradicts the code, the code wins — fix the doc. The active 
 
 ## Start here
 
-- [Design](design.md) — the thesis: context-as-workspace, on-demand recall, curated working sets. Read this first to understand *why* OpenCAW exists.
+- [Origin](origin.md) — the founding design (**frozen**, not a status report): context-as-workspace, on-demand recall, curated working sets. Read this first to understand *why* OpenCAW exists and what the settled approach is. For what is built/broken/next, see Scope, BUGS, and Roadmap — not this doc.
 - [Scope](scope.md) — what v0.1 is and is not; the scope-change protocol.
 - [Roadmap](ROADMAP.md) — where we are, what's next, and *why that order*. Read to answer "where should we go next?"; carries sequence and current focus that TODO/BUGS/DECISIONS deliberately don't.
 - [Decisions](DECISIONS.md) — authoritative reference for settled implementation choices. Read before making any significant implementation decision.

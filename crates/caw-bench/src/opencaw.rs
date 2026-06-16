@@ -2,7 +2,7 @@
 //!
 //! Hand-authored Q&A against the opencaw repository itself. Questions
 //! target specific facts drawn from the code, README, docs/scope.md, TODO.md,
-//! and docs/design.md. Reference answers are short and concrete so the
+//! and docs/origin.md. Reference answers are short and concrete so the
 //! model-as-judge scoring is stable across runs.
 
 use anyhow::{Context, Result};

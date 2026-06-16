@@ -35,7 +35,7 @@ pub struct OllamaAdapter {
     /// For a reasoning model this budget covers the thinking trace *and* the
     /// visible answer, so capping it too low truncates the answer before it is
     /// emitted. Defaults to `DEFAULT_NUM_PREDICT`; lower it only with a paired
-    /// answer-quality measurement (the trace is the thesis mechanism).
+    /// answer-quality measurement (the trace is the core recall mechanism).
     num_predict: i32,
     /// Sampling seed sent in the request `options`. `None` lets the server
     /// pick. With `temperature(0.0)` and a fixed seed, single (non-batched)

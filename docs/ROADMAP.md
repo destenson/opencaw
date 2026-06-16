@@ -72,4 +72,4 @@ Next: **implement progressive disclosure** (step 3) per the committed design —
 - **[TODO.md](../TODO.md)** — unordered backlog of concrete work items.
 - **[BUGS.md](../BUGS.md)** — open defects with reproductions.
 - **[DECISIONS.md](DECISIONS.md)** — settled implementation choices; authoritative when something is ambiguous.
-- **[design.md](design.md) / [scope.md](scope.md)** — the thesis and what v0.1 is/isn't.
+- **[origin.md](origin.md) / [scope.md](scope.md)** — the founding design (frozen) and what v0.1 is/isn't.

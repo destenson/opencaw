@@ -87,7 +87,7 @@ Source documents
 
 ## Further Reading
 
-- [Design doc](design.md) — thesis, stub-and-recall architecture, eviction policy, curation
+- [Origin doc](origin.md) — founding design (frozen): stub-and-recall architecture, eviction policy, curation
 - [Scope](scope.md) — v0.1 deliverables and boundaries
 - [Decisions and Defaults](DECISIONS.md) — authoritative reference for settled implementation choices, feature defaults, and the decision protocol for ambiguous cases
 - [Codebase review](archive/codebase-review.md) — frozen snapshot (2026-05-09): implementation status, structural gaps, debt inventory

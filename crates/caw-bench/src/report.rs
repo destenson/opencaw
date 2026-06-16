@@ -7,8 +7,8 @@ use crate::workload::RecallMode;
 pub struct ModeSummary {
     pub mode: String,
     pub item_count: usize,
-    /// Mean answer_score across items (0.0-1.0). Primary metric of the
-    /// thesis: does recall improve task-level correctness at matched budget.
+    /// Mean answer_score across items (0.0-1.0). Primary QA metric:
+    /// does recall improve task-level correctness at matched budget.
     pub mean_answer_score: f32,
     pub mean_recall_at_k: f32,
     /// Path-level recall counting stub residency too (≥ `mean_recall_at_k`).
@@ -284,7 +284,8 @@ fn mean_summary(mode: RecallMode, items: &[&ItemResult]) -> ModeSummary {
 }
 
 /// Format a human-readable delta between recall-on and recall-off modes.
-/// This is the top-line output the thesis either lives or dies on.
+/// This is the top-line QA signal: whether recall improves task
+/// correctness at matched budget.
 pub fn format_summary(report: &BenchReport) -> String {
     let on = report.summaries.iter().find(|s| s.mode == "recall_on");
     let off = report.summaries.iter().find(|s| s.mode == "recall_off");

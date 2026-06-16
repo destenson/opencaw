@@ -1,6 +1,8 @@
 # Context as Workspace: On-Demand Recall and Curated Working Sets for LLMs
 
-**Status:** design reference; implementation complete as of 2026-05
+**Status:** Origin document — frozen. This is the founding design OpenCAW was built from: the rationale for context-as-workspace and the full stub-and-recall / eviction / consolidation / curation design as originally conceived. The approach described here is **settled** — treat it as the project's premise, not a proposal under evaluation. The open question for OpenCAW is never "does this work"; it is "what is currently broken, and what is built next."
+
+This document is *not* a status report and is deliberately not kept in step with the code. For what is actually built, what is broken, and what comes next, see `docs/scope.md`, `BUGS.md`, and `docs/ROADMAP.md`. The "Action Items" (§10) and "Remaining Open Questions" (§11) below are preserved as written at origin; most action items are implemented (see `docs/scope.md`).
 **Scope:** prompt transformation, embedding-driven recall, context curation policy
 
 ---

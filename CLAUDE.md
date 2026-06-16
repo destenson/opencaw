@@ -4,7 +4,7 @@
 
 The mechanism for deciding what to load, evict, and consolidate is the model's own reasoning trace, rather than a retrieval step that runs once before inference. This trace-driven loop is the part that distinguishes OpenCAW from generic RAG. The library is general-purpose; project-specific heuristics do not belong in it.
 
-See `docs/design.md` for the full thesis and `docs/scope.md` for what is in and out of scope for v0.1.
+See `docs/origin.md` for the founding design (the settled premise, not a proposal under evaluation) and `docs/scope.md` for what is in and out of scope for v0.1.
 
 For **current priority, sequence, and what to work on next** — the question "where should we go next?" — read `docs/ROADMAP.md`. It carries the ordered critical path to the next milestone and the forcing logic behind that order, which `TODO.md` (unordered backlog), `BUGS.md` (open defects), and `docs/DECISIONS.md` (settled choices) deliberately do not.
 

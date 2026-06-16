@@ -32,7 +32,7 @@ fn main() -> Result<()> {
 
     let docs = vec![
         SourceDocument {
-            path: "docs/design.md".to_string(),
+            path: "docs/origin.md".to_string(),
             content: "Context as Workspace: On-Demand Recall and Curated Working Sets for LLMs. \
                      LLM context is a workspace, not a container. Effective capability is set by \
                      working-set quality, not total accessible information. The stub-and-recall \
