@@ -103,14 +103,16 @@ printf 'what is opencaw?\nhow does eviction work?\n' | docs/skills/caw-dev/scrip
 aw-dev/scripts/test-cli.sh --intent none --model llama3.2:3b -q "..."
 ```
 
-For a raw, fully-manual invocation, `run-cli.sh` forwards all arguments straight to `cargo run -p caw-cli` (GPU pinned):
+For a manual invocation, `run-cli.sh` forwards your arguments to `cargo run -p caw-cli` (GPU pinned). It is **not** a pure pass-through: unless you pass them yourself, it injects `--db target/caw-dev/cli/<slug>/index.db` and `--session-dir target/caw-dev/cli/<slug>/sessions`, where `<slug>` is derived from `--dir` (default `crates`). So each distinct `--dir` gets its own index under `target/caw-dev/cli/`, and that index is a separate file from anything built by `build-index.sh`/`serve.sh` — they are not shared. Pass `--db PATH` to point at an existing index instead.
 
 ```bash
 scripts/run-cli.sh --show-intent
 scripts/run-cli.sh --adapter ollama --model llama3.2:3b
 ```
 
-Note: `caw-cli`'s default index/session dir is a per-corpus location under `~/.cache/caw/` — a bare run no longer drops `.caw/` into the working directory. `test-cli.sh` pins both under `target/caw-dev/`.
+**Expect a slow first run on a fresh corpus.** When the derived (or given) index has no entry for the corpus, caw-cli builds it, and by default that build uses the LLM summarizer — one aux-model call per chunk. Over a sizable corpus (e.g. all of `crates/`) that is minutes, and caw-cli prints nothing between `Ingesting files from: <dir>` and `Index ready` — a cold build looks like a hang but isn't. Add `--no-llm-summarize` for a fast mechanical build when summary quality doesn't matter (testing the recall loop, logging, etc.). A later run against the same index starts in seconds. Check what an index holds with `sqlite3 <db> "SELECT count(*) FROM stubs;"`.
+
+Note: a bare `caw-cli` binary (not via these scripts) defaults its index/session dir to a per-corpus location under `~/.cache/caw/`, so it never drops `.caw/` into the working directory. Both `run-cli.sh` and `test-cli.sh` override that to pin under `target/caw-dev/` instead.
 
 ### Exercise the differentiating engine (eviction + consolidation)
 
@@ -171,4 +173,4 @@ For the full reasoning behind each gotcha, file/line references, the host's GPU 
 - **`scripts/graph-eval.sh`** — retrieval-only chunk-rank eval (`caw-bench-graph-eval`) over the sysdoc n=100 chunk gold set, no answer model, so it's the fast/deterministic instrument for iterating on chunking and fusion precision. `graph-eval.sh -- <args>` forwards e.g. `--diagnose` (decompose each miss: cosine vs bm25 rank, token overlap, thin-stub, buried), `--baseline cosine|hybrid`, `--fusion divide_total|present_weight|rrf|all`, `--recall-k 1,3,5,10`. Defaults: index `subset-medium.sqlite`, questions `sysdoc_chunk_qa.json`, source-root `opencaw-corpora/subset-medium` (override with `CAW_GE_INDEX`/`CAW_GE_QA`/`CAW_GE_SRC`).
 - **`scripts/test-cli.sh`** — drive the caw-cli recall engine non-interactively, local-only config (LLM consolidation OFF).
 - **`scripts/consolidation-cli.sh`** — exercise the full engine (eviction + LLM consolidation) and print a computed proof summary; aux model via the local `claude` CLI.
-- **`scripts/run-cli.sh`** — raw pass-through to caw-cli, args forwarded.
+- **`scripts/run-cli.sh`** — manual caw-cli runner; forwards your args but injects `--db`/`--session-dir` under `target/caw-dev/cli/<slug>/` (per `--dir`) unless you pass them.
