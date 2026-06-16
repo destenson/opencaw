@@ -15,6 +15,17 @@
 //! out, or clamped out?) instead of inferring it from a model answer.
 //! This is a deliberate deviation from a strictly OpenAI-only surface,
 //! confined to a read-only diagnostic that never mutates request flow.
+//!
+//! A second proxy route, `/v1/messages`, accepts the Anthropic Messages
+//! API shape so the official `anthropic` SDK (and Anthropic-protocol
+//! clients generally) can sit in front of the server. It is the same
+//! single-shot retrieve → inject → forward path: the only protocol
+//! difference is request-side (user content is often a block array, not
+//! a plain string) and the upstream path. The response is streamed back
+//! verbatim, so this route requires the upstream to itself speak the
+//! Anthropic protocol (e.g. `https://api.anthropic.com`). It is *not* a
+//! cross-protocol translator: an Anthropic client in front of an
+//! OpenAI-only upstream is out of scope (see `docs/scope.md`).
 
 use std::sync::Mutex;
 
@@ -103,9 +114,16 @@ pub struct AppState {
     /// path itself dispatches on the presence of `bm25` and the concrete
     /// `index` type, not on this field.
     pub retriever: RetrieverKind,
-    /// Base URL of the upstream chat-completions server, e.g.
-    /// `http://localhost:11434/v1` for Ollama. The `/chat/completions`
-    /// suffix is appended by the handler.
+    /// Base URL of the upstream model server. The handler appends a
+    /// route-specific suffix, so the convention differs by route:
+    /// - `/v1/chat/completions` appends `/chat/completions`, so set this
+    ///   to the OpenAI-style root including `/v1`, e.g.
+    ///   `http://localhost:11434/v1` for Ollama.
+    /// - `/v1/messages` appends `/v1/messages`, so set this to the
+    ///   provider root *without* `/v1`, e.g. `https://api.anthropic.com`.
+    ///
+    /// A given proxy instance fronts one upstream, so only the matching
+    /// route is exercised per deployment.
     pub upstream_base: String,
     /// Candidate pool size for ANN search; the load threshold controls actual admissions.
     pub max_candidates: usize,
@@ -122,6 +140,7 @@ pub struct AppState {
 pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/messages", post(messages))
         .route("/v1/retrieve", post(retrieve))
         .with_state(state)
 }
@@ -273,30 +292,61 @@ pub fn build_state(
     })
 }
 
-/// The one handler: parse as opaque JSON so we preserve every field the
-/// client sent (model, temperature, tools, response_format, …) and only
-/// mutate `messages` to splice the recalled fragments into the last user
-/// message.
+/// Upstream path suffixes appended to `AppState::upstream_base`, one per
+/// proxy route. They differ in where `/v1` sits — see the `upstream_base`
+/// doc for the per-route base convention.
+const OPENAI_CHAT_PATH: &str = "/chat/completions";
+const ANTHROPIC_MESSAGES_PATH: &str = "/v1/messages";
+
+/// OpenAI `/v1/chat/completions` proxy handler: parse as opaque JSON so
+/// we preserve every field the client sent (model, temperature, tools,
+/// response_format, …) and only mutate `messages` to splice the recalled
+/// fragments into the last user message, then forward verbatim.
 async fn chat_completions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: axum::extract::Json<Value>,
 ) -> Response {
     let mut req_json = body.0;
+    augment_if_possible(&state, &mut req_json);
+    forward(&state, req_json, &headers, OPENAI_CHAT_PATH).await
+}
 
-    let query = match extract_last_user_content(&req_json) {
+/// Anthropic `/v1/messages` proxy handler. Identical retrieve → inject →
+/// forward flow as `chat_completions`; the protocol differences (block-
+/// array user content, upstream path) are absorbed by
+/// `extract_last_user_content` / `augment_last_user_message` and the
+/// `ANTHROPIC_MESSAGES_PATH` suffix. The response is streamed back
+/// verbatim, so the upstream must itself speak the Anthropic protocol.
+async fn messages(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: axum::extract::Json<Value>,
+) -> Response {
+    let mut req_json = body.0;
+    augment_if_possible(&state, &mut req_json);
+    forward(&state, req_json, &headers, ANTHROPIC_MESSAGES_PATH).await
+}
+
+/// Retrieve for the request's last user turn and splice the fragments
+/// into it, mutating `req_json` in place. Shared by both proxy routes so
+/// they inject identically. Any failure (no user turn, no fragments,
+/// retrieval or augmentation error) leaves `req_json` unmodified and is
+/// logged, never fatal — the request still forwards.
+fn augment_if_possible(state: &AppState, req_json: &mut Value) {
+    let query = match extract_last_user_content(req_json) {
         Some(q) => q,
         None => {
             // No user turn yet — pass through unchanged. This covers
             // tool-result-only turns the client might send mid-session.
             debug!("no user message found; forwarding unmodified");
-            return forward(&state, req_json, &headers).await;
+            return;
         }
     };
 
-    match retrieve_fragments(&state, &query) {
+    match retrieve_fragments(state, &query) {
         Ok(fragments) if !fragments.is_empty() => {
-            if let Err(e) = augment_last_user_message(&mut req_json, &fragments) {
+            if let Err(e) = augment_last_user_message(req_json, &fragments) {
                 warn!("augmentation failed ({e}); forwarding unmodified");
             } else {
                 debug!(
@@ -309,8 +359,6 @@ async fn chat_completions(
         Ok(_) => debug!("retrieval returned no fragments; forwarding unmodified"),
         Err(e) => warn!("retrieval error ({e}); forwarding unmodified"),
     }
-
-    forward(&state, req_json, &headers).await
 }
 
 /// Read-only diagnostic: run the identical retrieval the proxy would run
@@ -404,8 +452,36 @@ fn extract_last_user_content(req: &Value) -> Option<String> {
         .rev()
         .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
         .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-        .map(|s| s.to_string())
+        .and_then(message_text)
+}
+
+/// Pull the plain-text query out of a message `content` field, which the
+/// OpenAI and Anthropic shapes represent differently:
+/// - a plain string (OpenAI text turns, simple Anthropic turns), or
+/// - an array of content blocks (`{"type":"text","text":…}`, plus image /
+///   tool_use / tool_result blocks we ignore here). Both protocols use
+///   the same `{"type":"text","text":…}` block, so one pass over text
+///   blocks covers both.
+///
+/// Text blocks are joined with newlines. Returns `None` if there is no
+/// usable text (e.g. an image-only or tool-result-only turn), which the
+/// callers treat as "nothing to retrieve on".
+fn message_text(content: &Value) -> Option<String> {
+    if let Some(s) = content.as_str() {
+        return Some(s.to_string());
+    }
+    let blocks = content.as_array()?;
+    let text = blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+        .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
 }
 
 /// What retrieval decided to do with one ranked candidate. The proxy
@@ -774,12 +850,6 @@ fn augment_last_user_message(req: &mut Value, fragments: &[RecallFragment]) -> R
         .rposition(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
         .ok_or_else(|| anyhow::anyhow!("no user message to augment"))?;
 
-    let original = messages[last_user_idx]
-        .get("content")
-        .and_then(|c| c.as_str())
-        .ok_or_else(|| anyhow::anyhow!("last user content is not a string"))?
-        .to_string();
-
     // CompletionRequest carries the fragments; format_workspace does the
     // preamble + bracketed per-fragment wrapping. system/user strings
     // aren't used by that helper, so empty placeholders are fine.
@@ -791,8 +861,21 @@ fn augment_last_user_message(req: &mut Value, fragments: &[RecallFragment]) -> R
     };
     let workspace = cr.format_workspace(ProvenanceFormat::Bracketed);
 
-    let augmented = format!("{original}{workspace}");
-    messages[last_user_idx]["content"] = Value::String(augmented);
+    // Content is either a plain string (OpenAI text turns, simple
+    // Anthropic turns) or an array of content blocks (Anthropic, and
+    // OpenAI multimodal parts). For a string we append the workspace
+    // text; for a block array we append a new `{"type":"text"}` block so
+    // existing blocks (images, tool_result, …) are left untouched.
+    let content = &mut messages[last_user_idx]["content"];
+    if let Some(original) = content.as_str() {
+        *content = Value::String(format!("{original}{workspace}"));
+    } else if let Some(blocks) = content.as_array_mut() {
+        blocks.push(serde_json::json!({ "type": "text", "text": workspace }));
+    } else {
+        return Err(anyhow::anyhow!(
+            "last user content is neither a string nor a block array"
+        ));
+    }
     Ok(())
 }
 
@@ -800,9 +883,14 @@ fn augment_last_user_message(req: &mut Value, fragments: &[RecallFragment]) -> R
 /// stream the response back verbatim. We forward Authorization and
 /// relevant content-type headers; everything else we drop (Host, Accept,
 /// user agent — reqwest supplies its own).
-async fn forward(state: &AppState, req_json: Value, client_headers: &HeaderMap) -> Response {
+async fn forward(
+    state: &AppState,
+    req_json: Value,
+    client_headers: &HeaderMap,
+    upstream_path: &str,
+) -> Response {
     let url = format!(
-        "{}/chat/completions",
+        "{}{upstream_path}",
         state.upstream_base.trim_end_matches('/')
     );
 
@@ -852,4 +940,97 @@ async fn forward(state: &AppState, req_json: Value, client_headers: &HeaderMap) 
         });
     *resp.headers_mut() = response_headers;
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn frag(content: &str) -> RecallFragment {
+        RecallFragment {
+            stub_id: StubId("test-stub".to_string()),
+            content: content.to_string(),
+            locator: Locator::full("test.md"),
+            tokens: 0,
+            mtime_unix_secs: 0,
+        }
+    }
+
+    #[test]
+    fn extract_handles_string_content() {
+        let req = json!({"messages": [{"role": "user", "content": "what is foo"}]});
+        assert_eq!(extract_last_user_content(&req).as_deref(), Some("what is foo"));
+    }
+
+    #[test]
+    fn extract_handles_anthropic_block_array() {
+        // Anthropic user turns commonly carry an array of content blocks;
+        // we want the text blocks joined, ignoring non-text ones.
+        let req = json!({"messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "what is foo"},
+                {"type": "image", "source": {}},
+                {"type": "text", "text": "and bar"}
+            ]
+        }]});
+        assert_eq!(
+            extract_last_user_content(&req).as_deref(),
+            Some("what is foo\nand bar")
+        );
+    }
+
+    #[test]
+    fn extract_none_for_textless_turn() {
+        // An image-only or tool-result-only turn has no text to retrieve on.
+        let req = json!({"messages": [{
+            "role": "user",
+            "content": [{"type": "tool_result", "content": "..."}]
+        }]});
+        assert_eq!(extract_last_user_content(&req), None);
+    }
+
+    #[test]
+    fn augment_appends_to_string_content() {
+        let mut req = json!({"messages": [{"role": "user", "content": "question"}]});
+        augment_last_user_message(&mut req, &[frag("BODY")]).unwrap();
+        let content = req["messages"][0]["content"].as_str().unwrap();
+        assert!(content.starts_with("question"), "original text preserved");
+        assert!(content.contains("BODY"), "fragment body injected");
+        assert!(content.len() > "question".len(), "workspace appended");
+    }
+
+    #[test]
+    fn augment_appends_text_block_to_array_content() {
+        // The injected workspace must arrive as a new text block, leaving
+        // the client's existing blocks (here an image) untouched.
+        let mut req = json!({"messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "question"},
+                {"type": "image", "source": {}}
+            ]
+        }]});
+        augment_last_user_message(&mut req, &[frag("BODY")]).unwrap();
+        let blocks = req["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 3, "one block appended, originals intact");
+        assert_eq!(blocks[1]["type"], "image", "image block untouched");
+        let appended = &blocks[2];
+        assert_eq!(appended["type"], "text");
+        assert!(appended["text"].as_str().unwrap().contains("BODY"));
+    }
+
+    #[test]
+    fn augment_targets_last_user_message() {
+        // Retrieval splices into the most recent user turn, not an earlier one.
+        let mut req = json!({"messages": [
+            {"role": "user", "content": "old"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "new"}
+        ]});
+        augment_last_user_message(&mut req, &[frag("BODY")]).unwrap();
+        assert_eq!(req["messages"][0]["content"], "old");
+        assert!(req["messages"][2]["content"].as_str().unwrap().contains("BODY"));
+    }
 }

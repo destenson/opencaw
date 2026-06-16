@@ -80,6 +80,16 @@ Rationale: the proxy's only window into retrieval quality was a DEBUG log line a
 
 This is a conscious deviation from "pure OpenAI surface," made on explicit request, and scoped to diagnostics. It does not open the door to adding orchestrator/probe/multi-pass endpoints to the proxy — that engine stays in the CLI.
 
+### caw-server also accepts the Anthropic Messages shape (passthrough only) (2026-06-15)
+
+`caw-server` now exposes `/v1/messages` alongside `/v1/chat/completions`, so an Anthropic-protocol client (notably the official `anthropic` SDK) can sit in front of the proxy. This amends the original "OpenAI-only surface" intent above: the proxy now speaks two request shapes, not one.
+
+It is the *same* single-shot retrieve → inject → forward path, not a new engine. Two protocol differences are absorbed by the existing helpers: (1) Anthropic user-message `content` is frequently an array of content blocks rather than a plain string, so `extract_last_user_content` reads text from both forms and `augment_last_user_message` injects by appending a `{"type":"text"}` block to an array (leaving image / tool_result blocks intact) or concatenating onto a string; (2) the upstream path differs (`/v1/messages` vs `/chat/completions`), passed per-route to `forward`. Because the upstream response is streamed back verbatim, **no response translation is involved** — which is what keeps this small.
+
+The consequence of verbatim passthrough is the hard scope line: the upstream must itself speak the Anthropic protocol (e.g. `https://api.anthropic.com`). An Anthropic-protocol client in front of an OpenAI-only upstream — the bidirectional request+response+SSE translation shim — is **permanently out of scope as a passthrough proxy** (confirmed with the user 2026-06-15), because translating a streamed response is a different and much larger job than mutating a request. `docs/scope.md` is updated to match: Anthropic-native passthrough is done; cross-protocol translation is dropped, not deferred.
+
+A given proxy instance fronts one upstream, so `upstream_base` carries a per-route convention: the chat route appends `/chat/completions` (base includes `/v1`, e.g. Ollama's `…/v1`); the messages route appends `/v1/messages` (base is the provider root without `/v1`). Documented on the `upstream_base` field.
+
 ### Prebuilt-index consumers open the store read-only
 
 A consumer that serves or measures over a prebuilt index and has no reingest worker attached must open the `SqliteStubStore` with `with_read_only(true)`. `get_content` marks a stub `stale = 1` (persisted) when it can't read the body — a missing source, a wrong `corpus_root` that makes a present file appear absent, or an mtime mismatch. Without a reingest worker nothing ever clears that flag, and a stale stub is excluded from both retrieval halves (`all_embeddings` and the BM25 build both filter `stale = 0`), so the marking silently and permanently degrades every later run against the shared index.
