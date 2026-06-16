@@ -113,6 +113,14 @@ This bit the bench and CLI: a single run with a misconfigured `corpus_root` pois
 
 **Why on this repo it only shows under budget pressure.** With the workspace budget large enough to hold every candidate body (the 12000 default on a small repo), the initial bodies are never evicted and the gap is small. The upgrade matters on corpora too large to fit, where the workspace genuinely churns — which is the case OpenCAW exists for. The 2000-budget `code-agent` sweep is the standing reproduction.
 
+### `process_file_expansion` removed: path-mention is not an intent signal (2026-06-15)
+
+`process_file_expansion` fired whenever a file path that was already in the workspace appeared anywhere in the model's thinking trace or answer. The intent was to expand that file beyond the per-source chunk cap on the theory that naming it signalled a need for it. In practice, the signal was too weak: paths appear in reasoning for comparison ("analogous to what's in src/foo.rs"), citation ("as documented in docs/scope.md"), and acknowledgment — none of which express a need to read more of the file.
+
+The cooperative protocol already provides two strong, explicit intent signals: `<probe>topic</probe>` (model needs more on a topic) and `path:start-end` line references (model needs specific lines). Both were already handled by `process_probes` and `process_line_references`. `process_file_expansion` was adding false positives on top of the signals that were actually communicated to the model.
+
+**Decision.** Remove `process_file_expansion` entirely. Stub-to-body upgrades for already-resident content are handled by the progressive disclosure path (see above), which triggers only on the strong signals. The candidate-list mention path (model responding to an explicitly presented candidate list by naming a path from it) is a separate code path and is unaffected.
+
 ---
 
 ## Implementation principles
