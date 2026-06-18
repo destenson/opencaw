@@ -12,7 +12,7 @@ use caw_index::{
 };
 use std::sync::Arc;
 use caw_ingest::{IngestionPipeline, SourceDocument};
-use caw_orchestrator::dynamic::{DynamicRecallConfig, DynamicRecallOrchestrator};
+use caw_orchestrator::dynamic::{CooperationMode, DynamicRecallConfig, DynamicRecallOrchestrator};
 
 use crate::shared::{ReadOnlyStore, SharedEmbedder, SharedIndex, SharedStore};
 use crate::workload::{RecallMode, Scoring, WorkloadItem};
@@ -584,6 +584,14 @@ fn orchestrator_config(mode: RecallMode, cfg: &RunnerConfig) -> DynamicRecallCon
             relevance_decay_rate: 0.8,
             enable_thinking_trace_recall: true,
             enable_probe_recall: true,
+            // Run the answer model cooperative: inject the probe/annotation/
+            // line-range instructions so the trace-driven loop can actually
+            // fire. Under the default `Auto` mode a non-reasoning adapter
+            // (groq/openai-compatible) reports no reasoning caps, so injection
+            // is skipped and the whole loop is inert — recall_on collapses to
+            // basic-RAG-from-initial-stubs, indistinguishable from recall_off.
+            // Verified cooperative by caw-bench-coop on llama-3.1-8b-instant.
+            cooperation_mode: CooperationMode::Cooperative,
             ..Default::default()
         },
         RecallMode::Off => DynamicRecallConfig {
