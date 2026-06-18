@@ -15,8 +15,9 @@
 #   --no-llm-summarize --no-llm-consolidation   (avoid the haiku aux model / API key)
 #   --intent granite4:micro           single fast intent model (MODE=none disables)
 #   --db target/caw-dev/cli-index.db  persistent index under the build dir
-# The first run ingests + embeds the corpus (CPU FastEmbed) and is slow; the
-# --db cache makes subsequent runs fast.
+# The first run ingests + embeds the corpus with the in-process candle BGE
+# embedder (GPU, pinned to the freest device) and is slow; the --db cache
+# makes subsequent runs fast.
 set -euo pipefail
 
 ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
