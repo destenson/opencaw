@@ -112,6 +112,17 @@ The following sections are in no particular order. Do not infer that high priori
 
 - Remove project-specific paths & heuristics (incl. rust-specific and hardcoded `caw-bench`/`caw-llama-sys` references) from library code
 
+## CLI
+
+- caw-cli should default to writing its index and session history under `<CWD>/.caw/<hash>/` (per-corpus hash of the canonical `--dir` path, preserving "distinct corpora don't share an index"), NOT under `~/.cache/caw/<hash>/` as it does today. This reverses the deliberate choice recorded in `docs/DECISIONS.md:198` and the `default_cache_dir` comment at `crates/caw-cli/src/main.rs:38-43` (whose rationale was "running `caw` in a project never drops a `.caw/` into it"). The user now prefers CWD-local by default so the CLI never writes outside the working tree unless asked. Settled design (decided 2026-06-17, not yet implemented):
+  - New default: `<CWD>/.caw/<hash>/{index.db, sessions/}` when the corpus is the CWD (no `--dir`, or `--dir` resolves to CWD).
+  - When the corpus is specified separately from CWD (`--dir <elsewhere>`), do NOT default the cache to `<CWD>/.caw/` — the cache location must be specified explicitly (`--db`/`--session-dir`, or the user-dir flag). Rationale: operating on an external corpus from CWD should not silently drop `.caw/` into CWD. Open detail to confirm when picked up: error-and-ask vs. fall back to the user cache dir for the external-corpus case.
+  - Opt-in flag restores the current `~/.cache/caw/<hash>` behavior; accept both `--user` and `--global` as aliases for the same opt-in.
+  - `--db` / `--session-dir` continue as full path overrides (unchanged).
+  - Add `.caw/` to this repo's `.gitignore` so running `caw` here doesn't pollute git.
+  - Existing `~/.cache/caw/<hash>` indices are abandoned on the switch (they rebuild on demand).
+  - Scope: only `caw-cli` uses `default_cache_dir`; `caw-server`/`serve.sh` and `caw-bench` don't share it, so the change is isolated to the user-facing CLI. Update the `main.rs` comment and reverse the `DECISIONS.md:198` entry when implemented.
+
 ## Benchmarking & evaluation
 
 - Scripts to run `caw-bench` across seeds/models/workloads for threshold tuning
