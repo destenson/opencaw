@@ -30,12 +30,13 @@ use caw_bench::runner::build_in_memory_prebuilt;
 use caw_bench::shared::ReadOnlyStore;
 use caw_bench::workload::WorkloadItem;
 use caw_core::provenance::InMemoryProvenanceStore;
-use caw_core::ModelAdapter;
+use caw_core::{CawError, ModelAdapter};
 use caw_eval::SessionEvaluator;
 use caw_index::{HnswVectorIndex, SemanticRetriever, SqliteStubStore};
 use caw_orchestrator::dynamic::{
     CooperationMode, DynamicRecallConfig, DynamicRecallOrchestrator,
 };
+use tracing::warn;
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
@@ -111,6 +112,9 @@ struct ModeSummary {
     useful_probes_pct: f32,
     annotations_per_turn: f32,
     annotation_quality: f32,
+    /// Number of items in this mode where the answer model degenerated.
+    /// Surfaced so a silently-shrinking n is visible (BUGS "Reproducibility").
+    degenerate_count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -134,6 +138,12 @@ struct ItemOutcome {
     useful_probes_pct: f32,
     annotations_per_turn: f32,
     annotation_quality: f32,
+    /// True when the answer model degenerated on this item. The cooperation
+    /// metrics (probes/annotations emitted before the turn failed) and recall
+    /// are still recorded; only the answer text was lost. Surfaced so a
+    /// degenerate item is counted, not silently dropped (the prior `?`
+    /// aborted the whole run — BUGS "Reproducibility").
+    degenerate: bool,
 }
 
 fn run_item_coop(
@@ -206,9 +216,24 @@ fn run_item_coop(
 
     let system = "Use the recalled workspace context to answer the question accurately \
                   and concisely.";
-    orchestrator
-        .run_turn(system, &item.question, &[], None)
-        .context("run_turn failed")?;
+    // A degenerate turn still emitted probes/annotations before the model
+    // choked, so the cooperation metrics are worth recording — only the answer
+    // text was lost. Catch the degenerate error and mark the outcome instead
+    // of `?`-propagating, which used to abort the entire run (BUGS
+    // "Reproducibility"). Hard errors (embed/retrieve/network) still
+    // propagate: those are infrastructure failures, not model degenerations.
+    let degenerate = match orchestrator.run_turn(system, &item.question, &[], None) {
+        Ok(_) => false,
+        Err(CawError::DegenerateOutput { .. }) => {
+            warn!(
+                item = %item.id,
+                coop_mode = ?coop_mode,
+                "degenerate output — recording outcome, not aborting the run"
+            );
+            true
+        }
+        Err(e) => return Err(e).context("run_turn failed"),
+    };
 
     let loaded = orchestrator.loaded.clone();
     let coop = orchestrator
@@ -225,6 +250,7 @@ fn run_item_coop(
         useful_probes_pct: coop.useful_probes_pct,
         annotations_per_turn: coop.annotations_per_turn,
         annotation_quality: coop.annotation_quality,
+        degenerate,
     })
 }
 
@@ -260,15 +286,18 @@ fn summarize(outcomes: &[ItemOutcome]) -> ModeSummary {
             useful_probes_pct: 0.0,
             annotations_per_turn: 0.0,
             annotation_quality: 0.0,
+            degenerate_count: 0,
         };
     }
     let n = outcomes.len() as f32;
+    let degenerate_count = outcomes.iter().filter(|o| o.degenerate).count();
     ModeSummary {
         mean_recall_at_k: outcomes.iter().map(|o| o.recall_at_k).sum::<f32>() / n,
         probes_per_turn: outcomes.iter().map(|o| o.probes_per_turn).sum::<f32>() / n,
         useful_probes_pct: outcomes.iter().map(|o| o.useful_probes_pct).sum::<f32>() / n,
         annotations_per_turn: outcomes.iter().map(|o| o.annotations_per_turn).sum::<f32>() / n,
         annotation_quality: outcomes.iter().map(|o| o.annotation_quality).sum::<f32>() / n,
+        degenerate_count,
     }
 }
 
@@ -429,12 +458,13 @@ fn main() -> Result<()> {
                 .with_context(|| format!("item {} mode {}", item.id, label))?;
 
             eprintln!(
-                "      {:12} recall={:.3}  probes/turn={:.2}  useful={:.0}%  ann/turn={:.2}",
+                "      {:12} recall={:.3}  probes/turn={:.2}  useful={:.0}%  ann/turn={:.2}{}",
                 label,
                 outcome.recall_at_k,
                 outcome.probes_per_turn,
                 outcome.useful_probes_pct * 100.0,
                 outcome.annotations_per_turn,
+                if outcome.degenerate { "  ⚠ degenerate" } else { "" },
             );
 
             match *label {

@@ -380,6 +380,11 @@ fn main() -> Result<()> {
                             result.gen_calls,
                             other_ms,
                         );
+                        if result.degenerate {
+                            eprintln!(
+                                "  ⚠ degenerate — recorded as zero row, not dropped"
+                            );
+                        }
                         if let Some(writer) = trace_writer.as_mut() {
                             use std::io::Write;
                             let entry = serde_json::json!({
@@ -509,6 +514,9 @@ fn run_concurrent(
                             result.loaded_paths.len(),
                             result.latency_ms,
                         );
+                        if result.degenerate {
+                            eprintln!("  ⚠ degenerate — recorded as zero row, not dropped");
+                        }
                         Some((idx, result))
                     }
                     Err(e) => {

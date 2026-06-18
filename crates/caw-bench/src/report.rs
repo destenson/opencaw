@@ -35,6 +35,10 @@ pub struct ModeSummary {
     pub mean_gen_calls: f32,
     pub mean_judge_ms: f32,
     pub mean_other_ms: f32,
+    /// Number of items in this mode where the answer model degenerated and was
+    /// recorded as a zero-scored failure rather than dropped. Surfaced so a
+    /// silently-shrinking n is visible to the dev (BUGS "Reproducibility").
+    pub degenerate_count: usize,
 }
 
 /// Paired (recall_on − recall_off) statistics for one metric, computed over
@@ -97,6 +101,9 @@ pub struct SerializableItem {
     pub false_recall_rate: f32,
     pub answer_score: f32,
     pub judge_rationale: String,
+    /// True when the answer model degenerated on this item and the row was
+    /// recorded as a zero-scored failure rather than dropped.
+    pub degenerate: bool,
     pub latency_ms: u64,
     pub gen_ms: u64,
     pub gen_calls: u64,
@@ -123,6 +130,7 @@ impl From<&ItemResult> for SerializableItem {
             false_recall_rate: r.false_recall_rate,
             answer_score: r.answer_score,
             judge_rationale: r.judge_rationale.clone(),
+            degenerate: r.degenerate,
             latency_ms: r.latency_ms,
             gen_ms: r.gen_ms,
             gen_calls: r.gen_calls,
@@ -261,6 +269,7 @@ fn mean_summary(mode: RecallMode, items: &[&ItemResult]) -> ModeSummary {
                 .saturating_sub(r.judge_ms)
         })
         .sum();
+    let degenerate_count: usize = items.iter().filter(|r| r.degenerate).count();
 
     ModeSummary {
         mode: mode.as_str().to_string(),
@@ -280,6 +289,7 @@ fn mean_summary(mode: RecallMode, items: &[&ItemResult]) -> ModeSummary {
         mean_gen_calls: sum_gen_calls as f32 / n,
         mean_judge_ms: sum_judge_ms as f32 / n,
         mean_other_ms: sum_other_ms as f32 / n,
+        degenerate_count,
     }
 }
 
@@ -297,6 +307,12 @@ pub fn format_summary(report: &BenchReport) -> String {
 
     for summary in &report.summaries {
         out.push_str(&format!("[{}] n={}\n", summary.mode, summary.item_count));
+        if summary.degenerate_count > 0 {
+            out.push_str(&format!(
+                "  ⚠ degenerate:        {} item(s) — answer model choked; recorded as zero-scored, not dropped\n",
+                summary.degenerate_count
+            ));
+        }
         out.push_str(&format!(
             "  answer_score:         {:.3}\n",
             summary.mean_answer_score

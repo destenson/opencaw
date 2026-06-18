@@ -140,6 +140,18 @@ The cooperative protocol already provides two strong, explicit intent signals: `
 
 ---
 
+### A degenerate turn is recorded as a zero row, not dropped from the report (2026-06-17)
+
+**Problem.** When `run_turn` exhausted its degenerate-output retries (the model looped, or regurgitated the `[recalled from …]` injection scaffold), the orchestrator returned `Err(CawError::DegenerateOutput)`. The bench's `run_item` propagated that with `?`, so the item was excluded from `summaries`/`items` entirely — the report silently carried n−1 items (observed: `qa_018_curation_crate` errored, 29 items not 30). In `caw-bench-coop` the same `?` aborted the *whole run* (crashed at item 4). A gauge that drops the items it finds hardest to answer is misleading, and a dropped item can't be diagnosed.
+
+**Decision.** The orchestrator's contract is unchanged — it still returns `Err(DegenerateOutput)` with a 120-char sample to signal the turn failed (this is the established interface `caw-cli` already handles by logging and continuing to the next query). The fix is at the bench boundary: `run_item` / `run_item_coop` catch `Err(DegenerateOutput)` and record the item as a zero-scored row instead of propagating. Hard (non-degenerate) errors — embed/retrieve/network failures — still propagate, because those are infrastructure failures that should not be hidden as zero rows.
+
+The degenerate row carries: `answer_score = 0.0` (deterministic, no judge), `judge_pending = false`, empty `reference_answer` (so the post-gen judge phase and `--judge-trace` never waste a call on scaffold garbage), `degenerate = true`, and the recall metrics computed from what the orchestrator loaded *before* the model choked (the turn did run; the loading is honest signal). The `answer` field holds the 120-char degenerate sample so the failure is visible, not scrubbed. The report surfaces a per-mode `degenerate_count` so a shrinking n is obvious to the dev.
+
+**Why not change the orchestrator.** `caw-cli` already depends on `run_turn → Err(DegenerateOutput)` to skip a bad query without aborting the session (the B15 fix). Returning the full degenerate answer, or an `Ok`-with-flag, would change that contract for every surface. Each surface decides what a degenerate turn means for it: an interactive surface skips; a gauge records a zero row. Keeping the signal in the orchestrator and the policy at the boundary is the clean split.
+
+---
+
 ## Implementation principles
 
 When making a choice this document doesn't explicitly cover, apply these in order.

@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 
 use caw_core::provenance::InMemoryProvenanceStore;
 use caw_core::{
-    count_tokens_cl100k, EmbeddingProvider, ModelAdapter, RecallThresholds, StubId, StubStore,
-    VectorIndex,
+    count_tokens_cl100k, CawError, EmbeddingProvider, ModelAdapter, RecallThresholds, StubId,
+    StubStore, VectorIndex,
 };
 use caw_index::{
     build_bm25_over_store, BM25Index, CandleEmbeddingProvider, FastEmbedProvider, HnswVectorIndex,
@@ -13,6 +13,7 @@ use caw_index::{
 use std::sync::Arc;
 use caw_ingest::{IngestionPipeline, SourceDocument};
 use caw_orchestrator::dynamic::{CooperationMode, DynamicRecallConfig, DynamicRecallOrchestrator};
+use tracing::warn;
 
 use crate::shared::{ReadOnlyStore, SharedEmbedder, SharedIndex, SharedStore};
 use crate::workload::{RecallMode, Scoring, WorkloadItem};
@@ -247,6 +248,17 @@ pub struct ItemResult {
     /// false so a pre-existing trace deserializes as already-judged.
     #[serde(default)]
     pub judge_pending: bool,
+    /// True when the answer model degenerated on this item (looped, or
+    /// regurgitated the `[recalled from …]` injection scaffold) and exhausted
+    /// its retries. The turn failed to produce a usable answer, so the row is
+    /// recorded as a zero-scored failure rather than dropped from the report —
+    /// dropping it would silently shrink n and hide the failure from the dev
+    /// (BUGS "Reproducibility"). The `answer` holds the 120-char degenerate
+    /// sample the orchestrator surfaced; recall metrics are still computed
+    /// from what the orchestrator loaded before degenerating. Defaults to
+    /// false so pre-existing traces deserialize as non-degenerate.
+    #[serde(default)]
+    pub degenerate: bool,
     /// Wall time for this item (ms).
     pub latency_ms: u64,
     /// Answer-model generation time (ms) within this item — the sum of all
@@ -390,19 +402,37 @@ fn run_item_fresh(
             config,
         );
 
-    let response = orchestrator
-        .run_turn(&cfg.system_prompt, &item.question, &[], None)
-        .context("run_turn failed")?;
-
+    // Read the loaded set before run_turn so it's available on both the Ok
+    // and degenerate paths — the clone is owned, so the &mut borrow below
+    // doesn't conflict. On a degenerate turn the orchestrator still loaded
+    // fragments before the model choked, so the recall metrics stay honest.
     let loaded = orchestrator.loaded.clone();
+    let (answer, degenerate) = match orchestrator
+        .run_turn(&cfg.system_prompt, &item.question, &[], None)
+    {
+        Ok(r) => (r.answer, false),
+        Err(CawError::DegenerateOutput { sample, .. }) => {
+            warn!(
+                item = %item.id,
+                mode = mode.as_str(),
+                "degenerate output — recording zero row instead of dropping the item"
+            );
+            (sample, true)
+        }
+        // Hard errors (embed/retrieve/network failures) are infrastructure
+        // failures, not model degenerations — surface them rather than hiding
+        // them as zero rows.
+        Err(e) => return Err(e).context("run_turn failed"),
+    };
     finalize_result(
         item,
         mode,
         cfg,
         started,
         &loaded,
-        response.answer,
+        answer,
         &stub_summaries,
+        degenerate,
     )
 }
 
@@ -455,19 +485,37 @@ fn run_item_shared(
             config,
         );
 
-    let response = orchestrator
-        .run_turn(&cfg.system_prompt, &item.question, &[], None)
-        .context("run_turn failed")?;
-
+    // Read the loaded set before run_turn so it's available on both the Ok
+    // and degenerate paths — the clone is owned, so the &mut borrow below
+    // doesn't conflict. On a degenerate turn the orchestrator still loaded
+    // fragments before the model choked, so the recall metrics stay honest.
     let loaded = orchestrator.loaded.clone();
+    let (answer, degenerate) = match orchestrator
+        .run_turn(&cfg.system_prompt, &item.question, &[], None)
+    {
+        Ok(r) => (r.answer, false),
+        Err(CawError::DegenerateOutput { sample, .. }) => {
+            warn!(
+                item = %item.id,
+                mode = mode.as_str(),
+                "degenerate output — recording zero row instead of dropping the item"
+            );
+            (sample, true)
+        }
+        // Hard errors (embed/retrieve/network failures) are infrastructure
+        // failures, not model degenerations — surface them rather than hiding
+        // them as zero rows.
+        Err(e) => return Err(e).context("run_turn failed"),
+    };
     finalize_result(
         item,
         mode,
         cfg,
         started,
         &loaded,
-        response.answer,
+        answer,
         &prebuilt.stub_summaries,
+        degenerate,
     )
 }
 
@@ -480,6 +528,7 @@ fn finalize_result(
     loaded: &[caw_core::RecallFragment],
     answer: String,
     stub_summaries: &HashMap<StubId, String>,
+    degenerate: bool,
 ) -> Result<ItemResult> {
     let loaded_paths: Vec<String> = loaded.iter().map(|f| f.locator.source.clone()).collect();
     let metrics = retrieval_metrics(loaded, &item.expected_paths);
@@ -495,22 +544,41 @@ fn finalize_result(
     let index_pool_tokens: usize = stub_summaries.values().map(|s| estimate_tokens(s)).sum();
     let false_recall_rate = false_recall_rate_heuristic(loaded, stub_summaries);
 
-    // Model judging (JudgeAgainst) is deferred to the post-generation phase
-    // so the generation loop never blocks on a remote judge call. Local
-    // needle scoring is free, so it stays inline.
-    let (answer_score, judge_rationale, judge_pending) = score_local(&item.scoring, &answer);
+    // A degenerate turn produced no usable answer — record it as a
+    // zero-scored failure. Skip local scoring and the judge entirely: the
+    // answer is scaffold garbage, so `score_local` would only waste a judge
+    // call on `JudgeAgainst` items to re-derive 0.0, and a non-empty
+    // `reference_answer` would send it through the post-gen judge phase (and
+    // `--judge-trace` re-judges). Empty `reference_answer` + `judge_pending`
+    // = false keeps the judge away from the garbage and leaves the
+    // deterministic 0.0 authoritative end to end.
+    let (answer_score, judge_rationale, judge_pending, reference_answer) = if degenerate {
+        (
+            0.0,
+            "degenerate output — turn failed after all retries, scored 0.0".to_string(),
+            false,
+            String::new(),
+        )
+    } else {
+        // Model judging (JudgeAgainst) is deferred to the post-generation phase
+        // so the generation loop never blocks on a remote judge call. Local
+        // needle scoring is free, so it stays inline.
+        let (answer_score, judge_rationale, judge_pending) = score_local(&item.scoring, &answer);
 
-    // The judge phase scores against `reference_answer`, and `--judge-trace`
-    // re-judges exactly the items whose persisted `reference_answer` is
-    // non-empty. So set it precisely when this item is meant to be judged:
-    // for `JudgeAgainst` always, and for `NeedleWithJudgeConfirm` only when the
-    // token was found (`judge_pending`). Leaving it empty on a needle-miss keeps
-    // the deterministic 0.0 authoritative — the judge can never override the
-    // exact token check, inline or on a re-judge pass.
-    let reference_answer = match &item.scoring {
-        Scoring::JudgeAgainst { reference_answer } => reference_answer.clone(),
-        Scoring::NeedleWithJudgeConfirm { needle } if judge_pending => needle.clone(),
-        _ => String::new(),
+        // The judge phase scores against `reference_answer`, and `--judge-trace`
+        // re-judges exactly the items whose persisted `reference_answer` is
+        // non-empty. So set it precisely when this item is meant to be judged:
+        // for `JudgeAgainst` always, and for `NeedleWithJudgeConfirm` only when
+        // the token was found (`judge_pending`). Leaving it empty on a
+        // needle-miss keeps the deterministic 0.0 authoritative — the judge
+        // can never override the exact token check, inline or on a re-judge
+        // pass.
+        let reference_answer = match &item.scoring {
+            Scoring::JudgeAgainst { reference_answer } => reference_answer.clone(),
+            Scoring::NeedleWithJudgeConfirm { needle } if judge_pending => needle.clone(),
+            _ => String::new(),
+        };
+        (answer_score, judge_rationale, judge_pending, reference_answer)
     };
 
     // Truncation keeps the per-item trace line manageable in a JSONL file.
@@ -546,6 +614,7 @@ fn finalize_result(
         answer_score,
         judge_rationale,
         judge_pending,
+        degenerate,
         latency_ms: started.elapsed().as_millis() as u64,
         // Phase timings are populated by the caller (main.rs) from the
         // TimingAdapter counters after run_item returns; runner has no handle
@@ -797,5 +866,113 @@ fn score_local(scoring: &Scoring, answer: &str) -> (f32, String, bool) {
             }
         }
         Scoring::JudgeAgainst { .. } => (0.0, String::new(), true),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use caw_core::ContentKind;
+    use crate::workload::CorpusDoc;
+
+    /// A degenerate turn must be recorded as a zero-scored row, never dropped.
+    /// This is the regression guard for BUGS "Reproducibility": a turn that
+    /// fails all retries used to abort the item and shrink n. Now `run_item`
+    /// catches `Err(DegenerateOutput)` and routes through `finalize_result`
+    /// with `degenerate=true`, which forces a deterministic 0.0 and keeps the
+    /// row out of the judge phase (no judge call wasted on scaffold garbage).
+    /// The orchestrator's `run_turn → Err(DegenerateOutput)` contract is proven
+    /// in `caw-orchestrator/tests/end_to_end.rs`; this test pins the row
+    /// `finalize_result` builds from that error.
+    #[test]
+    fn degenerate_row_is_zero_scored_not_judged() {
+        let item = WorkloadItem {
+            id: "degen_001".to_string(),
+            question: "what is the secret?".to_string(),
+            corpus: vec![CorpusDoc {
+                path: "src/lib.rs".to_string(),
+                content: "const SECRET: &str = \"needle-value\";\n".to_string(),
+                kind: ContentKind::Code,
+            }],
+            expected_paths: vec!["src/lib.rs".to_string()],
+            scoring: Scoring::NeedleWithJudgeConfirm {
+                needle: "needle-value".to_string(),
+            },
+        };
+        let cfg = RunnerConfig::default();
+        let started = std::time::Instant::now();
+        // Degenerate sample the orchestrator surfaces (120-char head of the
+        // regurgitated `[recalled from …]` scaffold). It does NOT contain the
+        // needle.
+        let sample = "[recalled from fake/path.rs:1-5]\nfn x() {}\n[end recall]".to_string();
+
+        let result = finalize_result(
+            &item,
+            RecallMode::On,
+            &cfg,
+            started,
+            &[],
+            sample.clone(),
+            &HashMap::new(),
+            true,
+        )
+        .expect("degenerate row should build, not error");
+
+        assert!(result.degenerate, "row must be flagged degenerate");
+        assert_eq!(result.answer_score, 0.0, "degenerate row scores 0.0");
+        assert!(
+            !result.judge_pending,
+            "degenerate row must not enter the judge phase"
+        );
+        assert!(
+            result.reference_answer.is_empty(),
+            "degenerate row must carry no reference_answer, so --judge-trace never re-scores it"
+        );
+        assert_eq!(result.answer, sample, "the degenerate sample is the recorded answer");
+        assert!(
+            result.judge_rationale.contains("degenerate"),
+            "rationale should name the degenerate failure: {}",
+            result.judge_rationale
+        );
+    }
+
+    /// The non-degenerate path is unchanged: a `NeedleWithJudgeConfirm` item
+    /// whose answer contains the needle defers to the judge (pending), with
+    /// the needle carried as `reference_answer`. Guards against the
+    /// degenerate branch accidentally swallowing the normal scoring path.
+    #[test]
+    fn non_degenerate_needle_hit_defers_to_judge() {
+        let item = WorkloadItem {
+            id: "ok_001".to_string(),
+            question: "what is the secret?".to_string(),
+            corpus: vec![],
+            expected_paths: vec![],
+            scoring: Scoring::NeedleWithJudgeConfirm {
+                needle: "needle-value".to_string(),
+            },
+        };
+        let cfg = RunnerConfig::default();
+        let started = std::time::Instant::now();
+        let answer = "The secret is needle-value, defined in lib.rs.".to_string();
+
+        let result = finalize_result(
+            &item,
+            RecallMode::On,
+            &cfg,
+            started,
+            &[],
+            answer,
+            &HashMap::new(),
+            false,
+        )
+        .expect("non-degenerate row should build");
+
+        assert!(!result.degenerate);
+        assert_eq!(result.answer_score, 0.0, "judge not yet run → placeholder 0.0");
+        assert!(result.judge_pending, "needle present → judge must confirm the assertion");
+        assert_eq!(
+            result.reference_answer, "needle-value",
+            "needle carried as reference_answer for the judge phase"
+        );
     }
 }
