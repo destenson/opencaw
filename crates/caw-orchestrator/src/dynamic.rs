@@ -1,6 +1,11 @@
 use crate::consolidation::{ConsolidationSynthesizer, MechanicalConsolidation};
 use crate::degradation::DegradationMonitor;
-use crate::session::{self, SessionFile};
+use crate::session::SessionFile;
+// The `session` module path is referenced only by the gated `with_session`
+// (collect_previous_stubs, timestamp_str); import it only when that path
+// compiles.
+#[cfg(feature = "session-recall")]
+use crate::session;
 use caw_core::{
     AugmentationSignals, CawError, CawResult, CompletionRequest, CompletionResponse,
     ConsolidationNote, ConsolidationSource, ContentKind, EmbeddingProvider, LineReference, Locator, ModelAdapter,
@@ -288,10 +293,15 @@ where
 
     /// Enable session history: write each turn to an append-only file in
     /// `session_dir` and recall them semantically in future turns.
-    /// Previous runs' session files in the same directory are loaded into the
-    /// in-memory vector index only — they are never written to the persistent
-    /// store. This prevents prior sessions' improvised answers from being
-    /// retrieved as authoritative documentation in subsequent sessions.
+    ///
+    /// Gated behind the `session-recall` Cargo feature (default off). When the
+    /// feature is disabled this is a no-op: no prior sessions are loaded, no
+    /// session file is created, and `session_content` stays empty so the
+    /// recall and turn-recording paths are inert. The subsystem is disabled
+    /// because the prior-session path injects compressed answers from earlier
+    /// runs (including unhelpful "I couldn't find…" cop-outs the
+    /// `[DEGENERATE]` sentinel doesn't catch), which contaminates test runs.
+    #[cfg(feature = "session-recall")]
     pub fn with_session(mut self, session_dir: &Path) -> CawResult<Self> {
         std::fs::create_dir_all(session_dir).map_err(|e| caw_core::CawError::Io(e.to_string()))?;
         let file_name = format!("session-{}.md", session::timestamp_str());
@@ -315,6 +325,14 @@ where
         }
         debug!(dir = %session_dir.display(), stubs = loaded_count, "loaded prior session history into memory");
         self.session = Some(SessionFile::create(file_path)?);
+        Ok(self)
+    }
+
+    /// No-op stand-in for `with_session` when the `session-recall` feature is
+    /// disabled. Keeps the builder chain usable for callers (e.g. caw-cli) that
+    /// always wire session history, without loading or recording anything.
+    #[cfg(not(feature = "session-recall"))]
+    pub fn with_session(self, _session_dir: &Path) -> CawResult<Self> {
         Ok(self)
     }
 

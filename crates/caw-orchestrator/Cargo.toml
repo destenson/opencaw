@@ -4,6 +4,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Session recall: load prior-session turns and current-session turns into the
+# in-memory vector index and inject them into the workspace as "session
+# history" fragments. Disabled by default because the prior-session path
+# injects compressed *answers* from earlier runs (including unhelpful "I
+# couldn't find…" cop-outs that the [DEGENERATE] sentinel doesn't catch),
+# which contaminates test runs by reinforcing prior failures. The code is
+# retained for re-enablement once the contamination is fixed. Enable with
+# `--features session-recall`.
+session-recall = []
+
 [dependencies]
 caw-core = { workspace = true }
 caw-eval = { workspace = true }

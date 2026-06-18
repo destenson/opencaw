@@ -681,6 +681,9 @@ fn main() -> Result<()> {
         orchestrator = orchestrator
             .with_session(&session_dir)
             .context("Failed to set up session history")?;
+        // with_session is a no-op unless the `session-recall` feature is enabled,
+        // so only announce recording when it is actually active.
+        #[cfg(feature = "session-recall")]
         eprintln!("[session] recording to {}", session_dir.display());
     }
 

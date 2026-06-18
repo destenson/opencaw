@@ -62,6 +62,8 @@ The consolidation synthesizer must use an LLM when one is available. A mechanica
 
 ### Session history serves continuity, not retrieval
 
+> **Currently disabled (2026-06-17).** Session recall is gated behind the `session-recall` Cargo feature (default off) in `caw-orchestrator`, forwarded through `caw-cli`. The subsystem — prior-session loading, current-turn recording, and workspace injection — is inert when the feature is off: `with_session` is a no-op, `session_content` stays empty, and the recall/turn-recording paths are skipped. It was disabled because the prior-session path injects compressed answers from earlier runs into the workspace, including unhelpful "I couldn't find…" cop-outs that the `[DEGENERATE]` sentinel does not catch, which contaminates test runs by reinforcing prior failures. The decisions below describe the intended behavior when the feature is re-enabled; re-enablement requires fixing the prior-session injection so it does not surface prior answers as authoritative.
+
 Prior conversation turns are not workspace stubs. They serve a different purpose — helping the model maintain coherence across a session — and must be handled differently. Model responses use the same vocabulary as current queries and will outrank workspace stubs in similarity search if allowed to compete. Session history is injected as a budget-capped fixed block, not as a retrieval candidate.
 
 Prior session responses (from earlier sessions, not the current one) are compressed before embedding. A 400-token response that outranks workspace stubs is not continuity — it is the current session reading from its own prior output rather than from the actual project.

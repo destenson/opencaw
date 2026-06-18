@@ -9,6 +9,11 @@ default-run = "caw-cli"
 
 [features]
 llama = ["caw-adapters/llama"]
+# Forward the orchestrator's opt-in session-recall subsystem. Off by default:
+# session recall injects compressed prior-session answers into the workspace,
+# which contaminates test runs. Enable to restore session-history recording and
+# recall.
+session-recall = ["caw-orchestrator/session-recall"]
 
 [dependencies]
 anyhow.workspace = true

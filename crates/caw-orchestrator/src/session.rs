@@ -1,3 +1,11 @@
+// The prior-session loading helpers below (collect_previous_stubs,
+// parse_session_turns, compress_assistant, timestamp_str, …) are only
+// referenced from DynamicRecallOrchestrator::with_session, which is gated
+// behind the `session-recall` Cargo feature. When the feature is off (the
+// default) they would be dead code; suppress the warning rather than
+// scatter cfg attributes across each item.
+#![cfg_attr(not(feature = "session-recall"), allow(dead_code))]
+
 use caw_core::{CawResult, ContentKind, Stub, StubId};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
