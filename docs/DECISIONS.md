@@ -150,6 +150,8 @@ The degenerate row carries: `answer_score = 0.0` (deterministic, no judge), `jud
 
 **Why not change the orchestrator.** `caw-cli` already depends on `run_turn → Err(DegenerateOutput)` to skip a bad query without aborting the session (the B15 fix). Returning the full degenerate answer, or an `Ok`-with-flag, would change that contract for every surface. Each surface decides what a degenerate turn means for it: an interactive surface skips; a gauge records a zero row. Keeping the signal in the orchestrator and the policy at the boundary is the clean split.
 
+**Loaded-set capture invariant (2026-06-17, corrected same day).** `orchestrator.loaded` must be cloned *after* `run_turn` returns, not before. The multi-pass recall loop admits fragments, upgrades stubs to body, and evicts *inside* `run_turn`, so the set is empty before the call and populated after. The degenerate-recording fix initially cloned before the call (to keep the set reachable on the `Err` arm under a mistaken belief that the `&mut` borrow would conflict); that zeroed `loaded_paths`, `recall_at_k`, and `content_tokens` for *every* item, degenerate or not — a silent measurement regression that made every bench run since report zero recall. The `&mut` borrow ends when the `match` completes, so `orchestrator.loaded.clone()` after the match is reachable on both the `Ok` and `DegenerateOutput` arms; on the degenerate arm the set loaded before the choke survives the `Err` return, so the metrics stay honest there too.
+
 ---
 
 ## Implementation principles

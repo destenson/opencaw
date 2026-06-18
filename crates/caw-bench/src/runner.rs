@@ -402,11 +402,14 @@ fn run_item_fresh(
             config,
         );
 
-    // Read the loaded set before run_turn so it's available on both the Ok
-    // and degenerate paths — the clone is owned, so the &mut borrow below
-    // doesn't conflict. On a degenerate turn the orchestrator still loaded
-    // fragments before the model choked, so the recall metrics stay honest.
-    let loaded = orchestrator.loaded.clone();
+    // The orchestrator loads fragments *during* run_turn (the multi-pass recall
+    // loop admits, upgrades stubs to body, and evicts inside the call), so the
+    // loaded set must be read AFTER run_turn returns — cloning before captures
+    // the empty pre-loop state and zeroes every recall metric. The &mut borrow
+    // run_turn takes ends when the match completes, so `orchestrator.loaded` is
+    // readable on both the Ok and degenerate arms. On a degenerate turn the
+    // orchestrator still loaded fragments before the model choked, and that set
+    // survives the Err return, so the recall metrics stay honest there too.
     let (answer, degenerate) = match orchestrator
         .run_turn(&cfg.system_prompt, &item.question, &[], None)
     {
@@ -424,6 +427,7 @@ fn run_item_fresh(
         // them as zero rows.
         Err(e) => return Err(e).context("run_turn failed"),
     };
+    let loaded = orchestrator.loaded.clone();
     finalize_result(
         item,
         mode,
@@ -485,11 +489,9 @@ fn run_item_shared(
             config,
         );
 
-    // Read the loaded set before run_turn so it's available on both the Ok
-    // and degenerate paths — the clone is owned, so the &mut borrow below
-    // doesn't conflict. On a degenerate turn the orchestrator still loaded
-    // fragments before the model choked, so the recall metrics stay honest.
-    let loaded = orchestrator.loaded.clone();
+    // See run_item_fresh: the loaded set must be read AFTER run_turn, since the
+    // multi-pass loop admits/upgrades/evicts inside the call. Cloning before
+    // captures the empty pre-loop state and zeroes every recall metric.
     let (answer, degenerate) = match orchestrator
         .run_turn(&cfg.system_prompt, &item.question, &[], None)
     {
@@ -507,6 +509,7 @@ fn run_item_shared(
         // them as zero rows.
         Err(e) => return Err(e).context("run_turn failed"),
     };
+    let loaded = orchestrator.loaded.clone();
     finalize_result(
         item,
         mode,
