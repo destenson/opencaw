@@ -85,5 +85,89 @@
       "crates/caw-bench/src/main.rs",
       "crates/caw-bench/src/bin/coop.rs"
     ]
+  },
+  {
+    "id": "ca_015_chunkingconfig_target_tokens",
+    "question": "I'm tuning the ingest pipeline. Which field on `ChunkingConfig` sets the target token count for each chunk?",
+    "needle": "target_chunk_tokens",
+    "expected_paths": ["crates/caw-ingest/src/chunking.rs"]
+  },
+  {
+    "id": "ca_016_chunk_body_end_field",
+    "question": "What field on the `Chunk` struct records the end byte offset of the chunk's body?",
+    "needle": "body_end",
+    "expected_paths": ["crates/caw-ingest/src/chunking.rs"]
+  },
+  {
+    "id": "ca_017_max_safe_body_tokens_value",
+    "question": "What is the value of the `MAX_SAFE_BODY_TOKENS` constant in caw-ingest's chunking module?",
+    "needle": "500",
+    "expected_paths": ["crates/caw-ingest/src/chunking.rs"]
+  },
+  {
+    "id": "ca_018_groq_llama_70b_model",
+    "question": "What model id does `GroqAdapter::llama_70b` instantiate?",
+    "needle": "llama-3.3-70b-versatile",
+    "expected_paths": ["crates/caw-adapters/src/groq.rs"]
+  },
+  {
+    "id": "ca_019_dynamicecallconfig_decay_field",
+    "question": "Which field on `DynamicRecallConfig` controls the multiplicative decay applied to a fragment's relevance score each reasoning step it isn't re-engaged with?",
+    "needle": "relevance_decay_rate",
+    "expected_paths": ["crates/caw-orchestrator/src/dynamic.rs"]
+  },
+  {
+    "id": "ca_020_dynamicecallconfig_max_loaded_field",
+    "question": "Which `DynamicRecallConfig` field is the hard cap on the number of fragments that can be loaded simultaneously?",
+    "needle": "max_loaded_fragments",
+    "expected_paths": ["crates/caw-orchestrator/src/dynamic.rs"]
+  },
+  {
+    "id": "ca_021_cooperationmetrics_struct",
+    "question": "Which struct in caw-eval aggregates per-run cooperation signal counts (probes emitted, annotations emitted, useful-probe percentage)?",
+    "needle": "CooperationMetrics",
+    "expected_paths": ["crates/caw-eval/src/metrics.rs"]
+  },
+  {
+    "id": "ca_022_systempromptbudget_warn_field",
+    "question": "Which field on `SystemPromptBudget` is the fraction of `max_tokens` at which a warning fires?",
+    "needle": "warn_threshold_pct",
+    "expected_paths": ["crates/caw-curation/src/prompt_budget.rs"]
+  },
+  {
+    "id": "ca_023_hybridretriever_balanced_ctor",
+    "question": "`HybridRetriever` has a constructor that builds a balanced semantic/lexical blend from a `SemanticRetriever`. What is it named?",
+    "needle": "balanced",
+    "expected_paths": ["crates/caw-index/src/lib.rs"]
+  },
+  {
+    "id": "ca_024_retriever_search_return_type",
+    "question": "What is the return type of the `search` method on the `Retriever` trait in caw-index?",
+    "reference_answer": "CawResult<Vec<ScoredStub>>",
+    "expected_paths": ["crates/caw-index/src/lib.rs"]
+  },
+  {
+    "id": "ca_025_loadmode_variants",
+    "question": "What are the variants of the `LoadMode` enum in the orchestrator's dynamic recall module?",
+    "reference_answer": "Stub and Full",
+    "expected_paths": ["crates/caw-orchestrator/src/dynamic.rs"]
+  },
+  {
+    "id": "ca_026_cli_default_cache_dir_env",
+    "question": "Which env var does caw-cli's `default_cache_dir` check first for the cache base directory?",
+    "needle": "XDG_CACHE_HOME",
+    "expected_paths": ["crates/caw-cli/src/main.rs"]
+  },
+  {
+    "id": "ca_027_chunk_outline_entries_type",
+    "question": "What type is the `outline_entries` field on the `Chunk` struct?",
+    "needle": "Vec<String>",
+    "expected_paths": ["crates/caw-ingest/src/chunking.rs"]
+  },
+  {
+    "id": "ca_028_recallmetrics_struct",
+    "question": "Which struct in caw-eval is the primary container for recall metrics like recall@k, precision, and mrr?",
+    "needle": "RecallMetrics",
+    "expected_paths": ["crates/caw-eval/src/metrics.rs"]
   }
 ]
