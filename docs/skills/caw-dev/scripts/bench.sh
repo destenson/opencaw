@@ -7,9 +7,15 @@
 #   workload   sysdoc (default) | opencaw | code-agent | niah
 #
 # code-agent: coding-agent mid-task info-needs (signatures, struct fields, trait
-#   bounds, call sites) over this repo. Same corpus as opencaw; needle-scored
-#   exact code facts plus judge-scored synthesis questions. No prebuilt index
-#   needed (the repo is ingested in-memory once and shared across items).
+#   bounds, call sites) over a FROZEN snapshot of this repo pinned to the
+#   QA-authoring commit (so every needle the QA asks for exists in the corpus by
+#   construction — the bench is a reproducible gauge, not a dogfood run on the
+#   live repo). Needle-scored exact code facts plus judge-scored synthesis
+#   questions. No prebuilt index needed (the corpus is ingested in-memory once
+#   and shared across items). The frozen corpus lives at
+#   $ROOT/opencaw-corpora/codeagent-corpus (gitignored); build it with
+#   freeze-codeagent-corpus.sh. Override with CAW_BENCH_CODEAGENT_CORPUS or a
+#   forwarded --repo-root (e.g. --repo-root . to ingest the live repo instead).
 #
 # Everything after `--` is forwarded verbatim to the caw-bench binary, so the
 # full flag surface stays available (see `caw-bench --help`). Common ones:
@@ -67,6 +73,24 @@ if [ "$WORKLOAD" = "sysdoc" ]; then
     exit 1
   fi
   WORKLOAD_ARGS+=(--index "$INDEX" --qa-file "$QA")
+fi
+
+# code-agent ingests a frozen snapshot of this repo pinned to the QA-authoring
+# commit, so the gauge is reproducible as the live repo drifts. The frozen
+# corpus is gitignored and built by freeze-codeagent-corpus.sh. Skip this if
+# the caller already forwarded their own --repo-root (e.g. to ingest the live
+# repo, or a different checkout).
+if [ "$WORKLOAD" = "code-agent" ]; then
+  CODEAGENT_CORPUS="${CAW_BENCH_CODEAGENT_CORPUS:-$ROOT/opencaw-corpora/codeagent-corpus}"
+  if [[ " $* " != *" --repo-root "* ]]; then
+    if [ ! -d "$CODEAGENT_CORPUS" ]; then
+      echo "bench: code-agent frozen corpus not found at $CODEAGENT_CORPUS" >&2
+      echo "bench: build it: bash $SCRIPT_DIR/freeze-codeagent-corpus.sh" >&2
+      echo "bench: (or pass --repo-root <path> / set CAW_BENCH_CODEAGENT_CORPUS=<path> to ingest elsewhere)" >&2
+      exit 1
+    fi
+    WORKLOAD_ARGS+=(--repo-root "$CODEAGENT_CORPUS")
+  fi
 fi
 
 # Default the judge to groq for fast dev iteration, unless the caller already

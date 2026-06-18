@@ -6,8 +6,12 @@
 //! called". These are the lookups an agent would otherwise satisfy by grepping
 //! and reading files — the grep-archaeology that OpenCAW exists to replace.
 //!
-//! It shares the opencaw repo corpus (`opencaw::load_corpus`) because the
-//! ground-truth answers must come from real code the model has no prior on; the
+//! The corpus is a checkout of this repo passed via `--repo-root`. The bench
+//! points this at a FROZEN snapshot pinned to the commit that authored the QA
+//! file (see `docs/skills/caw-dev/scripts/freeze-codeagent-corpus.sh`), so
+//! every needle the QA asks for exists in the corpus by construction and the
+//! gauge is reproducible as the live repo drifts — the bench is a frozen
+//! gauge, not a dogfood run on the live repo (that is `caw-server`'s job). The
 //! distinction from the `opencaw` workload is the question framing (agent
 //! info-needs, not project facts) and per-item scoring. Scoring is two-phase
 //! for exact code facts (a field name, a default value, a crate): the
