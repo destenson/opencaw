@@ -21,9 +21,12 @@ pub fn judge_answer(
 ) -> Result<JudgeVerdict> {
     let system = "You are a strict scorer. Compare a candidate answer against a reference \
          answer and output a single line of JSON with fields score (0.0 to 1.0) and rationale \
-         (one sentence). 1.0 means the candidate contains all key facts from the reference; \
+         (one sentence). 1.0 means the candidate asserts all key facts from the reference; \
          0.0 means it's wrong, missing, or contradicts. Be harsh: partial credit only for \
-         answers that are substantively correct but incomplete. Output nothing except the JSON."
+         answers that are substantively correct but incomplete. If the candidate says the \
+         information is absent, not provided, or insufficient to answer — even if it mentions \
+         the reference string while doing so — score 0.0; mentioning the reference while \
+         denying knowledge is a refusal, not a correct answer. Output nothing except the JSON."
         .to_string();
 
     let user = format!(

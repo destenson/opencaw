@@ -228,18 +228,23 @@ pub struct ItemResult {
     /// Per the FalseRecallMetrics heuristic: share of loaded fragments with
     /// low stub-summary-to-content term overlap. Lower is better.
     pub false_recall_rate: f32,
-    /// Answer-level pass/fail. 1.0 = correct, 0.0 = incorrect. For
-    /// JudgeAgainst scoring this is the judge's 0-1 score.
+    /// Answer-level pass/fail. 1.0 = correct, 0.0 = incorrect. For judged items
+    /// (`JudgeAgainst`, or a `NeedleWithJudgeConfirm` item whose token was
+    /// found) this is the judge's 0-1 score.
     pub answer_score: f32,
-    /// Free-form judge rationale (JudgeAgainst only; empty for ContainsNeedle).
+    /// Free-form judge rationale; empty for items that never reached the judge
+    /// (`ContainsNeedle`, and `NeedleWithJudgeConfirm` items whose token was
+    /// absent — scored a deterministic 0.0).
     pub judge_rationale: String,
-    /// True between generation and the post-gen judge phase for items whose
-    /// scoring needs a model judge (`JudgeAgainst`). Generation leaves
-    /// `answer_score`/`judge_rationale` unset and flags the item here; the
-    /// judge phase scores it and clears the flag. `ContainsNeedle` items are
-    /// scored inline (a local string check, no model call) and are never
-    /// pending. Defaults to false so a pre-existing trace deserializes as
-    /// already-judged.
+    /// True between generation and the post-gen judge phase for items still
+    /// awaiting a model judge: every `JudgeAgainst` item, and a
+    /// `NeedleWithJudgeConfirm` item whose token was present (the judge confirms
+    /// it is asserted, not quoted in a denial). Generation leaves
+    /// `answer_score`/`judge_rationale` unset and flags the item here; the judge
+    /// phase scores it and clears the flag. `ContainsNeedle` items, and
+    /// `NeedleWithJudgeConfirm` items whose token was absent, are scored inline
+    /// (a local string check, no model call) and are never pending. Defaults to
+    /// false so a pre-existing trace deserializes as already-judged.
     #[serde(default)]
     pub judge_pending: bool,
     /// Wall time for this item (ms).
@@ -255,9 +260,12 @@ pub struct ItemResult {
     /// Judge-model time (ms) for this item. 0 for non-judged scoring.
     #[serde(default)]
     pub judge_ms: u64,
-    /// Reference answer from the scoring config (JudgeAgainst only; empty
-    /// for ContainsNeedle). Carried through so the trace can show what the
-    /// judge was comparing against.
+    /// What the judge compares against: the reference answer for `JudgeAgainst`,
+    /// or the needle for a `NeedleWithJudgeConfirm` item whose token was found.
+    /// Empty for items that are not judged (`ContainsNeedle`, and needle-miss
+    /// `NeedleWithJudgeConfirm` items) — `--judge-trace` keys off this emptiness
+    /// to pick which items to re-judge, so a needle-miss is never re-scored by
+    /// the judge. Carried through so the trace shows what the judge saw.
     pub reference_answer: String,
     /// Content of each loaded fragment, in load order, paired with its
     /// source locator. Lets a failure trace show exactly what context the
@@ -492,8 +500,16 @@ fn finalize_result(
     // needle scoring is free, so it stays inline.
     let (answer_score, judge_rationale, judge_pending) = score_local(&item.scoring, &answer);
 
+    // The judge phase scores against `reference_answer`, and `--judge-trace`
+    // re-judges exactly the items whose persisted `reference_answer` is
+    // non-empty. So set it precisely when this item is meant to be judged:
+    // for `JudgeAgainst` always, and for `NeedleWithJudgeConfirm` only when the
+    // token was found (`judge_pending`). Leaving it empty on a needle-miss keeps
+    // the deterministic 0.0 authoritative — the judge can never override the
+    // exact token check, inline or on a re-judge pass.
     let reference_answer = match &item.scoring {
         Scoring::JudgeAgainst { reference_answer } => reference_answer.clone(),
+        Scoring::NeedleWithJudgeConfirm { needle } if judge_pending => needle.clone(),
         _ => String::new(),
     };
 
@@ -759,14 +775,26 @@ fn estimate_tokens(text: &str) -> usize {
 /// `ContainsNeedle` is a local substring check, so it's scored here and is
 /// never pending. `JudgeAgainst` needs a model judge, which runs in the
 /// post-generation phase — so this leaves the score at 0.0 and marks the
-/// item pending. The 0.0 is a placeholder that the judge phase overwrites
-/// before any report reads it; `judge_pending` is the authoritative
-/// "not yet scored" signal, not the 0.0.
+/// item pending. `NeedleWithJudgeConfirm` is two-phase: the substring check is
+/// the primary signal here, and the judge runs *only* to confirm an assertion
+/// when the token is present (see the variant doc). The 0.0 placeholder that
+/// pending items carry is overwritten by the judge phase before any report
+/// reads it; `judge_pending` is the authoritative "not yet scored" signal, not
+/// the 0.0.
 fn score_local(scoring: &Scoring, answer: &str) -> (f32, String, bool) {
     match scoring {
         Scoring::ContainsNeedle { needle } => {
             let pass = answer.to_lowercase().contains(&needle.to_lowercase());
             (if pass { 1.0 } else { 0.0 }, String::new(), false)
+        }
+        Scoring::NeedleWithJudgeConfirm { needle } => {
+            // Primary signal: exact token absent → definitively wrong, no judge.
+            // Token present → defer to the judge to rule out quote-while-denying.
+            if answer.to_lowercase().contains(&needle.to_lowercase()) {
+                (0.0, String::new(), true)
+            } else {
+                (0.0, String::new(), false)
+            }
         }
         Scoring::JudgeAgainst { .. } => (0.0, String::new(), true),
     }

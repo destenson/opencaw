@@ -29,10 +29,21 @@ pub struct CorpusDoc {
 #[derive(Debug, Clone)]
 pub enum Scoring {
     /// Pass if the answer (case-insensitive) contains the needle string.
-    /// Cheap, deterministic — used for NIAH-style retrieval tests.
+    /// Cheap, deterministic — used for NIAH-style retrieval tests where the
+    /// presence of the token *is* the answer.
     ContainsNeedle { needle: String },
+    /// Two-phase scoring for exact-fact items. The needle (case-insensitive)
+    /// substring check is the *primary* signal: if the answer does not contain
+    /// the exact token, the item scores 0.0 with no judge call — this is exact
+    /// and correct on token absence, and avoids the judge crediting a semantic
+    /// near-miss (e.g. `summaries` for `stub_summaries`). If the token *is*
+    /// present, the judge runs only to confirm the answer *asserts* the fact
+    /// rather than quoting it while denying knowledge ("the context does not
+    /// state that `Foo`…" mentions the token but is a refusal, not an answer).
+    NeedleWithJudgeConfirm { needle: String },
     /// Score by semantic match against a reference answer using a judge model.
-    /// Used when the answer is open-ended (e.g., opencaw Q&A).
+    /// Used when the answer is open-ended (e.g., opencaw Q&A) and the model is
+    /// expected to paraphrase rather than emit a verbatim token.
     JudgeAgainst { reference_answer: String },
 }
 

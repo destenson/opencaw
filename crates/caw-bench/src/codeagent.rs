@@ -9,10 +9,16 @@
 //! It shares the opencaw repo corpus (`opencaw::load_corpus`) because the
 //! ground-truth answers must come from real code the model has no prior on; the
 //! distinction from the `opencaw` workload is the question framing (agent
-//! info-needs, not project facts) and per-item scoring: exact code facts (a
-//! field name, a default value, a crate) are scored with a deterministic needle
-//! match, avoiding judge-model noise, while synthesis questions (call-site sets,
-//! signatures the model paraphrases) fall back to judge scoring.
+//! info-needs, not project facts) and per-item scoring. Scoring is two-phase
+//! for exact code facts (a field name, a default value, a crate): the
+//! deterministic needle check is primary — a missing token is a hard 0.0 with
+//! no judge — and the judge runs only to confirm a present token is asserted
+//! rather than quoted inside a denial (`Scoring::NeedleWithJudgeConfirm`). This
+//! keeps the exact-match precision a bare substring gives while closing the two
+//! gaps it leaves: crediting a quote-while-denying refusal, and (had we judged
+//! everything) crediting a semantic near-miss like `summaries` for
+//! `stub_summaries`. Synthesis questions (call-site sets, signatures the model
+//! paraphrases) use judge scoring against a reference answer.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -32,8 +38,10 @@ struct RawQa {
     /// score recall@k. For call-site questions this must list *every* call
     /// site, not just one, or the recall ground truth is wrong.
     expected_paths: Vec<String>,
-    /// Deterministic scoring: pass if the answer contains this exact substring
-    /// (case-insensitive). Use a single distinctive token greedy decoding will
+    /// Two-phase scoring (`Scoring::NeedleWithJudgeConfirm`): the answer must
+    /// contain this exact substring (case-insensitive) to score above 0.0, and
+    /// when it does the judge confirms the token is asserted rather than quoted
+    /// inside a refusal. Use a single distinctive token greedy decoding will
     /// emit verbatim (a field name, a crate, a default value) — never a full
     /// signature or phrase the model will paraphrase.
     #[serde(default)]
@@ -70,7 +78,7 @@ pub fn build(repo_root: &Path, qa_file: Option<&Path>) -> Result<Vec<WorkloadIte
     let mut items = Vec::with_capacity(raw.len());
     for q in raw {
         let scoring = match (q.needle, q.reference_answer) {
-            (Some(needle), _) => Scoring::ContainsNeedle { needle },
+            (Some(needle), _) => Scoring::NeedleWithJudgeConfirm { needle },
             (None, Some(reference_answer)) => Scoring::JudgeAgainst { reference_answer },
             (None, None) => anyhow::bail!(
                 "codeagent QA item {} has neither `needle` nor `reference_answer`",

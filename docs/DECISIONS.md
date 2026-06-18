@@ -125,6 +125,19 @@ The cooperative protocol already provides two strong, explicit intent signals: `
 
 **Decision.** Remove `process_file_expansion` entirely. Stub-to-body upgrades for already-resident content are handled by the progressive disclosure path (see above), which triggers only on the strong signals. The candidate-list mention path (model responding to an explicitly presented candidate list by naming a path from it) is a separate code path and is unaffected.
 
+### `code-agent` exact-fact scoring is two-phase: deterministic needle is primary, judge only confirms (2026-06-18)
+
+**Problem.** The `code-agent` `recall-on`/`recall-off` sweep is the QA gauge for the dogfood milestone, so its per-item scores have to mean what they say. Investigation of two apparent recall-on regressions (`ca_006`, `ca_008`) found they were **scoring artifacts, not loop defects** — the loop's answers were fine (or wrong for honest reasons); the harness scored them wrong. Two distinct failure modes, pulling in opposite directions:
+
+- **Bare `contains(needle)` over-credits a quote-while-denying refusal.** `ca_008` (needle `LlamaCppAdapter`, no reference answer) was scored by substring alone. The recall-off answer was a non-answer — "the recalled context does not explicitly state that `LlamaCppAdapter` overrides…" — which *mentions* the token while denying knowledge, so `contains` credited it 1.0; the recall-on answer named a different (wrong) symbol and scored 0.0. Off "won" on a refusal that happened to quote the token.
+- **Judging everything over-credits a semantic near-miss.** An interim "always run the judge" fix flipped the net delta positive but mis-scored `ca_009`: the answer said `summaries` where the needle is the struct field `stub_summaries` (a real error — it named a function parameter, not the field), and the judge credited it 1.0 on semantic similarity. The exact-token check correctly scores that 0.0.
+
+**Decision.** For exact-fact items, scoring is **two-phase** (`Scoring::NeedleWithJudgeConfirm`): the deterministic case-insensitive `contains(needle)` is the **primary** signal — token absent is a hard 0.0 with no judge call (closes the near-miss hole) — and the judge runs **only** when the token is present, to confirm the answer *asserts* the fact rather than quoting it inside a denial (closes the quote-while-denying hole). The judge prompt was tightened correspondingly: an answer that says the information is absent/insufficient scores 0.0 even when it mentions the reference string. `reference_answer` (synthesis) items judge as before. `ContainsNeedle` is retained unchanged for NIAH, where the token's mere presence *is* the test.
+
+**Mechanism.** `score_local` returns `judge_pending = true` for a `NeedleWithJudgeConfirm` item only when the token is found; `finalize_result` then sets `reference_answer = needle` exactly in that case. Because `--judge-trace` re-judges precisely the items with a non-empty persisted `reference_answer`, a needle-miss (empty `reference_answer`, deterministic 0.0) is never re-scored by a judge on any pass — the exact check stays authoritative end to end. "Always judge" was considered and rejected for the `ca_009` near-miss reason above.
+
+**Why this is harness, not loop.** The judge prompt and the `code-agent` dispatch were unchanged since origin; the QA file has one commit. These artifacts were always latent and surfaced only when cooperation was enabled (`0d03fae`) made recall-on and recall-off answers diverge for the first time. So the prior "diagnose `ca_006`/`ca_008` as loop defects" framing was wrong: the instrument was the defect. Fixing scoring is a precondition for reading any recall-on/off delta as signal.
+
 ---
 
 ## Implementation principles

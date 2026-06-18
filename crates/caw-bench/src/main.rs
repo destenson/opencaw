@@ -408,9 +408,10 @@ fn main() -> Result<()> {
         Workload::Sysdoc => "sysdoc",
     };
 
-    // Post-generation judge phase: score every JudgeAgainst item now that all
-    // answers exist. Generation never blocked on the judge; here the judge
-    // calls fan out in parallel (the remote groq judge parallelizes freely).
+    // Post-generation judge phase: score every pending item now that all
+    // answers exist (JudgeAgainst, plus NeedleWithJudgeConfirm items whose token
+    // was found). Generation never blocked on the judge; here the judge calls
+    // fan out in parallel (the remote groq judge parallelizes freely).
     judge_all(&mut results, &cli, &judge_model, &runtime)?;
 
     let report = build_report(workload_name, &answer_model, &judge_model, &results);
@@ -537,8 +538,8 @@ fn run_concurrent(
     Ok(())
 }
 
-/// Score every `JudgeAgainst` item that generation left pending, in one
-/// parallel phase after all answers exist. Each item builds its own judge
+/// Score every item that generation left `judge_pending`, in one parallel
+/// phase after all answers exist. Each item builds its own judge
 /// adapter wrapped in a per-item `TimingAdapter`, so the recorded `judge_ms`
 /// is that call's own latency and stays valid even though calls overlap.
 ///
@@ -682,11 +683,13 @@ fn rejudge_trace(cli: &Cli, trace_path: &std::path::Path) -> Result<()> {
     }
 
     // Force re-scoring of every judge-scored item. A persisted result records
-    // its scoring kind only indirectly: a non-empty `reference_answer` means
-    // the item was scored by the model judge (ContainsNeedle leaves it empty —
-    // see finalize_result), so re-judging it is meaningful. Needle items keep
-    // their inline local score. This reads a structural property of the
-    // record, not a guess about intent.
+    // its scoring kind only indirectly: a non-empty `reference_answer` means the
+    // item was scored by the model judge (see finalize_result — empty for
+    // ContainsNeedle, and for a NeedleWithJudgeConfirm item whose token was
+    // absent, which holds a deterministic 0.0 the judge must not override), so
+    // re-judging it is meaningful. Those local-scored items keep their inline
+    // score. This reads a structural property of the record, not a guess about
+    // intent.
     let mut to_judge = 0usize;
     for r in &mut results {
         if !r.reference_answer.is_empty() {
