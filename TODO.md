@@ -41,6 +41,7 @@ The following sections are in no particular order. Do not infer that high priori
 
 - Streaming recall: interleave retrieval with token generation mid-response (needs async streaming adapter traits)
 - Progressive disclosure: upgrade a stub already in the workspace to full content in-place when a probe fires on it
+- Passive recall path (direction, needs scoping before implementation): make the loop fire from the model's *natural* output (mentioned symbols/paths, hedging language) instead of requiring it to emit `<probe>`/`<note>`/line-refs or obey cooperation instructions. Motivation: the `ca_005` hedge is a compliance failure the active protocol can't reliably fix by rewording (the reframe of `response_requirement` was tried and failed — see ROADMAP "Single next action"). Today the loop only fires through the cooperation instructions, so a passive path does not yet exist. Open scoping questions: how passive (read natural output only / natural output + silent reactive retrievals / keep protocol but make it optional), and which surface to build on first (bench / `caw-server` / `caw-core`). **Do not start without the scoping conversation — parked as a goal, not current work.**
 
 ## Adapters
 
